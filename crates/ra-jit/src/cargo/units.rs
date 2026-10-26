@@ -193,7 +193,8 @@ impl Record {
 
     /// Whether rustc links an executable from the crate.
     pub(crate) fn is_linked(&self) -> bool {
-        self.is_test() || self.crate_types() == ["bin"]
+        // Cargo omits --crate-type for a test with harness = false. rustc defaults to a binary.
+        self.is_test() || matches!(self.crate_types().as_slice(), [] | ["bin"])
     }
 
     pub(crate) fn is_rlib(&self) -> bool {
@@ -456,6 +457,12 @@ mod tests {
         assert!(lib.is_rlib() && !lib.is_linked() && !lib.runs_in_build());
         let test = record(&["--crate-type", "lib", "--test", "--out-dir", "/t/deps"]);
         assert!(test.is_linked() && !test.is_rlib());
+        let custom = record(&["--cfg", "test", "--out-dir", "/t/deps", "-C", "extra-filename=-1"]);
+        assert!(custom.is_linked() && !custom.is_test());
+        assert_eq!(
+            custom.outputs(),
+            [PathBuf::from(format!("/t/deps/a-1{}", std::env::consts::EXE_SUFFIX))]
+        );
         let macros = record(&["--crate-type", "proc-macro"]);
         assert!(macros.runs_in_build() && !macros.is_linked());
     }
