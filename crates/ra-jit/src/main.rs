@@ -4668,6 +4668,7 @@ fn build(
     let start_main = main.filter(|&it| {
         resolver.own_crate_id(hir_def::HasModule::krate(&it, db)).is_some()
             || in_harness(db, it)
+            || known.owns_start()
             || !hir::Function::from(it).ret_type(db).is_unit()
     });
     let roots = Roots {
@@ -4848,7 +4849,10 @@ fn with_failed_macro(
     let frontend = match &error {
         CodegenError::Frontend(_) => true,
         CodegenError::Unsupported(why) => why.contains("frontend:"),
-        CodegenError::Backend(_) | CodegenError::NoSymbol | CodegenError::Private => false,
+        CodegenError::Backend(_)
+        | CodegenError::Startup(_)
+        | CodegenError::NoSymbol
+        | CodegenError::Private => false,
     };
     if !frontend {
         return error;
@@ -8220,17 +8224,22 @@ fn run_holding(
         Some(rustcs) => {
             let start = Instant::now();
             start_from_rustc(&args, &rustcs, &table, &mut files, &checkouts.watch)?;
-            known.start_from_rustc(args.debug.level != plan::Level::Nothing);
             // An edit is to bodies alone by the functions listed of its crate, which a build
             // lists of each crate it compiles: none is compiled here.
-            for krate in args.crates() {
+            let mut main = None;
+            for (at, krate) in args.crates().enumerate() {
                 for krate in crates_to_build(&db, &table, krate, &args)? {
                     let root = crate_root_file(&db, krate);
                     if root.is_some_and(|it| args.owns(&db, krate.root_file(&db), &it)) {
-                        listed.of(&db, krate);
+                        let functions = listed.of(&db, krate);
+                        if at == 0 && !of_tests(&args) {
+                            main = main.or(functions.main);
+                        }
                     }
                 }
             }
+            let non_unit = main.is_some_and(|it| !hir::Function::from(it).ret_type(&db).is_unit());
+            known.start_from_rustc(args.debug.level != plan::Level::Nothing, non_unit);
             eprintln!(
                 "cold: none, the first edits patch what rustc linked ({:.1?})",
                 start.elapsed()

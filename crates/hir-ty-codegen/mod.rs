@@ -120,6 +120,7 @@ use self::places::{row_location, source_location};
 mod promote;
 mod settled;
 mod stable;
+mod startup;
 use ra_jit_store as store;
 pub use stable::{block_place, lower_declared, static_place};
 mod target;
@@ -152,6 +153,8 @@ pub enum CodegenError {
     /// MIR lowering or layout failed in RA.
     Frontend(String),
     Backend(String),
+    /// A live edit cannot replace the executable's C entry point.
+    Startup(String),
     /// rustc exports nothing for the function, so there is nothing to replace: only code in
     /// its own crate can call it.
     NoSymbol,
@@ -173,6 +176,7 @@ impl fmt::Display for CodegenError {
             CodegenError::Unsupported(it) => write!(f, "unsupported: {it}"),
             CodegenError::Frontend(it) => write!(f, "frontend: {it}"),
             CodegenError::Backend(it) => write!(f, "backend: {it}"),
+            CodegenError::Startup(it) => write!(f, "startup wrapper: {it}"),
             CodegenError::NoSymbol | CodegenError::Private => {
                 write!(f, "unsupported: no rustc symbol for function")
             }
@@ -719,6 +723,13 @@ impl CodegenUnit {
         undoable: bool,
     ) -> Result<Option<CodegenUnit>> {
         backend::keep_frame_pointers(symbols.keeps_frame_pointers());
+        let trace_startup = || {
+            if let Some(main) = roots.start
+                && let Some(filter) = startup::FILTER.as_deref()
+            {
+                startup::trace(db, symbols, main, filter);
+            }
+        };
         let on_demand: FxHashSet<FunctionId> = roots.on_demand.iter().copied().collect();
         let all = || roots.entries.iter().chain(roots.on_demand).copied();
         // Code of the checkout comes from the store in the first build alone: what a patch is
@@ -767,6 +778,10 @@ impl CodegenUnit {
                 let why = match patch {
                     Ok(Ok(patch)) => break Some(patch),
                     Ok(Err(why)) => Some(why),
+                    Err(e @ CodegenError::Startup(_)) => {
+                        known.put_base(base);
+                        return Err(e);
+                    }
                     Err(_) => None,
                 };
                 // Code compiled at a higher level that a patch can't hold goes, not the
@@ -778,6 +793,7 @@ impl CodegenUnit {
                 }
             };
             if let Some(patch) = patch {
+                trace_startup();
                 backend::Tally::global().report();
                 let compiled_now = known.compiled_since_last_build();
                 known.stats = BuildStats {
@@ -836,6 +852,7 @@ impl CodegenUnit {
             futures,
             base,
             rustc,
+            rustc_start: _,
             full,
             forgot_rustc: _,
             patching: _,
@@ -1137,7 +1154,7 @@ impl CodegenUnit {
                     onto_rustcs: false,
                 };
                 if patching {
-                    *base = patch::Base::record(db, &cg, roots.entries, &compiled, &skipped);
+                    *base = patch::Base::record(db, &cg, roots.entries, start, &compiled, &skipped);
                 }
                 // The executable is linked from this object from now on.
                 (*rustc, *full) = (None, false);
@@ -1159,6 +1176,7 @@ impl CodegenUnit {
                 let (object, apart) = cg.finish()?;
                 stats.phases.object = start.elapsed();
                 backend::Tally::global().report();
+                trace_startup();
                 (*theirs, *unknown) = (own_statics.theirs, own_statics.unknown);
                 let patch = if patching { Some(patch::empty_object()?) } else { None };
                 return Ok(Some(CodegenUnit {
@@ -1355,6 +1373,8 @@ pub struct Rejections {
     base: Option<patch::Base>,
     /// The executable rustc linked, which an edit is a patch of until there is a `base`.
     rustc: Option<patch::Base>,
+    /// Whether the original rustc wrapper consumed a non-unit return value.
+    rustc_start: bool,
     /// Whether the next build is a full one though `rustc` could be patched: the one that
     /// makes a `base`, while nobody waits.
     full: bool,
@@ -1428,8 +1448,14 @@ impl Rejections {
     /// Has the next builds patch the executable rustc linked, until one in full makes a base
     /// of ours: rustc compiled what the daemon reads. `debug` is whether a patch says which
     /// lines its code is of.
-    pub fn start_from_rustc(&mut self, debug: bool) {
+    pub fn start_from_rustc(&mut self, debug: bool, non_unit_main: bool) {
         self.rustc = Some(patch::Base::of_rustc(debug));
+        self.rustc_start = non_unit_main;
+    }
+
+    /// Whether an edit must replace the C wrapper even if `main` now returns unit.
+    pub fn owns_start(&self) -> bool {
+        self.rustc_start || self.base.as_ref().is_some_and(|base| base.start.is_some())
     }
 
     /// Whether the edits are patches of what rustc linked, which a build in full while
@@ -1463,9 +1489,10 @@ impl Rejections {
     /// rustc's copies are copies of is kept, since they are not built again: the first build
     /// takes the source as it is then for what rustc compiled, which after an edit it is not.
     pub fn start_again(&mut self) {
-        let Rejections { patching, used_by_rustc, .. } = *self;
+        let Rejections { patching, used_by_rustc, rustc_start, .. } = *self;
         let frozen = std::mem::take(&mut self.frozen);
-        *self = Rejections { patching, used_by_rustc, frozen, ..Rejections::default() };
+        *self =
+            Rejections { patching, used_by_rustc, rustc_start, frozen, ..Rejections::default() };
     }
 
     /// Puts a base taken out for a build back where it was: what rustc linked or ours.
@@ -13226,7 +13253,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             let limit = tier::inline_limit(db, &instance)?;
             let body = tier::hot_body(db, &instance, &self.env.store(), limit, false)?;
             return (body.func.signature == *sig)
-                .then(|| self.cg.declare_inlined(&body, self.builder.func));
+                .then(|| self.cg.declare_inlined(instance, &body, self.builder.func));
         }
         let InstanceDef::Fn(func) = def else { return None };
         let own =
@@ -13250,7 +13277,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 tier::hot_body(db, &instance, &self.env.store(), limit, track_caller(db, func))
             && body.func.signature == *sig
         {
-            return Some(self.cg.declare_inlined(&body, self.builder.func));
+            return Some(self.cg.declare_inlined(instance, &body, self.builder.func));
         }
         if track_caller(db, func) {
             return None;
@@ -13264,11 +13291,11 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         if !flags.contains(AttrFlags::IS_INLINE) && args.iter().all(|it| it.region().is_some()) {
             return None;
         }
-        let body = inlinable(db, instance, self.env.store()).as_ref()?;
+        let body = inlinable(db, instance.clone(), self.env.store()).as_ref()?;
         if body.func.signature != *sig {
             return None;
         }
-        Some(self.cg.declare_inlined(body, self.builder.func))
+        Some(self.cg.declare_inlined(instance, body, self.builder.func))
     }
 
     /// Shows LLVM the body of the callee `id` a compile at a level above 1 calls, where

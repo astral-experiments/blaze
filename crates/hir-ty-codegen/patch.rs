@@ -29,7 +29,7 @@ use super::{
     CodegenError, ContentId, Instance, InstanceDef, ObjectCodegen, OwnStatics, Phases, Rejections,
     Result, Roots, SymbolResolver, TheirStatics, Walked, async_blocks,
     cached::WrittenItem,
-    compiled_instance, compiled_root, compiled_static, declaration_location,
+    compiled_instance, compiled_root, compiled_start, compiled_static, declaration_location,
     fragment::{CompiledFunction, DataRequest, FuncTarget, Requests, TextPart},
     home::{body_file, body_files, mentioned_crates, written_in},
     instance_serial, is_thread_local, left_to_rustc, root_serial, row_location, source_location,
@@ -288,6 +288,7 @@ fn instance_mark(
 /// Something in the base that an edit can change or take away.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(super) enum Node {
+    Start(FunctionId),
     Root(FunctionId),
     Instance(Instance),
     Static(StaticId),
@@ -296,7 +297,7 @@ pub(super) enum Node {
 impl Node {
     fn is_asked_for_by(&self, requests: &Requests) -> bool {
         match self {
-            Node::Root(_) => false,
+            Node::Start(_) | Node::Root(_) => false,
             Node::Instance(instance) => requests.funcs.iter().any(
                 |it| matches!(&it.target, FuncTarget::Instance(asked, _) if asked == instance),
             ),
@@ -523,7 +524,7 @@ impl Reached {
                 instance_serial(db, instance.clone(), self.env.clone()),
                 compiled_instance(db, instance.clone(), self.env.clone()),
             ),
-            Node::Static(_) => return None,
+            Node::Start(_) | Node::Static(_) => return None,
         };
         Some(Mark::new(db, serial, &compiled.as_ref().ok()?.requests))
     }
@@ -533,7 +534,7 @@ impl Reached {
         match &self.node {
             Node::Root(func) => Some(*func),
             Node::Instance(instance) => written_in(db, instance),
-            Node::Static(_) => None,
+            Node::Start(_) | Node::Static(_) => None,
         }
     }
 }
@@ -805,6 +806,8 @@ impl Frozen {
 pub(super) struct Base {
     /// Whether the object says which lines its code is of, as a patch of it then does.
     debug: bool,
+    /// The C entry point we emitted and the code and concrete requests it was built with.
+    pub(super) start: Option<(FunctionId, u128)>,
     entries: Vec<FunctionId>,
     pub(super) compiled: Vec<(FunctionId, String)>,
     marks: Vec<Mark>,
@@ -1044,7 +1047,7 @@ impl Touched {
                 match node {
                     Node::Instance(instance) => _ = self.instances.insert(instance.clone()),
                     Node::Static(id) => _ = self.statics.insert(*id),
-                    Node::Root(_) => {}
+                    Node::Start(_) | Node::Root(_) => {}
                 }
             }
         }
@@ -1278,6 +1281,7 @@ impl Base {
         db: &dyn HirDatabase,
         cg: &ObjectCodegen<'_, '_>,
         entries: &[FunctionId],
+        start: Option<FunctionId>,
         compiled: &[(FunctionId, String)],
         skipped: &[(FunctionId, CodegenError)],
     ) -> Option<Base> {
@@ -1400,6 +1404,14 @@ impl Base {
                 note(Node::Root(root), &compiled_root(db, root).as_ref().ok()?.requests);
             }
         }
+        let start = match start {
+            Some(main) => {
+                let wrapper = compiled_start(db, main).as_ref().ok()?;
+                note(Node::Start(main), &wrapper.requests);
+                Some((main, super::print_of(wrapper)))
+            }
+            None => None,
+        };
         for (instance, known) in &instances {
             if let Ok(compiled) = compiled_instance(db, instance.clone(), known.env.clone()) {
                 note(Node::Instance(instance.clone()), &compiled.requests);
@@ -1425,7 +1437,7 @@ impl Base {
         }
         for (child, parent) in edges {
             let parents = match &child {
-                Node::Root(_) => None,
+                Node::Start(_) | Node::Root(_) => None,
                 Node::Instance(instance) => instances.get_mut(instance).map(|it| &mut it.parents),
                 Node::Static(id) => statics.get_mut(id).map(|it| &mut it.parents),
             };
@@ -1461,6 +1473,7 @@ impl Base {
             .collect();
         Some(Base {
             debug,
+            start,
             rejected,
             entries: entries.to_vec(),
             compiled: compiled.to_vec(),
@@ -1518,6 +1531,7 @@ impl Base {
     pub(super) fn of_rustc(debug: bool) -> Base {
         Base {
             debug,
+            start: None,
             entries: Vec::new(),
             compiled: Vec::new(),
             marks: Vec::new(),
@@ -2163,6 +2177,7 @@ impl Base {
                 probe(|| compiled_root(db, root).as_ref().ok())
             }
             Caller::Base(Node::Root(root)) => probe(|| compiled_root(db, *root).as_ref().ok()),
+            Caller::Base(Node::Start(main)) => probe(|| compiled_start(db, *main).as_ref().ok()),
             Caller::Base(Node::Instance(instance)) => {
                 let env = self.instances.get(instance)?.env.clone();
                 probe(|| compiled_instance(db, instance.clone(), env).as_ref().ok())
@@ -2478,7 +2493,7 @@ impl Base {
                 return true;
             }
             let parents = match node {
-                Node::Root(_) => return true,
+                Node::Start(_) | Node::Root(_) => return true,
                 Node::Instance(instance) => self.instances.get(instance).map(|it| &it.parents),
                 Node::Static(id) => self.statics.get(id).map(|it| &it.parents),
             };
@@ -2511,6 +2526,7 @@ impl Base {
             return true;
         }
         let requests = match parent {
+            Node::Start(main) => compiled_start(db, *main).as_ref().ok().map(|it| &it.requests),
             Node::Root(root) => compiled_root(db, *root).as_ref().ok().map(|it| &it.requests),
             Node::Instance(instance) => self.instances.get(instance).and_then(|known| {
                 let compiled = compiled_instance(db, instance.clone(), known.env.clone());
@@ -2596,6 +2612,33 @@ impl Base {
             changed_statics.extend(part.statics);
             broken.extend(part.broken);
         }
+        // A patch is relative to the original executable. A rustc base can have copied
+        // `Termination::report` into its startup code, so it needs our wrapper every time.
+        let emit_start = match roots.start {
+            Some(main) => {
+                let wrapper = compiled_start(db, main)
+                    .as_ref()
+                    .map_err(|e| CodegenError::Startup(e.to_string()))?;
+                (self.start != Some((main, super::print_of(wrapper)))).then_some(main)
+            }
+            None if self.start.is_some() => {
+                // An edit to `#![no_main]` can provide its own C entry under the same symbol.
+                let Some(&entry) = roots
+                    .entries
+                    .iter()
+                    .find(|&&it| symbols.function(it).as_deref() == Some("main"))
+                else {
+                    return Err(CodegenError::Startup(
+                        "no C main replaces the base's startup wrapper".into(),
+                    ));
+                };
+                if !changed_roots.contains(&entry) && !added.contains(&entry) {
+                    changed_roots.push(entry);
+                }
+                None
+            }
+            None => None,
+        };
         // A function at a level above 1 differs from the base, whose code is Cranelift's.
         for node in known.tiers.nodes() {
             match &node.0 {
@@ -2618,7 +2661,7 @@ impl Base {
             }
         }
         // What the edit took away is still in the base, where nothing refers to it any more.
-        let unchanged = Unchanged {
+        let mut unchanged = Unchanged {
             changed: changed_roots
                 .iter()
                 .map(|&root| Node::Root(root))
@@ -2628,6 +2671,13 @@ impl Base {
             broken: broken.iter().map(|it| it.0.clone()).collect(),
             gone,
         };
+        if let Some((was, _)) = self.start {
+            if roots.start != Some(was) {
+                unchanged.broken.insert(Node::Start(was));
+            } else if emit_start.is_some() {
+                unchanged.changed.insert(Node::Start(was));
+            }
+        }
         // Nothing tells what in rustc's code refers to what.
         if let Some((_, why)) =
             broken.iter().find(|it| self.rustc || self.reaches(db, &it.0, &unchanged))
@@ -2694,6 +2744,9 @@ impl Base {
             if cg.static_data(id).is_err() {
                 return Ok(Err("a static of the base no longer has a value"));
             }
+        }
+        if let Some(main) = emit_start {
+            cg.define_start(main).map_err(|e| CodegenError::Startup(e.to_string()))?;
         }
         // rustc's callers of one that hands out a value of a type only its body names go on
         // calling or polling rustc's code for that type, which is of the source before.

@@ -1286,7 +1286,7 @@ fn diverges(db: &dyn HirDatabase, func: FunctionId) -> bool {
     matches!(output.kind(), TyKind::Never)
 }
 
-fn static_name(db: &dyn HirDatabase, id: StaticId) -> String {
+pub(super) fn static_name(db: &dyn HirDatabase, id: StaticId) -> String {
     let mut path = vec![StaticSignature::of(db, id).name.as_str().to_owned()];
     if let ItemContainerId::ModuleId(module) = id.lookup(db).container {
         let mut module = Some(module);

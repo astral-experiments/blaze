@@ -91,10 +91,20 @@ pub(super) enum TextPart {
 
 /// Everything a compiled function or static refers to. `FuncId` and `DataId` index these
 /// until the stitcher replaces them with the ids of its module.
-#[derive(Default, PartialEq, Eq, Hash)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub(super) struct Requests {
     pub(super) funcs: Vec<FuncRequest>,
     pub(super) datas: Vec<DataRequest>,
+    /// With startup tracing, the bodies incorporated into this fragment that have no relocation.
+    pub(super) inlined: Vec<Instance>,
+}
+
+impl Hash for Requests {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        // Tracing records why code was emitted without changing its build fingerprint.
+        self.funcs.hash(state);
+        self.datas.hash(state);
+    }
 }
 
 pub(super) struct Code {
@@ -527,8 +537,7 @@ impl Wants {
     #[cfg(feature = "llvm")]
     pub(super) fn referenced(&self, code: &mut Code) -> Requests {
         let Some(kept) = self.kept(code) else {
-            let Requests { funcs, datas } = &self.requests;
-            return Requests { funcs: funcs.clone(), datas: datas.clone() };
+            return self.requests.clone();
         };
         let funcs = iter::zip(&self.requests.funcs, &kept.funcs);
         let funcs = funcs.filter(|it| it.1.is_some()).map(|it| it.0.clone()).collect();
@@ -541,7 +550,7 @@ impl Wants {
             }
             request
         });
-        Requests { funcs, datas: datas.collect() }
+        Requests { funcs, datas: datas.collect(), inlined: self.requests.inlined.clone() }
     }
 
     pub(super) fn func(&mut self, target: FuncTarget, sig: &Signature) -> FuncId {
@@ -822,7 +831,7 @@ impl<'db> Recorder<'db> {
     #[cfg(feature = "llvm")]
     pub(super) fn keep_referenced(&mut self, code: &mut Code) {
         let Some(kept) = self.wants.kept(code) else { return };
-        let Requests { funcs: all_funcs, datas: all_datas } =
+        let Requests { funcs: all_funcs, datas: all_datas, inlined } =
             std::mem::take(&mut self.wants.requests);
         let kept_funcs: Vec<FuncRequest> =
             iter::zip(all_funcs, &kept.funcs).filter(|it| it.1.is_some()).map(|it| it.0).collect();
@@ -850,7 +859,7 @@ impl<'db> Recorder<'db> {
         let still = |id: &mut DataId| kept.data(*id).map(|it| *id = it).is_some();
         self.statics.retain(|_, id| still(id));
         self.vtables.retain(|_, id| still(id));
-        wants.requests = Requests { funcs: kept_funcs, datas: kept_datas };
+        wants.requests = Requests { funcs: kept_funcs, datas: kept_datas, inlined };
     }
 
     /// Puts `requests`, another function's, among what this function asks for: what each
@@ -903,9 +912,14 @@ impl<'db> Recorder<'db> {
     /// it asked for asked for here.
     pub(super) fn declare_inlined(
         &mut self,
+        instance: Instance,
         body: &Inlinable,
         func: &mut ir::Function,
     ) -> ir::FuncRef {
+        if super::startup::FILTER.is_some() {
+            self.wants.requests.inlined.push(instance);
+            self.wants.requests.inlined.extend_from_slice(&body.requests.inlined);
+        }
         let callee = self.moved(body);
         let signature = func.import_signature(callee.signature.clone());
         let name = func.declare_imported_user_function(ir::UserExternalName {
