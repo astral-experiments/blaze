@@ -389,6 +389,25 @@ GENERIC_SCENARIOS = {
 }
 SCENARIOS.update(GENERIC_SCENARIOS)
 
+# The only call to `Status::report` is in `lang_start`, outside the source call graph.
+TERMINATION_FILES = {
+    **FILES,
+    "Cargo.toml": FILES["Cargo.toml"] + '\n[profile.dev]\nopt-level = 1\nlto = "off"\n',
+    M: "fn main() -> dep::Status { dep::Status(std::env::args().len() > 1) }\n",
+    D: """use std::process::{ExitCode, Termination};
+
+pub struct Status(pub bool);
+
+impl Termination for Status {
+    fn report(self) -> ExitCode {
+        ExitCode::from(if self.0 { 1 } else { 0 })
+    }
+}
+""",
+}
+SCENARIOS["termination"] = ([[edit(D, "{ 1 }", "{ 42 }")], [edit(D, "{ 42 }", "{ 1 }")]],
+                            ["patch", "patch"], 0, {"RA_JIT_SPARE": "0"})
+
 # An optional dependency only a dev-dependency's feature turns on, which cargo does not build for
 # the program and the daemon loads, as `cargo metadata` has the features of every target (zed's
 # `livekit_api`, through `livekit_client/test-support`). Its build script fails, as one needing
@@ -703,6 +722,8 @@ def main():
     reference = os.path.join(work, "t-cargo")
     base = dict(os.environ, RUSTUP_TOOLCHAIN=TOOLCHAIN, CARGO_TERM_COLOR="never", CARGO_NET_OFFLINE="true",
                 RA_JIT_IDLE_SECS="0")
+    if "RA_JIT_BIN" in base:
+        base["PATH"] = os.path.dirname(os.path.abspath(base["RA_JIT_BIN"])) + os.pathsep + base["PATH"]
     for name in ("RUSTFLAGS", "RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_TARGET", "RUST_BACKTRACE", "RA_JIT_CACHE",
                  "CARGO_INCREMENTAL", "RA_JIT_RUSTC_BASE",
                  "RA_JIT_FN_CACHE_LOG"):
@@ -719,6 +740,8 @@ def main():
             files = CACHED_FILES
         elif name in GENERIC_SCENARIOS:
             files = GENERIC_FILES
+        elif name == "termination":
+            files = TERMINATION_FILES
         elif name in UNBUILT_SCENARIOS:
             files = UNBUILT_FILES
         elif name in LIB_SCENARIOS:

@@ -4659,13 +4659,17 @@ fn build(
         .partition(|&(func, exported)| exported || main.is_none() || main == Some(func));
     let unzip = |it: Vec<(FunctionId, bool)>| it.into_iter().map(|it| it.0).collect::<Vec<_>>();
     let (entries, on_demand) = (unzip(entries), unzip(on_demand));
-    // The program's `main` is called by one rustc wrote, when rustc built the crate, except
-    // the `main` of ra-jit's test harness, which rustc's does not call.
-    let own = |main: &FunctionId| resolver.own_crate_id(hir_def::HasModule::krate(main, db));
+    // The runtime calls `Termination::report` after `main` returns. Include that call in the
+    // build when it can run user code, even if rustc built the original executable.
+    let start_main = main.filter(|&it| {
+        resolver.own_crate_id(hir_def::HasModule::krate(&it, db)).is_some()
+            || in_harness(db, it)
+            || !hir::Function::from(it).ret_type(db).is_unit()
+    });
     let roots = Roots {
         entries: &entries,
         on_demand: &on_demand,
-        start: main.filter(|it| own(it).is_some() || in_harness(db, *it)),
+        start: start_main,
         shared: args.shared,
         whole: local.iter().all(|&krate| resolver.own_crate_id(krate.into()).is_some()),
         kept: &kept,
