@@ -781,7 +781,9 @@ impl Frozen {
             let (crates, files) = (mentioned_crates(db, it), known.files.as_deref());
             let untouched = match (crates, files) {
                 (Some(crates), Some(files)) => {
-                    crates.is_disjoint(&self.edited)
+                    // rustc's instance can call other functions in these crates and their
+                    // dependencies. Its own source files do not describe those callees.
+                    crates.iter().all(|&krate| !self.touched_from(db, krate))
                         && files.iter().all(|it| !self.edited_bodies.contains(it))
                 }
                 // Of a function generic over nothing, rustc's copy has only what its crate
