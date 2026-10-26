@@ -85,9 +85,6 @@ def main():
     with open(env["GITHUB_OUTPUT"], "a") as outputs:
         print(f"suites={json.dumps(suites)}", file=outputs)
         print(f"tier={tier}", file=outputs)
-        namespace = env["USE_NAMESPACE"] == "true"
-        print("linux_runner=" + ("namespace-profile-ubuntu-24-04-16" if namespace else "ubuntu-24.04"), file=outputs)
-        print("macos_runner=" + ("nscloud-macos-tahoe-arm64-6x14" if namespace else "macos-15"), file=outputs)
     with open(env["GITHUB_STEP_SUMMARY"], "a") as summary:
         print(f"### CI plan ({source})\n\n<p>{html.escape(plan['rationale'])}</p>", file=summary)
         for item in plan["suites"]:

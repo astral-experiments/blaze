@@ -123,20 +123,27 @@ jobs:
     outputs:
       suites: ${{ steps.plan.outputs.suites }}
       tier: ${{ steps.plan.outputs.tier }}
-      linux_runner: ${{ steps.plan.outputs.linux_runner }}
-      macos_runner: ${{ steps.plan.outputs.macos_runner }}
+      linux_runner: ${{ steps.namespace.outputs.linux || 'ubuntu-24.04' }}
+      macos_runner: ${{ steps.namespace.outputs.macos || 'macos-15' }}
     steps:
+      # Decide runner access before running any code from the checkout.
+      - id: namespace
+        if: >-
+          github.repository == 'viarius-experiments/blaze' && github.event_name != 'merge_group' &&
+          (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository &&
+           github.event.pull_request.user.login != 'dependabot[bot]' && github.actor != 'dependabot[bot]'))
+        run: |
+          echo 'linux=namespace-profile-ubuntu-24-04-16' >> "$GITHUB_OUTPUT"
+          echo 'macos=nscloud-macos-tahoe-arm64-6x14' >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Fork and Dependabot PRs use the base branch's routing rules.
+          ref: ${{ needs.luna.result == 'skipped' && github.event.pull_request.base.sha || github.sha }}
           sparse-checkout: .github/scripts
       - id: plan
         env:
           GH_TOKEN: ${{ github.token }}
-          USE_NAMESPACE: >-
-            ${{ github.repository == 'viarius-experiments/blaze' && github.event_name != 'merge_group' &&
-                (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository &&
-                 github.event.pull_request.user.login != 'dependabot[bot]' && github.actor != 'dependabot[bot]')) }}
           LUNA_PLAN: ${{ needs.luna.outputs.plan }}
           LUNA_REASON: ${{ needs.luna.outputs.reason }}
           BASE_SHA: ${{ needs.luna.outputs.base_sha || github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
