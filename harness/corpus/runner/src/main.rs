@@ -170,6 +170,11 @@ fn main() {
         );
         let k = 10;
         case!(call_fn(&|a, b| a * b + k, 5), call_fn(&u32::wrapping_sub, 5));
+        let word = 9;
+        case!(forwarded_fn(
+            &|r, pair| [u64::from(std::ptr::eq(r, &word)), pair[0], pair[1]],
+            &word
+        ));
         let mut total = 0;
         case!(
             call_fn_mut(&mut |x| {

@@ -741,6 +741,10 @@ pub mod objects {
     pub fn call_fn(f: &dyn Fn(u32, u32) -> u32, x: u32) -> u32 {
         f(x, 2) + f(1, x)
     }
+    pub fn forwarded_fn(f: &dyn Fn(&u64, [u64; 2]) -> [u64; 3], word: &u64) -> [u64; 3] {
+        let forwarded: &dyn Fn(&u64, [u64; 2]) -> [u64; 3] = std::hint::black_box(&f);
+        forwarded(word, [11, 13])
+    }
     pub fn call_fn_mut(f: &mut dyn FnMut(u64) -> u64) -> u64 {
         f(1);
         f(2);
