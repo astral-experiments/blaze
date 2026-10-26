@@ -791,7 +791,6 @@ def main():
     # The programs run with os.environ.
     fn_cache = os.path.join(work, "fn-cache")
     os.environ["RA_JIT_FN_CACHE_DIR"] = base["RA_JIT_FN_CACHE_DIR"] = fn_cache
-    cargo_env = dict(base, CARGO_TARGET_DIR=reference)
     failed = []
     for name in names:
         edits, expected, wait, extra = SCENARIOS[name]
@@ -828,6 +827,12 @@ def main():
             shutil.rmtree(path, ignore_errors=True)
         os.makedirs(home, mode=0o700)
         env = dict(base, RA_JIT_HOME=home, CARGO_TARGET_DIR=target, RA_JIT_CACHE=store, **extra)
+        cargo_env = dict(base, CARGO_TARGET_DIR=reference)
+        needs_rustc_base = name in ("termination-inline", "termination-unit")
+        if needs_rustc_base:
+            # Cargo disables incremental compilation under CI. Blaze needs its symbols
+            # to patch rustc's executable, so use the same incremental build for both.
+            env["CARGO_INCREMENTAL"] = cargo_env["CARGO_INCREMENTAL"] = "1"
         began = time.monotonic()
         r = run(["cargo", "ra-jit", "build"], ws, env)
         if r.returncode:
@@ -859,7 +864,7 @@ def main():
                 failed.append(f"{name}: the own base was {went}, not {OWN_BASE[name]} ({len(started)} starts, "
                               f"{interrupted} interrupted, {given_up} given up)")
         try:
-            if name in ("termination-inline", "termination-unit") and not rustcs:
+            if needs_rustc_base and not rustcs:
                 raise RuntimeError("the first edit did not start from the rustc executable")
             if name == "termination-inline":
                 # Check what rustc put in the base before this edit: the caller needs both
