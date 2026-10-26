@@ -50,10 +50,7 @@ Any of these, whoever starts the process:
 
 What it does not cover:
 
-- The harnesses' reference builds. rustc is the reference
-  ([contributing.md](contributing.md#rules-for-code), rule 1): the harnesses build with cargo
-  and rustc and compare. The oracle stays rustc's. What changes is every expectation that ra-jit
-  hands something to rustc or cargo.
+- The harnesses' reference builds. They compare Blaze's output with the pinned rustc's output.
 - The platform's linker and C toolchain: `cc`, `ld`, `lld`, `link.exe`, and the C or C++ a
   build script compiles with the `cc` crate. They are not rustc. ra-jit runs the linker with a
   line it works out itself, not with rustc's.

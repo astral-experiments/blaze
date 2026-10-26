@@ -837,6 +837,7 @@ All notable changes to ra-jit are written here. The format follows
 
 ### Fixed
 
+- The borrow checker now includes associated type bindings on trait objects when inferring lifetime bounds.
 - Blaze now records the executable for a Cargo test target with `harness = false` and rebuilds it after an edit.
 - `cargo install --git https://github.com/indexable-inc/blaze ra-jit` builds ra-jit
   ([#242](https://github.com/indexable-inc/blaze/issues/242), #293, by @gakonst). It failed

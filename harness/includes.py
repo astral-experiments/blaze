@@ -36,9 +36,11 @@ MAIN_TEXT = """mod data {
 
 fn main() {
     println!("{} {} {:?}", data::pick(2), data::made(), data::TABLE);
+    println!("{} {:?}", include_str!("label.txt"), include_bytes!("bytes.dat"));
 }
 """
 DATA, MAIN = "src/table.rs.data", "src/main.rs"
+LABEL, BYTES = "src/label.txt", "src/bytes.dat"
 # (what the step is, [(file, old, new)], whether cargo rejects it)
 STEPS = [
     ("nothing edited", [], False),
@@ -53,6 +55,13 @@ STEPS = [
     ], False),
     ("the including file alone", [(MAIN, "make!(made, 100)", "make!(made, 200)")], False),
     ("the included file again", [(DATA, "77", "78")], False),
+    ("remove include_str input", [(LABEL, "old label", None)], True),
+    ("the input is still missing", [], True),
+    ("remove the reference", [(MAIN, 'include_str!("label.txt")', '"fallback"')], False),
+    ("restore the reference", [(MAIN, '"fallback"', 'include_str!("label.txt")')], True),
+    ("restore include_str input", [(LABEL, None, "new label")], False),
+    ("remove include_bytes input", [(BYTES, "old bytes", None)], True),
+    ("restore include_bytes input", [(BYTES, None, "new bytes")], False),
 ]
 
 
@@ -115,9 +124,17 @@ def follow(files, steps):
     for what, edits, broken, *how in steps:
         seen = len(open(log_path).read())
         for path, old, new in edits:
-            text = open(os.path.join(ws, path)).read()
-            assert old in text, (what, old)
-            open(os.path.join(ws, path), "w").write(text.replace(old, new, 1))
+            path = os.path.join(ws, path)
+            if old is None:
+                assert not os.path.exists(path), (what, path)
+                open(path, "w").write(new)
+            elif new is None:
+                assert open(path).read() == old, (what, path)
+                os.unlink(path)
+            else:
+                text = open(path).read()
+                assert old in text, (what, old)
+                open(path, "w").write(text.replace(old, new, 1))
         time.sleep(0.02)
         began = time.time()
         reply = subprocess.run([RA_JIT, "sync", socket, *ask], capture_output=True, text=True, timeout=120)
@@ -151,4 +168,4 @@ def follow(files, steps):
 
 
 if __name__ == "__main__":
-    follow([(DATA, DATA_TEXT), (MAIN, MAIN_TEXT)], STEPS)
+    follow([(DATA, DATA_TEXT), (MAIN, MAIN_TEXT), (LABEL, "old label"), (BYTES, "old bytes")], STEPS)

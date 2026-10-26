@@ -1,7 +1,7 @@
 # Sends what main changed under vendor/ to the indexable-inc forks (vendor/subtree.py push):
 # indexable-inc/rust-analyzer `ra-jit` and indexable-inc/rustc_abi `main`. It only
 # fast-forwards a fork's branch, and fails, pushing nothing, if the fork has a change main does
-# not (docs/contributing.md, "Changing a rust-analyzer file").
+# not.
 #
 # Needs the secret FORK_PUSH_TOKEN: a fine-grained token (or GitHub App token) with Contents
 # read and write on indexable-inc/rust-analyzer and indexable-inc/rustc_abi.

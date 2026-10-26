@@ -89,4 +89,4 @@ blaze was called ra-jit until 2026-10-24. `cargo ra-jit` keeps working as anothe
 `cargo blaze`, and its settings work as `BLAZE_*` and as `RA_JIT_*`.
 
 Building blaze itself from a checkout, and every way to build it the release way:
-[cargo.md](cargo.md#install) and [contributing.md](contributing.md).
+[cargo.md](cargo.md#install).

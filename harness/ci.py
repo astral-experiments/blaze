@@ -63,6 +63,8 @@ HARNESSES = [
     ("core", ["bigbinary.py"], {}, on("linux", "macos"), None),
     # `cargo ra-jit` hands Windows builds to cargo, so there the daemon links nothing to test.
     ("core", ["unreached.py"], {}, on("linux", "macos"), 1),
+    ("core", ["rustcbase.py", "termination", "termination-leaf", "termination-inline",
+              "termination-signature", "termination-unit"], {}, on("linux", "macos"), 1),
     ("core", ["anonstatics.py"], {}, on("linux", "macos"), 1),
     # A static with state LLVM renamed (`SERVING.0`) at opt-level 1 is rustc's copy for both.
     ("core", ["renamedstatics.py"], {}, on("linux", "macos"), 1),
