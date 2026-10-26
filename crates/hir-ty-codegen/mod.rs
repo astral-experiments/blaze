@@ -6577,13 +6577,14 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             }
         }
         let in_base = self.base.and_then(|base| base.statics.get(&id));
-        let stateful_linked = !self.symbols.nothing_of_rustc()
-            && symbol.as_ref().is_some_and(|it| self.symbols.linked(it))
-            && stateful();
-        let shared = stateful_linked
-            && in_base.map_or_else(|| self.rustc_values.kept(db, id), |it| it.shared);
+        // An immutable static can also serve as an identity. Rust code may compare the
+        // address rustc took with one we take, even when neither side writes to the static.
+        let linked_static = !self.symbols.nothing_of_rustc()
+            && symbol.as_ref().is_some_and(|it| self.symbols.linked(it));
+        let shared =
+            linked_static && in_base.map_or_else(|| self.rustc_values.kept(db, id), |it| it.shared);
         // The program has the base's copy, and what it wrote there.
-        let base_owns = stateful_linked && in_base.is_some_and(|it| !it.shared);
+        let base_owns = linked_static && in_base.is_some_and(|it| !it.shared);
         let ours = !shared
             && (base_owns || self.own_statics.replaces(db, id))
             && compiled_static(db, id).is_ok();
@@ -6605,7 +6606,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
                 is_thread_local(db, id),
             )?;
             self.imported_statics.insert(id, data);
-            if stateful_linked {
+            if linked_static {
                 self.shared_statics.insert(id, data);
             }
             // rustc's value of the static points to rustc's copies of functions.

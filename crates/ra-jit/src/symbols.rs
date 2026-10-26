@@ -301,7 +301,7 @@ fn names_of_object(data: &[u8], names: &mut Vec<Named>, copied: bool) {
 }
 
 /// A symbol of an object that may be rustc's copy of a static under a name LLVM gave it, or
-/// one private to the object: Rust's symbol of data a program writes to, with something after
+/// one private to the object: a named Rust static, with something after
 /// the symbol rustc gave it (`.0`, `.llvm.<hash>`), or local.
 struct CopyOfStatic<'data> {
     /// Without Mach-O's `_`.
@@ -322,7 +322,7 @@ impl<'data> CopyOfStatic<'data> {
             return None;
         }
         let section = object.section_by_index(symbol.section_index()?).ok()?;
-        if !written_at_run_time(&section) {
+        if !static_section(&section) {
             return None;
         }
         let name = symbol.name().ok()?;
@@ -342,19 +342,24 @@ impl<'data> CopyOfStatic<'data> {
     }
 }
 
-/// Whether a section holds data a program writes to: a static with state is in one.
-pub(crate) fn written_at_run_time(section: &object::Section<'_, '_>) -> bool {
+/// Sections that can hold a named Rust static. Read-only statics have observable addresses too.
+fn static_section(section: &object::Section<'_, '_>) -> bool {
+    let name = section.name_bytes().unwrap_or_default();
     match section.flags() {
-        // `__thread_vars` holds the descriptor code refers to a thread-local by.
-        object::SectionFlags::MachO { .. } => {
-            matches!(section.name(), Ok("__data" | "__bss" | "__common" | "__thread_vars"))
-        }
-        object::SectionFlags::Elf { sh_flags } => {
-            sh_flags & u64::from(object::elf::SHF_WRITE) != 0
-                && !section.name().is_ok_and(|it| it.starts_with(".data.rel.ro"))
-        }
+        object::SectionFlags::MachO { .. } => macho_static_section(name),
+        object::SectionFlags::Elf { sh_flags } => elf_static_section(sh_flags, name),
         _ => false,
     }
+}
+
+pub(crate) fn macho_static_section(name: &[u8]) -> bool {
+    matches!(name, b"__data" | b"__bss" | b"__common" | b"__thread_vars" | b"__const")
+}
+
+pub(crate) fn elf_static_section(flags: u64, name: &[u8]) -> bool {
+    flags & u64::from(object::elf::SHF_WRITE) != 0
+        || name == b".rodata"
+        || name.starts_with(b".rodata.")
 }
 
 /// How long the symbol rustc made is at the start of `name`, a symbol LLVM may have put a

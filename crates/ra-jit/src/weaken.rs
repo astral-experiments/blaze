@@ -29,10 +29,10 @@ use object::{
 
 /// The directory of the copies, in the one the files are in. Named anew when the copies
 /// change, so that none of an older ra-jit is taken for one of this.
-pub(crate) const DIR: &str = "ra-jit-weak-2";
+pub(crate) const DIR: &str = "ra-jit-weak-3";
 
 /// The directories of copies older ra-jits wrote, which this one deletes.
-const OLD_DIRS: [&str; 1] = ["ra-jit-weak"];
+const OLD_DIRS: [&str; 2] = ["ra-jit-weak", "ra-jit-weak-2"];
 
 /// Writes the copy of each file and prints where it is, in the order given.
 pub(crate) fn command(args: impl Iterator<Item = String>) -> anyhow::Result<()> {
@@ -104,14 +104,13 @@ pub(crate) fn definitions(data: &mut [u8]) {
     share_statics(data);
 }
 
-/// Makes each symbol of Rust's that is private to the object and names data the program
-/// writes (a section `symbols::CopyOfStatic` reads as such) a private external, which the
-/// code of another object can refer to: rustc's copy of a static it kept to its codegen unit,
-/// which ra-jit's code has to share. Its place in the table stays, among the local ones,
+/// Makes a local Rust static visible to other objects through a private external symbol.
+/// This lets code compiled by ra-jit take the same address as code compiled by rustc.
+/// Its place in the table stays among the local symbols,
 /// which Apple's linker takes as it is, so no relocation's symbol changes; nor is it weak,
 /// so that two of one name are an error, not one.
 fn share_statics(data: &mut [u8]) {
-    let written = sections_written(data);
+    let sections = static_sections(data);
     let Some((symbols, strings)) = symbol_table(data) else { return };
     let (Some(names), Some(_)) = (data.get(strings.clone()), data.get(symbols.clone())) else {
         return;
@@ -125,7 +124,7 @@ fn share_statics(data: &mut [u8]) {
         if !defined || symbol.n_type & N_EXT != 0 {
             continue;
         }
-        if !written.get(usize::from(symbol.n_sect).wrapping_sub(1)).is_some_and(|it| *it) {
+        if !sections.get(usize::from(symbol.n_sect).wrapping_sub(1)).is_some_and(|it| *it) {
             continue;
         }
         let name = names.get(symbol.n_strx.get(LE) as usize..).unwrap_or_default();
@@ -138,7 +137,7 @@ fn share_statics(data: &mut [u8]) {
 }
 
 /// rustc's file as the daemon links it on an ELF system: a copy of it in which every symbol
-/// of Rust's that is private to its object and names data the program writes is a hidden
+/// of Rust's that is private to its object and names a static is a hidden
 /// global instead, or `file` itself when it has none. An ELF linker keeps the first
 /// definition of a name, so nothing else of rustc's has to give way to the daemon's; but its
 /// copy of a static that rustc kept to the codegen unit that uses it (and LLVM may have
@@ -301,7 +300,7 @@ fn promote_statics(data: &mut [u8]) -> anyhow::Result<bool> {
     let names = data.get(names.offset..names.offset + names.size).context("truncated")?.to_vec();
     let name_of = |header: &Header| {
         let name = names.get(header.name as usize..).unwrap_or_default();
-        name.split(|&it| it == 0).next().unwrap_or_default().to_vec()
+        name.split(|&it| it == 0).next().unwrap_or_default()
     };
     let Some(table) = headers.iter().position(|it| it.kind == elf::SHT_SYMTAB) else {
         return Ok(false);
@@ -327,12 +326,11 @@ fn promote_statics(data: &mut [u8]) -> anyhow::Result<bool> {
             continue;
         }
         let Some(section) = headers.get(usize::from(shndx)) else { continue };
-        let written = section.flags & u64::from(elf::SHF_WRITE) != 0
-            && !name_of(section).starts_with(b".data.rel.ro");
+        let is_static = crate::symbols::elf_static_section(section.flags, name_of(section));
         let name_at = strings.offset + u32_at(data, at)? as usize;
         let name = data.get(name_at..strings.offset + strings.size).unwrap_or_default();
         let name = name.split(|&it| it == 0).next().unwrap_or_default();
-        *promote = written
+        *promote = is_static
             && std::str::from_utf8(name)
                 .is_ok_and(|it| crate::symbols::rust_symbol_length(it).is_some());
     }
@@ -401,20 +399,20 @@ fn promote_statics(data: &mut [u8]) -> anyhow::Result<bool> {
 }
 
 /// Whether each section of a 64-bit Mach-O object, in the order symbols number them from 1,
-/// holds data a program writes to, as `symbols::written_at_run_time` tells it.
-fn sections_written(data: &[u8]) -> Vec<bool> {
-    let mut written = Vec::new();
-    let Ok(header) = MachHeader64::<LE>::parse(data, 0) else { return written };
-    let Ok(mut commands) = header.load_commands(LE, data, 0) else { return written };
+/// can hold a Rust static with its own address.
+fn static_sections(data: &[u8]) -> Vec<bool> {
+    let mut result = Vec::new();
+    let Ok(header) = MachHeader64::<LE>::parse(data, 0) else { return result };
+    let Ok(mut commands) = header.load_commands(LE, data, 0) else { return result };
     while let Ok(Some(command)) = commands.next() {
         let Ok(Some((segment, sections))) = command.segment_64() else { continue };
         let Ok(sections) = segment.sections(LE, sections) else { return Vec::new() };
         for section in sections {
             let name = section.sectname.split(|&it| it == 0).next().unwrap_or_default();
-            written.push(matches!(name, b"__data" | b"__bss" | b"__common" | b"__thread_vars"));
+            result.push(crate::symbols::macho_static_section(name));
         }
     }
-    written
+    result
 }
 
 /// As [`definitions`], for an object of ra-jit's. Of a program's whole, with a C `main` of
@@ -573,8 +571,8 @@ mod tests {
     }
 
     /// rustc's copies of statics it kept to their object, which LLVM may have renamed, become
-    /// linkable; the memory a static points to, a thread-local's first value, and what is
-    /// not written at run time stay as they are.
+    /// linkable, including read-only statics whose addresses the program can compare.
+    /// The memory behind a static and a thread-local's initializer keep their local names.
     #[test]
     fn a_static_private_to_rustcs_object_is_made_linkable() {
         let mut object =
@@ -589,7 +587,7 @@ mod tests {
             ("__RNvCs1234_3app6ALLOCS.0.llvm.123", data, true),
             ("__ZN3app6ALLOCS17h0123456789abcdefE.0", data, true),
             ("__RNnCs1234_3app6ALLOCS", data, false),
-            ("__RNvCs1234_3app5TABLE", constant, false),
+            ("__RNvCs1234_3app5TABLE", constant, true),
             ("_counter", data, false),
         ];
         for (name, section, _) in symbols {
@@ -629,7 +627,7 @@ mod tests {
         let symbols = [
             ("_RNvCs1234_3app7SERVING.0", data, true),
             ("_ZN3app6ALLOCS17h0123456789abcdefE.llvm.123", data, true),
-            ("_RNvCs1234_3app5TABLE", constant, false),
+            ("_RNvCs1234_3app5TABLE", constant, true),
             ("counter", data, false),
         ];
         let mut ids = Vec::new();
