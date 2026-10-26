@@ -7,11 +7,7 @@ name: install
 # change to the script, on each release once it is published, weekly (a release's assets or
 # GitHub's redirects can change under it) and by hand. Not a check the merge queue requires.
 on:
-  push:
-    branches: [main]
-    paths: ["install.sh", ".github/workflows/install.yaml"]
-  pull_request:
-    paths: ["install.sh", ".github/workflows/install.yaml"]
+  workflow_call:
   release:
     types: [published]
   schedule:
