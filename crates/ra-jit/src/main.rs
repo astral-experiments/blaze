@@ -5945,7 +5945,7 @@ enum Watched {
 struct WatchedFile {
     file: Watched,
     path: PathBuf,
-    mtime: SystemTime,
+    mtime: Option<SystemTime>,
 }
 
 /// What [`WatchPaths::include_sources`] took in.
@@ -5997,7 +5997,7 @@ impl WatchPaths {
             return None;
         }
         let mtime = std::fs::metadata(on_disk).ok()?.modified().ok()?;
-        Some(WatchedFile { file, path: path.to_owned(), mtime })
+        Some(WatchedFile { file, path: path.to_owned(), mtime: Some(mtime) })
     }
 
     /// The files of the VFS that are text. One that is not UTF-8 can only be named by an
@@ -6016,10 +6016,10 @@ impl WatchPaths {
             .filter_map(|(id, path)| {
                 let path: &Path = path.as_path()?.as_ref();
                 let mut watched = self.file(Watched::Source(id), path, path)?;
-                if watched.mtime >= since
+                if watched.mtime.is_some_and(|at| at >= since)
                     && source_on_disk(path).is_ok_and(|text| *text != **db.file_text(id).text(db))
                 {
-                    watched.mtime = SystemTime::UNIX_EPOCH;
+                    watched.mtime = None;
                 }
                 Some(watched)
             })
@@ -6086,7 +6086,7 @@ impl WatchPaths {
             files.push(WatchedFile {
                 file: Watched::Included(path.clone()),
                 path: AsRef::<Path>::as_ref(&path).to_owned(),
-                mtime: mtime.unwrap_or(SystemTime::UNIX_EPOCH),
+                mtime: mtime.ok(),
             });
             changed |= db.reload_included_file(&path);
         }
@@ -9017,25 +9017,30 @@ fn run_holding(
             }
             // A new file has no timestamp yet, so the pass below takes it for a changed one.
             for (file, path) in tree.added(&mut db).added {
-                files.push(WatchedFile {
-                    file: Watched::Source(file),
-                    path,
-                    mtime: SystemTime::UNIX_EPOCH,
-                });
+                files.push(WatchedFile { file: Watched::Source(file), path, mtime: None });
             }
             let before = touched.len() + gone.len();
             for (index, file) in files.iter_mut().enumerate() {
                 let on_disk = db.on_disk(&file.path);
                 let Ok(now) = std::fs::metadata(&on_disk).and_then(|m| m.modified()) else {
-                    if matches!(file.file, Watched::Source(_)) && gone.insert(index) {
-                        touched.remove(&index);
+                    let changed = match file.file {
+                        Watched::Source(_) => {
+                            touched.remove(&index);
+                            gone.insert(index)
+                        }
+                        // Keep the watch so restoring the input invalidates the macro again.
+                        Watched::Included(_) => {
+                            file.mtime.take().is_some() && touched.insert(index)
+                        }
+                    };
+                    if changed {
                         noticed.get_or_insert((Instant::now(), Duration::ZERO));
                     }
                     continue;
                 };
                 gone.remove(&index);
                 if switched.iter().any(|base| file.path.starts_with(base)) {
-                    file.mtime = now;
+                    file.mtime = Some(now);
                     let same = match file.file {
                         Watched::Source(id) => source_on_disk(&on_disk)
                             .is_ok_and(|text| *text == **db.file_text(id).text(&db)),
@@ -9045,11 +9050,11 @@ fn run_holding(
                         touched.insert(index);
                         noticed.get_or_insert((Instant::now(), Duration::ZERO));
                     }
-                } else if now != file.mtime {
-                    let was = std::mem::replace(&mut file.mtime, now);
+                } else if Some(now) != file.mtime {
+                    let was = file.mtime.replace(now);
                     // An editor that sent its text writes it after: the same text again.
                     let built = match file.file {
-                        Watched::Source(id) if was != SystemTime::UNIX_EPOCH => {
+                        Watched::Source(id) if was.is_some() => {
                             !sent.contains_key(&id)
                                 && source_on_disk(&on_disk)
                                     .is_ok_and(|text| *text == **db.file_text(id).text(&db))
@@ -9540,9 +9545,9 @@ impl Settled {
             {
                 own.push((directory.to_owned(), written(directory)));
             }
-            own.push((path, Some(file.mtime)));
+            own.push((path, file.mtime));
         }
-        let others = Settled::others(files, base, |file| Some(file.mtime));
+        let others = Settled::others(files, base, |file| file.mtime);
         Settled { over: over.to_owned(), patch, link_cmd, own, others }
     }
 
@@ -9672,7 +9677,7 @@ impl Program {
                     as_compiled.get(inside).is_some_and(|was| **was == **text)
                 }
                 // No timestamp is a file taken for a changed one, which rustc did not read.
-                None => file.mtime != SystemTime::UNIX_EPOCH && file.mtime <= built?,
+                None => file.mtime.zip(built).is_some_and(|(written, built)| written <= built),
             })
         };
         let unread: Vec<vfs::FileId> = files
@@ -10387,7 +10392,7 @@ fn main() {}
         let files = WatchPaths::default().sources(&vfs, &db, read_from);
         let changed = |name: &str| {
             let file = files.iter().find(|it| it.path.ends_with(name)).unwrap();
-            file.mtime == SystemTime::UNIX_EPOCH
+            file.mtime.is_none()
         };
         assert!(!changed("same.rs"));
         assert!(changed("written.rs"));
