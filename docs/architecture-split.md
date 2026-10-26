@@ -62,8 +62,7 @@ rust-analyzer bugs upstream (the parser, macro and name-resolution fixes first),
 new behaviour in new files rather than in upstream's. That is a separate, ongoing track
 (step 6 below).
 
-The rule for new code is in [AGENTS.md](../AGENTS.md) and
-[contributing.md](contributing.md#where-new-code-goes): language semantics go in the subtree,
+As described in [AGENTS.md](../AGENTS.md), language semantics go in the subtree,
 as a new crate or a new file there in preference to edits to upstream's files; ra-jit's
 machinery stays in `crates/`.
 

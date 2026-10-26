@@ -88,7 +88,7 @@ All the details: [what works and what doesn't yet](docs/usage.md#what-works-and-
 - [Cargo compatibility](docs/cargo.md): every command, flag and setting
 - [Hot reload](docs/live.md): changing a running program
 - [CI runner](docs/ci-runner.md) and [roadmap](docs/roadmap.md): where blaze is going
-- [Contributing](docs/contributing.md)
+- [Test harnesses](docs/harness.md) and [security policy](SECURITY.md)
 
 ## Demo: a Game of Life you can edit
 
@@ -114,12 +114,6 @@ from source the first time.
 </p>
 
 <p align="center">For release news: Watch → Custom → Releases on GitHub.</p>
-
-## Contributing
-
-How to build blaze from a checkout, run its tests and send a change:
-[docs/contributing.md](docs/contributing.md). To report a security problem:
-[SECURITY.md](SECURITY.md).
 
 ## Credits
 
