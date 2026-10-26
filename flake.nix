@@ -103,7 +103,8 @@
           auditable = false;
           buildPhase = ''
             runHook preBuild
-            python3 -I .github/scripts/build_release.py --target ${triple} --profdata ${pgoProfile} --out shipped
+            python3 -I .github/scripts/build_release.py --target ${triple} --profdata ${pgoProfile} --out shipped \
+              ${pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux "--glibc-floor ${pkgs.lib.versions.majorMinor pkgs.glibc.version}"}
             runHook postBuild
           '';
           installPhase = ''
