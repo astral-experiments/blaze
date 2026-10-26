@@ -667,8 +667,7 @@ pub struct Roots<'a> {
     /// Compiled once code in the object refers to them. A function not reached keeps rustc's
     /// copy, which nothing in the program calls.
     pub on_demand: &'a [FunctionId],
-    /// The `main` of a program rustc built nothing of: the `main` the C runtime calls is
-    /// then ours to write as well.
+    /// The Rust `main` whose C entry point and `lang_start` instance this build emits.
     pub start: Option<FunctionId>,
     /// The object is linked into a shared library of its own, which has the allocator shim
     /// a program's `start` otherwise brings.

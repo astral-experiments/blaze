@@ -59,8 +59,8 @@ Cranelift is the default. Either leave `RA_JIT_BACKEND` unset or set it:
 
 ### Under LLVM
 
-Build with the `llvm` feature in the flake's dev shell, which has the LLVM 20 it pins
-([contributing.md](contributing.md#llvm-for---features-llvm)), then select the backend. The gate is run at `-O2` with fast instruction selection, and that is the
+Build with the `llvm` feature in the flake's dev shell, which has the LLVM 20 it pins,
+then select the backend. The gate is run at `-O2` with fast instruction selection, and that is the
 only LLVM configuration it covers.
 
     nix develop -c cargo build -p ra-jit --release --features llvm
@@ -340,7 +340,7 @@ If the comparison is unavailable, every applicable default runs. Main finishes t
 and replaces pending pushes. Its next comparison starts at the last successful main run so it
 includes changes from any replaced or failed runs.
 
-The [merge queue](contributing.md#landing-a-change) tests each entry merged onto main and the
+The upstream merge queue tests each entry merged onto main and the
 entries ahead of it. It runs the fast tier for code changes and formatting for documentation.
 Run `gh workflow run ra-jit.yaml --ref <branch> -f tier=fast` to request the entire fast tier.
 On Linux x86-64, Linux AArch64 and macOS arm64, the **fast tier**:

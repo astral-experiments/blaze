@@ -78,6 +78,7 @@ struct Checker {
     ran: FxHashSet<vfs::FileId>,
     /// Where new source files of the crates checked would be.
     dirs: Vec<PathBuf>,
+    targets: Vec<PathBuf>,
     /// Every file loaded, by path.
     loaded: FxHashSet<PathBuf>,
     /// The manifests, the lock file and cargo's configuration, as they were when loaded.
@@ -99,7 +100,7 @@ impl Checker {
         root: PathBuf,
         lints_capped: bool,
     ) -> Checker {
-        let files = WatchedFile::sources(vfs, db, read_from);
+        let files = checkouts.watch.sources(vfs, db, read_from);
         let paths: FxHashMap<_, _> = files
             .iter()
             .filter_map(|it| match it.file {
@@ -191,6 +192,7 @@ impl Checker {
             crates,
             ran,
             dirs: outer,
+            targets: checkouts.watch.targets.clone(),
             loaded,
             manifests,
             sources: Sources { paths },
@@ -206,7 +208,9 @@ impl Checker {
                 return Some(format!("{} changed", path.display()));
             }
         }
-        if let Some(new) = self.dirs.iter().find_map(|dir| new_source(dir, &self.loaded)) {
+        if let Some(new) =
+            self.dirs.iter().find_map(|dir| new_source(dir, &self.loaded, &self.targets))
+        {
             return Some(format!("{} is new", new.display()));
         }
         let mut change = ChangeWithProcMacros::default();
@@ -215,10 +219,10 @@ impl Checker {
             let Some(now) = modified(&watched.path) else {
                 return Some(format!("{} is gone", watched.path.display()));
             };
-            if now == watched.mtime {
+            if Some(now) == watched.mtime {
                 continue;
             }
-            watched.mtime = now;
+            watched.mtime = Some(now);
             let Ok(text) = crate::source_on_disk(&watched.path) else {
                 return Some(format!("{} can't be read", watched.path.display()));
             };
@@ -259,7 +263,7 @@ fn modified(path: &Path) -> Option<SystemTime> {
 }
 
 /// A Rust source file below `dir` that was not loaded. What a build made is not looked in.
-fn new_source(dir: &Path, loaded: &FxHashSet<PathBuf>) -> Option<PathBuf> {
+fn new_source(dir: &Path, loaded: &FxHashSet<PathBuf>, targets: &[PathBuf]) -> Option<PathBuf> {
     let mut dirs = vec![dir.to_owned()];
     while let Some(dir) = dirs.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
@@ -269,7 +273,7 @@ fn new_source(dir: &Path, loaded: &FxHashSet<PathBuf>) -> Option<PathBuf> {
             let name = name.to_string_lossy();
             match entry.file_type() {
                 Ok(kind) if kind.is_dir() => {
-                    if !name.starts_with('.') && name != "target" {
+                    if !name.starts_with('.') && !targets.contains(&path) {
                         dirs.push(path);
                     }
                 }
