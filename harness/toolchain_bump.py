@@ -29,7 +29,7 @@ AArch64 Linux and arm64 macOS (the target specs depend on the host rustc was bui
 code that mirrors rustc by hand (the Rust ABI in the code generator, vtable.rs, type_id.rs,
 symbol names, new intrinsics and lang items: the checks find them), and `--checks`. The rustc
 and the daemon match by the whole `rustc -V` line, so a binary built before the bump refuses
-the new nightly until it is rebuilt. docs/contributing.md, "Moving to a newer nightly".
+the new nightly until it is rebuilt.
 """
 import argparse, asyncio, datetime, hashlib, os, re, shutil, sys, tempfile, tomllib, urllib.request
 
@@ -253,7 +253,7 @@ ra-jit is pinned to {name} ({new[1]}). Left to do:
   - `python3 harness/toolchain_bump.py --checks` on a dev host, under Cranelift and under LLVM
     (`nix develop -c ...` with RA_JIT_BACKEND=llvm RA_JIT_OPT=2 RA_JIT_EMIT=fast);
   - the full tier (uitest.py, libsuite.py, borrowck_ui.py) re-measured at the new commit;
-  - `git diff --stat` and one commit for the bump (docs/contributing.md).""")
+  - `git diff --stat` and one commit for the bump.""")
 
 
 async def checks():

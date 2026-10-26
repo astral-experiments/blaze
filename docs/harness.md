@@ -59,8 +59,8 @@ Cranelift is the default. Either leave `RA_JIT_BACKEND` unset or set it:
 
 ### Under LLVM
 
-Build with the `llvm` feature in the flake's dev shell, which has the LLVM 20 it pins
-([contributing.md](contributing.md#llvm-for---features-llvm)), then select the backend. The gate is run at `-O2` with fast instruction selection, and that is the
+Build with the `llvm` feature in the flake's dev shell, which has the LLVM 20 it pins,
+then select the backend. The gate is run at `-O2` with fast instruction selection, and that is the
 only LLVM configuration it covers.
 
     nix develop -c cargo build -p ra-jit --release --features llvm
@@ -326,8 +326,7 @@ For a CI failure, the last line of the harness step lists which scripts failed.
 `.github/workflows/ra-jit.yaml` runs in two tiers. It calls `ra-jit-platform.yaml` once for
 each platform, each on a machine of its own kind.
 
-A change reaches main through the **merge queue** alone
-([contributing.md](contributing.md#landing-a-change)). The queue takes pull requests in order,
+Upstream uses a **merge queue**. The queue takes pull requests in order,
 merges each onto main and the entries ahead of it, runs the fast tier on that, and moves main to
 it once it passes; an entry that fails leaves the queue, and the ones behind it are tested again
 without it. So main is always a commit the fast tier passed on. A pull request's own run is

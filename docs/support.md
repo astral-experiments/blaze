@@ -21,8 +21,7 @@ everything that mirrors rustc is taken from that one commit: `vendor/rustc_abi` 
 and the answers to rustc's questions (`crates/ra-jit/src/answers/rustc.json`) are what that
 rustc says on x86-64 Linux, AArch64 Linux and arm64 macOS. Stable Rust is not supported as a
 toolchain of its own: a stable release's code builds because the nightly builds it. The pin
-moves to a newer nightly with `harness/toolchain_bump.py`
-([contributing.md](contributing.md#moving-to-a-newer-nightly)).
+moves to a newer nightly with [the toolchain bump script](../harness/toolchain_bump.py).
 
 Reports and results dated before 2026-10-25 were measured on stable 1.99.0, and some older
 ones on `nightly-2026-05-10`; they are marked where they are used and are not re-measured

@@ -60,7 +60,7 @@ Everything above ran on Cranelift, the default. The LLVM backend also builds and
 `brew install llvm@20`, then
 `LLVM_SYS_201_PREFIX=/opt/homebrew/opt/llvm@20 cargo build -p ra-jit --release --features llvm`
 (LLVM 20.1.8). Homebrew has since dropped `llvm@20`; the supported LLVM is now the flake's,
-the same 20.1.8 ([contributing.md](../contributing.md#llvm-for---features-llvm)). With `RA_JIT_BACKEND=llvm`, at the default `RA_JIT_OPT=2`:
+the same 20.1.8 ([LLVM harness setup](../harness.md#under-llvm)). With `RA_JIT_BACKEND=llvm`, at the default `RA_JIT_OPT=2`:
 
 | harness | result |
 |---|---|
