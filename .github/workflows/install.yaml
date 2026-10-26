@@ -43,7 +43,8 @@ jobs:
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15]
     env:
-      BLAZE_REPO: ${{ github.repository }}
+      # Smoke-test the installer's public release source. A release event tests its own assets.
+      BLAZE_REPO: ${{ github.event_name == 'release' && github.repository || '' }}
       # A release the workflow was started for, or the one just published.
       BLAZE_VERSION: ${{ inputs.version || (github.event_name == 'release' && github.event.release.tag_name) || '' }}
     steps:
