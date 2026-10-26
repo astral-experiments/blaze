@@ -3353,7 +3353,14 @@ fn instance_body<'db>(
         | InstanceDef::FnPointerShim
         | InstanceDef::ReifyShim { .. } => unsupported!("the body of a shim"),
     };
-    body.map_err(|e| CodegenError::Frontend(format!("mir: {e:?}")))
+    let mut body = body.map_err(|e| CodegenError::Frontend(format!("mir: {e:?}")))?;
+    if let InstanceDef::Fn(func) = instance.def
+        && FunctionSignature::of(db, func).abi == ExternAbi::RustCall
+        && !body.to_mut().spread_rust_call_tuple()
+    {
+        unsupported!("the last parameter of a rust-call function is not a tuple");
+    }
+    Ok(body)
 }
 
 /// The types a body takes and returns, which is all its callers have to know about it. Asked
@@ -12054,6 +12061,24 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         operands.iter().map(|it| self.operand(it)).collect()
     }
 
+    /// Appends the fields of a `rust-call` argument in declaration order.
+    fn spread_tuple(
+        &mut self,
+        args: &mut Vec<(Value, Ty<'db>)>,
+        tuple: Value,
+        ty: Ty<'db>,
+    ) -> Result<()> {
+        let TyKind::Tuple(fields) = ty.kind() else {
+            unsupported!("the final argument of a rust-call is {ty:?}");
+        };
+        let layout = self.layout(ty)?;
+        args.extend(fields.iter().enumerate().map(|(i, field)| {
+            let offset = layout.fields.offset(i).bytes() as i64;
+            (self.builder.ins().iadd_imm(tuple, offset), field)
+        }));
+        Ok(())
+    }
+
     /// `Fn::call`, `FnMut::call_mut` or `FnOnce::call_once`. For a call expression MIR passes
     /// the callee first and then the arguments one by one, not as a tuple.
     fn call_fn_trait(
@@ -12091,12 +12116,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 let mut values = vec![(thin, thin_ty)];
                 let tuple_ty = method_args.type_at(1);
                 match (&self.operands(rest)?[..], tuple_ty.kind()) {
-                    (&[(tuple, ty)], TyKind::Tuple(fields)) if ty == tuple_ty => {
-                        let layout = self.layout(tuple_ty)?;
-                        values.extend(fields.iter().enumerate().map(|(i, field)| {
-                            let offset = layout.fields.offset(i).bytes() as i64;
-                            (self.builder.ins().iadd_imm(tuple, offset), field)
-                        }));
+                    (&[(tuple, ty)], TyKind::Tuple(_)) if ty == tuple_ty => {
+                        self.spread_tuple(&mut values, tuple, ty)?;
                     }
                     (rest, _) => values.extend_from_slice(rest),
                 }
@@ -12109,18 +12130,11 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         // A call written as `f.call_mut(args)` does pass the tuple, which the callee takes
         // apart all the same.
         let tuple_ty = method_args.type_at(1);
-        if let (&[(tuple, ty)], TyKind::Tuple(fields)) = (&values[..], tuple_ty.kind())
+        if let (&[(tuple, ty)], TyKind::Tuple(_)) = (&values[..], tuple_ty.kind())
             && ty == tuple_ty
         {
-            let layout = self.layout(tuple_ty)?;
-            values = fields
-                .iter()
-                .enumerate()
-                .map(|(i, field)| {
-                    let offset = layout.fields.offset(i).bytes() as i64;
-                    (self.builder.ins().iadd_imm(tuple, offset), field)
-                })
-                .collect();
+            values.clear();
+            self.spread_tuple(&mut values, tuple, ty)?;
         }
         // The innermost reference to the callee and the address it is stored at.
         let mut by_ref = None;
@@ -13380,6 +13394,17 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
             Callee::Instance(..) => ExternAbi::Rust,
             Callee::Pointer(_, abi, _) => abi,
+        };
+        let mut spread;
+        let args = if abi == ExternAbi::RustCall {
+            let Some((&(tuple, ty), fixed)) = args.split_last() else {
+                unsupported!("a rust-call without its tuple");
+            };
+            spread = fixed.to_vec();
+            self.spread_tuple(&mut spread, tuple, ty)?;
+            &spread[..]
+        } else {
+            args
         };
         let FnAbi { ret: ret_mode, args: arg_modes } =
             self.fn_abi(abi, dst_ty, args.iter().map(|&(_, ty)| ty))?;
