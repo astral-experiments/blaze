@@ -69,6 +69,14 @@ CASES = {
     "moved": {
         "src/main.rs": ALLOW + "fn main() {\n    let s = String::new();\n    let t = s;\n    let u = s;\n}\n",
     },
+    "dyn_associated_type_outlives": {
+        "src/main.rs": ALLOW + """trait Buffer { type Context; }
+struct Formatter<'buf, T>(&'buf mut dyn Buffer<Context = T>);
+
+fn source<'buf, 'ast>(_: Formatter<'buf, &'ast str>, text: &'ast str) -> &'buf str { text }
+fn main() {}
+""",
+    },
     # Nothing wrong.
     "fine": {
         "src/main.rs": ALLOW + "fn main() {\n    let _ = 1;\n}\n",
