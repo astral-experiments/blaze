@@ -837,6 +837,8 @@ All notable changes to ra-jit are written here. The format follows
 
 ### Fixed
 
+- A reference to a `dyn Fn` can be forwarded as another trait object. The `rust-call` method in its vtable now receives the arguments separately, as rustc passes them.
+
 - `cargo install --git https://github.com/indexable-inc/blaze ra-jit` builds ra-jit
   ([#242](https://github.com/indexable-inc/blaze/issues/242), #293, by @gakonst). It failed
   before compiling anything: for a git source cargo checks that every package is a member of
