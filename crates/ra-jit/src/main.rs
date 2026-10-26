@@ -2461,6 +2461,7 @@ fn load(
         load_config,
         selection,
         inputs: inputs::Inputs::default(),
+        watch: WatchPaths::default(),
         debug: Vec::new(),
         beside,
         scripts_said,
@@ -2488,6 +2489,7 @@ struct Checkouts {
     load_config: LoadCargoConfig,
     /// What the checkouts loaded in full were loaded from besides their source.
     inputs: inputs::Inputs,
+    watch: WatchPaths,
     /// Which build of each project is loaded.
     selection: plan::Selection,
     /// For each of `roots`, what its plan says of the program as a whole.
@@ -2772,6 +2774,7 @@ impl Checkouts {
             workspaces.push(workspace);
         }
         self.loaded.add(workspaces, &self.cargo_config.extra_env, &self.load_config, vfs, db)?;
+        self.watch = WatchPaths::for_workspaces(self.loaded.workspaces());
         self.roots.extend(roots);
         self.splits.extend(splits);
         self.debug.extend(debug);
@@ -3908,6 +3911,7 @@ fn start_from_rustc(
     rustcs: &Path,
     table: &SymbolTable,
     files: &mut Vec<WatchedFile>,
+    watch: &WatchPaths,
 ) -> anyhow::Result<()> {
     let (Some(binary), Some(patch)) = (args.splice.as_deref(), args.patch.as_deref()) else {
         bail!("patching what rustc linked takes --splice and --patch");
@@ -3945,7 +3949,7 @@ fn start_from_rustc(
         let Some(path) = source.to_str().and_then(|it| AbsPathBuf::try_from(it).ok()) else {
             continue;
         };
-        files.extend(WatchedFile::new(Watched::Included(path), source, source));
+        files.extend(watch.file(Watched::Included(path), source, source));
     }
     Ok(())
 }
@@ -5948,7 +5952,7 @@ struct WatchedFile {
     mtime: SystemTime,
 }
 
-/// What [`WatchedFile::include_sources`] took in.
+/// What [`WatchPaths::include_sources`] took in.
 #[derive(Clone, Copy, PartialEq)]
 enum Loaded {
     Nothing,
@@ -5957,23 +5961,43 @@ enum Loaded {
     New,
 }
 
-impl WatchedFile {
-    /// Whether the file is never written again: everything is watched but the sysroot, the
-    /// registry, the Nix store (crates vendored by Nix, which `nix run` of the demo reads its
-    /// thousands of files from) and what a build made, as path dependencies live outside the
-    /// project. What a build script wrote is written again when it runs again. Each watched
-    /// file is looked at on every edit, so one too many is time on every keystroke.
-    fn immutable(path: &Path) -> bool {
-        let names: Vec<&str> = path.components().filter_map(|c| c.as_os_str().to_str()).collect();
-        let of_script = cargo::script::in_out_dir(path);
+/// The installed sources and Cargo output directories of the loaded workspaces.
+/// A package can use any of their directory names for modules of its own.
+#[derive(Clone, Default)]
+struct WatchPaths {
+    installed: Vec<PathBuf>,
+    targets: Vec<PathBuf>,
+}
+
+impl WatchPaths {
+    fn for_workspaces(workspaces: &[ProjectWorkspace]) -> Self {
+        let registry = cargo::switch::cargo_home()
+            .and_then(|home| std::path::absolute(home).ok())
+            .map(|home| home.join("registry"));
+        let mut installed: Vec<_> = registry.into_iter().collect();
+        let mut targets = Vec::new();
+        for workspace in workspaces {
+            if let Some(src) = workspace.sysroot.rust_lib_src_root() {
+                installed.push(PathBuf::from(src));
+            }
+            if let ProjectWorkspaceKind::Cargo { cargo, .. } = &workspace.kind {
+                targets.push(PathBuf::from(cargo.target_directory()));
+            }
+        }
+        Self { installed, targets }
+    }
+
+    fn immutable(&self, path: &Path) -> bool {
         path.starts_with("/nix/store")
-            || names.iter().any(|&it| matches!(it, "rustlib" | "registry"))
-            || names.contains(&"target") && !of_script
+            || self.installed.iter().any(|root| path.starts_with(root))
+            || self.targets.iter().any(|root| {
+                path.strip_prefix(root).is_ok_and(|rel| !cargo::script::in_out_dir(rel))
+            })
     }
 
     /// `path` is what the file is known as, `on_disk` where it is read from.
-    fn new(file: Watched, path: &Path, on_disk: &Path) -> Option<WatchedFile> {
-        if WatchedFile::immutable(path) {
+    fn file(&self, file: Watched, path: &Path, on_disk: &Path) -> Option<WatchedFile> {
+        if self.immutable(path) {
             return None;
         }
         let mtime = std::fs::metadata(on_disk).ok()?.modified().ok()?;
@@ -5986,7 +6010,7 @@ impl WatchedFile {
     /// They were read from `read_from` on, and a file written since may have been read before
     /// the write and have its timestamp taken after it: one whose text is not the database's
     /// is taken for a changed one, or every build after would be of the text before the write.
-    fn sources(vfs: &Vfs, db: &RootDatabase, read_from: SystemTime) -> Vec<WatchedFile> {
+    fn sources(&self, vfs: &Vfs, db: &RootDatabase, read_from: SystemTime) -> Vec<WatchedFile> {
         // A timestamp can be before the clock's time of the write: some file systems keep
         // whole or even seconds, and Linux takes it from a clock that ticks every few
         // milliseconds.
@@ -5995,7 +6019,7 @@ impl WatchedFile {
             .filter(|&(id, _)| db.has_file_text(id))
             .filter_map(|(id, path)| {
                 let path: &Path = path.as_path()?.as_ref();
-                let mut watched = WatchedFile::new(Watched::Source(id), path, path)?;
+                let mut watched = self.file(Watched::Source(id), path, path)?;
                 if watched.mtime >= since
                     && source_on_disk(path).is_ok_and(|text| *text != **db.file_text(id).text(db))
                 {
@@ -6009,6 +6033,7 @@ impl WatchedFile {
     /// Puts the files an `include!` named that were not loaded in their source roots, and
     /// watches them: whether there were any, and whether each was what rustc read.
     fn include_sources(
+        &self,
         files: &mut Vec<WatchedFile>,
         tree: &mut tree::Tree,
         db: &mut RootDatabase,
@@ -6029,7 +6054,7 @@ impl WatchedFile {
         });
         let mut as_rustc_read = true;
         for (file, path) in &added {
-            let now = WatchedFile::new(Watched::Source(*file), path, &db.on_disk(path));
+            let now = self.file(Watched::Source(*file), path, &db.on_disk(path));
             as_rustc_read &= now.as_ref().is_some_and(|it| was.get(path) == Some(&it.mtime));
             files.extend(now);
         }
@@ -6039,15 +6064,15 @@ impl WatchedFile {
     /// Adds the files the last build included that are not watched yet. One is read again once
     /// its timestamp is taken, so a write between the build's read and now is not lost: the
     /// result is whether there was one.
-    fn unwatched(files: &[WatchedFile], db: &RootDatabase) -> bool {
+    fn unwatched(&self, files: &[WatchedFile], db: &RootDatabase) -> bool {
         let watched: FxHashSet<&Path> = files.iter().map(|it| &*it.path).collect();
         db.included_files()
             .iter()
             .map(AsRef::<Path>::as_ref)
-            .any(|it| !watched.contains(it) && !WatchedFile::immutable(it))
+            .any(|it| !watched.contains(it) && !self.immutable(it))
     }
 
-    fn watch_included(files: &mut Vec<WatchedFile>, db: &mut RootDatabase) -> bool {
+    fn watch_included(&self, files: &mut Vec<WatchedFile>, db: &mut RootDatabase) -> bool {
         let watched: FxHashSet<&Path> = files.iter().map(|it| &*it.path).collect();
         let new: Vec<AbsPathBuf> = db
             .included_files()
@@ -6056,7 +6081,7 @@ impl WatchedFile {
             .collect();
         let mut changed = false;
         for path in new {
-            if WatchedFile::immutable(path.as_ref()) {
+            if self.immutable(path.as_ref()) {
                 continue;
             }
             // One that is not there is watched for when it is, as a new file is.
@@ -7033,7 +7058,7 @@ fn join(
 ) -> anyhow::Result<()> {
     let read_from = SystemTime::now();
     checkouts.add(&[project], db, tree.vfs())?;
-    watch_loaded(db, tree, files, read_from);
+    watch_loaded(db, tree, files, read_from, &checkouts.watch);
     Ok(())
 }
 
@@ -7044,6 +7069,7 @@ fn watch_loaded(
     tree: &mut tree::Tree,
     files: &mut Vec<WatchedFile>,
     read_from: SystemTime,
+    watch: &WatchPaths,
 ) {
     let watched: FxHashSet<vfs::FileId> = files
         .iter()
@@ -7052,7 +7078,8 @@ fn watch_loaded(
             Watched::Included(_) => None,
         })
         .collect();
-    let new: Vec<WatchedFile> = WatchedFile::sources(tree.vfs(), db, read_from)
+    let new: Vec<WatchedFile> = watch
+        .sources(tree.vfs(), db, read_from)
         .into_iter()
         .filter(|it| !matches!(it.file, Watched::Source(id) if watched.contains(&id)))
         .collect();
@@ -8057,7 +8084,7 @@ fn run_holding(
     }
 
     pause_after_load();
-    let mut files = WatchedFile::sources(&vfs, &db, read_from);
+    let mut files = checkouts.watch.sources(&vfs, &db, read_from);
     let sources: Vec<_> = files
         .iter()
         .filter_map(|it| match it.file {
@@ -8079,14 +8106,14 @@ fn run_holding(
     let mut served = frozen::serve(&mut db, &built);
     // What is frozen names the files its `include!`s read: those not loaded yet are, and
     // what named them is read again.
-    if WatchedFile::include_sources(&mut files, &mut tree, &mut db) != Loaded::Nothing {
+    if checkouts.watch.include_sources(&mut files, &mut tree, &mut db) != Loaded::Nothing {
         listed.touch(&db, None);
         served = frozen::serve(&mut db, &built);
     }
     let mut resolved = resolve_crates(&db, &args, cores())?;
     // Resolving the names finds the files `include!` names that were not loaded. With those
     // in, there may be more.
-    while WatchedFile::include_sources(&mut files, &mut tree, &mut db) != Loaded::Nothing {
+    while checkouts.watch.include_sources(&mut files, &mut tree, &mut db) != Loaded::Nothing {
         // A crate listed beside cargo's build was listed without what they declare.
         listed.touch(&db, None);
         resolved = resolve_crates(&db, &args, cores())?;
@@ -8192,7 +8219,7 @@ fn run_holding(
     let cold = match rustcs_to_patch(&args, written.is_empty() && !harnessed) {
         Some(rustcs) => {
             let start = Instant::now();
-            start_from_rustc(&args, &rustcs, &table, &mut files)?;
+            start_from_rustc(&args, &rustcs, &table, &mut files, &checkouts.watch)?;
             known.start_from_rustc(args.debug.level != plan::Level::Nothing);
             // An edit is to bodies alone by the functions listed of its crate, which a build
             // lists of each crate it compiles: none is compiled here.
@@ -8220,7 +8247,7 @@ fn run_holding(
             }
             let mut cold = build_unheld(&db, &table, &args, &mut known, &listed)?;
             // An `include!` in a body is first seen when the body is compiled.
-            if WatchedFile::include_sources(&mut files, &mut tree, &mut db) != Loaded::Nothing {
+            if checkouts.watch.include_sources(&mut files, &mut tree, &mut db) != Loaded::Nothing {
                 known.touch(&db, None);
                 listed.touch(&db, None);
                 cold = build_unheld(&db, &table, &args, &mut known, &listed)?;
@@ -8405,11 +8432,11 @@ fn run_holding(
     // The programs whose tests ra-jit's harness lists, by their object.
     let mut harnessed: FxHashSet<PathBuf> = FxHashSet::default();
     loop {
-        if WatchedFile::unwatched(&files, &db) || tree.includes_more(&db) {
+        if checkouts.watch.unwatched(&files, &db) || tree.includes_more(&db) {
             builds.settle(&mut db, &mut programs)?;
         }
-        let included = WatchedFile::watch_included(&mut files, &mut db);
-        let loaded = WatchedFile::include_sources(&mut files, &mut tree, &mut db);
+        let included = checkouts.watch.watch_included(&mut files, &mut db);
+        let loaded = checkouts.watch.include_sources(&mut files, &mut tree, &mut db);
         match loaded {
             _ if included => programs.iter_mut().for_each(|it| it.known.touch(&db, None)),
             Loaded::Nothing => {}
@@ -8516,7 +8543,13 @@ fn run_holding(
                             let read_from = SystemTime::now();
                             let reloaded =
                                 checkouts.reload(&stale, &stream.env, &mut db, tree.vfs());
-                            watch_loaded(&mut db, &mut tree, &mut files, read_from);
+                            watch_loaded(
+                                &mut db,
+                                &mut tree,
+                                &mut files,
+                                read_from,
+                                &checkouts.watch,
+                            );
                             let new = before.changed(&db);
                             eprintln!(
                                 "reload: {} crates are others in {:.1?}",
@@ -8573,7 +8606,7 @@ fn run_holding(
                     let view = match target.as_ref().and_then(|it| it.project.as_ref()) {
                         Some(project) => {
                             // What a checkout reads is known once a build of it is over.
-                            let pending = WatchedFile::unwatched(&files, &db);
+                            let pending = checkouts.watch.unwatched(&files, &db);
                             let built: Vec<&Path> = programs
                                 .iter()
                                 .enumerate()
@@ -8913,7 +8946,7 @@ fn run_holding(
                     builds.settle(&mut db, &mut programs)?;
                     let read_from = SystemTime::now();
                     checkouts.share(&mut db, tree.vfs(), differences)?;
-                    watch_loaded(&mut db, &mut tree, &mut files, read_from);
+                    watch_loaded(&mut db, &mut tree, &mut files, read_from, &checkouts.watch);
                     for program in &mut programs {
                         let Parts { base, members, .. } = checkouts.parts(&program.args.project)?;
                         program.moved |= program.args.members != members;
@@ -10309,6 +10342,33 @@ fn main() {}
     }
 
     #[test]
+    fn package_sources_can_be_named_like_installed_sources_and_build_outputs() {
+        let ws = std::env::temp_dir().join("watch-paths");
+        let watch = WatchPaths {
+            installed: vec![
+                ws.join("toolchain/lib/rustlib/src/rust/library"),
+                ws.join(".cargo/registry"),
+            ],
+            targets: vec![ws.join("custom-output")],
+        };
+        for source in [
+            "src/registry/rule_set.rs",
+            "src/target/opcode.rs",
+            "src/rustlib/mod.rs",
+            "custom-output/debug/build/pkg-hash/out/generated.rs",
+        ] {
+            assert!(!watch.immutable(&ws.join(source)), "{source}");
+        }
+        for cached in [
+            ".cargo/registry/src/index/pkg/src/lib.rs",
+            "toolchain/lib/rustlib/src/rust/library/core/src/lib.rs",
+            "custom-output/debug/deps/old.rs",
+        ] {
+            assert!(watch.immutable(&ws.join(cached)), "{cached}");
+        }
+    }
+
+    #[test]
     fn a_file_written_after_it_was_loaded_is_taken_for_a_changed_one() {
         let dir = std::env::temp_dir().join(format!("ra-jit-loaded-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -10328,7 +10388,7 @@ fn main() {}
         change.set_roots(vec![ide_db::base_db::SourceRoot::new_local(root)]);
         db.apply_change(change);
         std::fs::write(dir.join("written.rs"), "fn f() { g() }\n").unwrap();
-        let files = WatchedFile::sources(&vfs, &db, read_from);
+        let files = WatchPaths::default().sources(&vfs, &db, read_from);
         let changed = |name: &str| {
             let file = files.iter().find(|it| it.path.ends_with(name)).unwrap();
             file.mtime == SystemTime::UNIX_EPOCH
@@ -10354,7 +10414,7 @@ fn main() {}
             std::fs::write(path, "fn f() {}\n").unwrap();
             let watched = Watched::Source(vfs::FileId::from_raw(id));
             let named = link.join(path.strip_prefix(&real).unwrap());
-            files.extend(WatchedFile::new(watched, &named, &named));
+            files.extend(WatchPaths::default().file(watched, &named, &named));
         }
         let found = written_sources(&files, [&*real_path(&written)]);
         let found: Vec<_> = found.into_iter().collect();
