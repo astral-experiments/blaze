@@ -29,7 +29,10 @@ use hir_ty::{
         AggregateKind, BinOp, BorrowKind, CastKind, LocalId, MirBody, MirSpan, Operand,
         OperandKind, PlaceElem, PlaceTy, ProjectionElem, Rvalue, StatementKind, TerminatorKind,
     },
-    next_solver::{Clause, ConstKind, GenericArgKind, GenericArgs, Region, Ty, TyKind},
+    next_solver::{
+        BoundExistentialPredicate, Clause, ConstKind, GenericArg, GenericArgKind, GenericArgs,
+        Region, Ty, TyKind,
+    },
 };
 
 use super::{
@@ -5606,13 +5609,11 @@ pub(super) fn outlives_components<'db>(
         }
         TyKind::Dynamic(predicates, region) => {
             regions.extend(rv_of(region));
-            for predicate in predicates.iter() {
-                if let rustc_type_ir::ExistentialPredicate::Trait(it) = predicate.skip_binder() {
-                    args_components(it.args, regions, params);
-                }
-            }
+            args_components(predicates.iter().flat_map(object_args), regions, params);
         }
-        TyKind::Adt(_, args) | TyKind::FnDef(_, args) => args_components(args, regions, params),
+        TyKind::Adt(_, args) | TyKind::FnDef(_, args) => {
+            args_components(args.iter(), regions, params)
+        }
         TyKind::Closure(_, args) => {
             outlives_components(args.as_closure().tupled_upvars_ty(), regions, params)
         }
@@ -5654,9 +5655,9 @@ pub(super) fn alias_components<'db>(ty: Ty<'db>, out: &mut Vec<Ty<'db>>) {
         | TyKind::Slice(inner)
         | TyKind::RawPtr(inner, _) => alias_components(inner, out),
         TyKind::Dynamic(predicates, _) => {
-            for predicate in predicates.iter() {
-                if let rustc_type_ir::ExistentialPredicate::Trait(it) = predicate.skip_binder() {
-                    args(it.args, out);
+            for arg in predicates.iter().flat_map(object_args) {
+                if let GenericArgKind::Type(ty) = arg.kind() {
+                    alias_components(ty, out);
                 }
             }
         }
@@ -5672,8 +5673,25 @@ pub(super) fn alias_components<'db>(ty: Ty<'db>, out: &mut Vec<Ty<'db>>) {
     }
 }
 
-fn args_components<'db>(args: GenericArgs<'db>, regions: &mut Vec<Rv>, params: &mut Vec<Ty<'db>>) {
-    for arg in args.iter() {
+/// A trait object's outlives components include both sides of an associated type binding.
+fn object_args<'db>(
+    predicate: BoundExistentialPredicate<'db>,
+) -> impl Iterator<Item = GenericArg<'db>> {
+    use rustc_type_ir::ExistentialPredicate;
+    let (args, binding) = match predicate.skip_binder() {
+        ExistentialPredicate::Trait(it) => (it.args, None),
+        ExistentialPredicate::Projection(it) => (it.args, Some(it.term.into())),
+        ExistentialPredicate::AutoTrait(_) => (GenericArgs::empty(), None),
+    };
+    args.iter().chain(binding)
+}
+
+fn args_components<'db>(
+    args: impl Iterator<Item = GenericArg<'db>>,
+    regions: &mut Vec<Rv>,
+    params: &mut Vec<Ty<'db>>,
+) {
+    for arg in args {
         match arg.kind() {
             GenericArgKind::Lifetime(region) => regions.extend(rv_of(region)),
             GenericArgKind::Type(ty) => outlives_components(ty, regions, params),
