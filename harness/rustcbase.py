@@ -458,9 +458,15 @@ STARTUP_EDITS = {
 }
 for name, (target_name, _, changes) in STARTUP_EDITS.items():
     undo = [(file, new, old) for file, old, new in changes]
-    first = "full" if name == "termination-inline" else "patch"
+    first = None if name == "termination-inline" else "patch"
     SCENARIOS[name] = ([changes, undo], [first, "patch"], 0,
                        {"RA_JIT_SPARE": "0", "RA_JIT_TRACE_STARTUP": target_name})
+
+# What forces the first edit to rebuild a rustc executable, however the linker installs it.
+RUSTC_BASE_INVALIDATION = {
+    "termination-inline": "no patch: an edit of a generic, inline or default trait function",
+    "termination-unit": "no patch: an edit that is more than the bodies of functions",
+}
 
 # An optional dependency only a dev-dependency's feature turns on, which cargo does not build for
 # the program and the daemon loads, as `cargo metadata` has the features of every target (zed's
@@ -828,11 +834,14 @@ def main():
         os.makedirs(home, mode=0o700)
         env = dict(base, RA_JIT_HOME=home, CARGO_TARGET_DIR=target, RA_JIT_CACHE=store, **extra)
         cargo_env = dict(base, CARGO_TARGET_DIR=reference)
-        needs_rustc_base = name in ("termination-inline", "termination-unit")
-        if needs_rustc_base:
+        invalidation = RUSTC_BASE_INVALIDATION.get(name)
+        if invalidation:
             # Cargo disables incremental compilation under CI. Blaze needs its symbols
             # to patch rustc's executable, so use the same incremental build for both.
             env["CARGO_INCREMENTAL"] = cargo_env["CARGO_INCREMENTAL"] = "1"
+            # In this single checkout, overlay mode keeps the idle worker from building
+            # its own base between the readiness check and the first edit.
+            env["RA_JIT_OVERLAY"] = "1"
         began = time.monotonic()
         r = run(["cargo", "ra-jit", "build"], ws, env)
         if r.returncode:
@@ -864,7 +873,7 @@ def main():
                 failed.append(f"{name}: the own base was {went}, not {OWN_BASE[name]} ({len(started)} starts, "
                               f"{interrupted} interrupted, {given_up} given up)")
         try:
-            if needs_rustc_base and not rustcs:
+            if invalidation and not rustcs:
                 raise RuntimeError("the first edit did not start from the rustc executable")
             if name == "termination-inline":
                 # Check what rustc put in the base before this edit: the caller needs both
@@ -897,6 +906,9 @@ def main():
                 theirs = outputs(os.path.join(reference, "debug", "app"), ws)
                 how = how_built(lines)
                 same = ours == theirs
+                if step == 1 and invalidation and (how == "patch" or not any(
+                        it.startswith(invalidation) for it in lines)):
+                    failed.append(f"{name}: expected a rebuild of the rustc base ({invalidation}), got {how}")
                 if name in STARTUP_EDITS:
                     target_name, changed, _ = STARTUP_EDITS[name]
                     expected_codes = [0, changed if step == 1 else 4]
