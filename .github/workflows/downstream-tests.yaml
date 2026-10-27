@@ -1,23 +1,27 @@
 name: Downstream tests
-run-name: Single-file tests on ${{ inputs.blaze_ref }} (trials ${{ inputs.trials }}, probe ${{ inputs.probe }})
+run-name: Cold ${{ inputs.mode }} on ${{ inputs.blaze_ref }} vs ${{ inputs.other_ref }} ${{ inputs.suites }} ${{ inputs.trials }}
 on:
   workflow_dispatch:
     inputs:
       blaze_ref:
         description: Blaze revision to build and measure
-        default: fc6eaf680e4cf47e9bfe6e7b6406ab0bb263b9c7
+        default: dedb5e01500a138936d90efc69f4c50016a32141
         required: true
-      probe:
-        description: Only run the affected assertion on Blaze and save compiler diagnostics
-        type: boolean
-        default: false
+      other_ref:
+        description: Optional second Blaze revision for comparisons on the same runner
+        default: ''
+      mode:
+        description: Exact edit loop, separate profile, or original full-file validation
+        type: choice
+        options: [loop, profile, file]
+        default: loop
       trials:
         description: JSON array of paired trial numbers (odd starts with Cargo)
         default: "[1,2,3,4]"
         required: true
       suites:
         description: JSON array of projects
-        default: '["ruff","ty","uv"]'
+        default: '["uv"]'
         required: true
 permissions:
   contents: read
@@ -32,7 +36,7 @@ jobs:
     runs-on: namespace-profile-ubuntu-24-04-16
     timeout-minutes: 330
     env:
-      FILE_BENCH_PROBE: ${{ inputs.probe && '1' || '0' }}
+      COLD_MODE: ${{ inputs.mode }}
       SUITE: ${{ matrix.suite }}
       TRIAL: ${{ matrix.trial }}
       BLAZE_SANDBOX: 'off'
@@ -63,6 +67,16 @@ jobs:
           echo "RUSTUP_TOOLCHAIN=$tc" >> "$GITHUB_ENV"
           echo "$PWD/target/release" >> "$GITHUB_PATH"
           echo "CARGO_HOME=$RUNNER_TEMP/bench-registry" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        if: inputs.other_ref != ''
+        with:
+          ref: ${{ inputs.other_ref }}
+          path: reference
+          persist-credentials: false
+      - name: Build the reference compiler outside the measurements
+        if: inputs.other_ref != ''
+        working-directory: reference
+        run: cargo +"${RUSTUP_TOOLCHAIN}" build --locked --release -p ra-jit --target-dir "$PWD/target"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: ${{ matrix.suite == 'uv' && 'astral-sh/uv' || 'astral-sh/ruff' }}
@@ -112,11 +126,11 @@ jobs:
         run: |
           unset RUSTFLAGS CARGO_ENCODED_RUSTFLAGS CARGO_INCREMENTAL CARGO_BUILD_BUILD_DIR
           unset RUSTC_WRAPPER RUSTC_WORKSPACE_WRAPPER CARGO_BUILD_RUSTC_WRAPPER CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER
-          python3 -u ../benchmark/.github/scripts/file_bench/bench.py "$SUITE" "$TRIAL" "$RUNNER_TEMP/benchmark-results"
+          python3 -u ../benchmark/.github/scripts/file_bench/cold_loop.py "$SUITE" "$TRIAL" "$RUNNER_TEMP/benchmark-results"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
           name: file-${{ matrix.suite }}-${{ matrix.trial }}
           path: ${{ runner.temp }}/benchmark-results
           if-no-files-found: warn
-          retention-days: 7
+          retention-days: 10
