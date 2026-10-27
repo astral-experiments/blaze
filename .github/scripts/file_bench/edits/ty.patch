@@ -1,0 +1,22 @@
+--- a/crates/ty_python_semantic/src/types/diagnostic.rs
++++ b/crates/ty_python_semantic/src/types/diagnostic.rs
+@@ -1636,7 +1636,7 @@
+     let Some(builder) = context.report_lint(&ZERO_STEPSIZE_IN_SLICE, node) else {
+         return;
+     };
+-    builder.into_diagnostic("Slice step size cannot be zero");
++    builder.into_diagnostic("A slice step must be nonzero");
+ }
+ 
+ // We avoid emitting invalid assignment diagnostic for literal assignments to a `TypedDict`, as
+--- a/crates/ty_python_semantic/resources/mdtest/subscript/stepsize_zero.md
++++ b/crates/ty_python_semantic/resources/mdtest/subscript/stepsize_zero.md
+@@ -15,7 +15,7 @@
+     immutable_bytes: bytes,
+     text: str,
+ ) -> None:
+-    values[1:10:0]  # error: [zero-stepsize-in-slice]
++    values[1:10:0]  # error: [zero-stepsize-in-slice] "A slice step must be nonzero"
+     mutable_bytes[1:10:0]  # error: [zero-stepsize-in-slice]
+     view[1:10:0]  # error: [zero-stepsize-in-slice]
+     numbers[1:10:0]  # error: [zero-stepsize-in-slice]

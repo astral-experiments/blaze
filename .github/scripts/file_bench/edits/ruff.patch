@@ -1,0 +1,29 @@
+--- a/crates/ruff_linter/src/rule_selector.rs
++++ b/crates/ruff_linter/src/rule_selector.rs
+@@ -196,6 +196,7 @@
+         // **Changes should be reflected in `parse_no_redirect` as well**
+         match s {
+             "ALL" => Ok(Self::All),
++            "BUGBEAR" => Ok(Self::Linter(Linter::Flake8Bugbear)),
+             "C" => Ok(Self::C),
+             "T" => Ok(Self::T),
+             _ => {
+@@ -473,6 +474,7 @@
+         // **Changes should be reflected in `from_str` as well**
+         match s {
+             "ALL" => Ok(Self::All),
++            "BUGBEAR" => Ok(Self::Linter(Linter::Flake8Bugbear)),
+             "C" => Ok(Self::C),
+             "T" => Ok(Self::T),
+             _ => {
+--- a/crates/ruff/tests/cli/lint.rs
++++ b/crates/ruff/tests/cli/lint.rs
+@@ -65,7 +65,7 @@
+         "ruff.toml",
+         r#"
+ [lint]
+-extend-select = ["B", "Q"]
++extend-select = ["BUGBEAR", "Q"]
+ 
+ [lint.flake8-quotes]
+ inline-quotes = "single"

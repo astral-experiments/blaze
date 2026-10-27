@@ -1,0 +1,22 @@
+--- a/crates/uv-lock-operations/src/lock.rs
++++ b/crates/uv-lock-operations/src/lock.rs
+@@ -825,7 +825,7 @@
+             Err(err) => {
+                 warn_user_with_chain!(
+                     anyhow::Error::from(err)
+-                        .context("Failed to validate existing lockfile")
++                        .context("Could not validate the existing uv.lock")
+                         .as_ref()
+                 );
+                 None
+--- a/crates/uv/tests/lock/lock.rs
++++ b/crates/uv/tests/lock/lock.rs
+@@ -74,7 +74,7 @@
+     uv_snapshot!(context.filters(), context.lock().arg("--offline"), @"
+     exit_code: 1 (failure)
+     ----- stderr -----
+-    warning: Failed to validate existing lockfile
++    warning: Could not validate the existing uv.lock
+       cause: Failed to parse `[TEMP_DIR]/child/pyproject.toml`
+       cause: TOML parse error at line 3, column 11
+                |
