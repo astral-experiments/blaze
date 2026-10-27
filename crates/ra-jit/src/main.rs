@@ -6068,6 +6068,7 @@ impl Loaded {
 struct WatchPaths {
     installed: Vec<PathBuf>,
     targets: Vec<PathBuf>,
+    proc_macros: symbols::GeneratedInputs,
 }
 
 impl WatchPaths {
@@ -6077,15 +6078,21 @@ impl WatchPaths {
             .map(|home| home.join("registry"));
         let mut installed: Vec<_> = registry.into_iter().collect();
         let mut targets = Vec::new();
+        let mut proc_macros = symbols::GeneratedInputs::default();
         for workspace in workspaces {
             if let Some(src) = workspace.sysroot.rust_lib_src_root() {
                 installed.push(PathBuf::from(src));
             }
-            if let ProjectWorkspaceKind::Cargo { cargo, .. } = &workspace.kind {
+            if let ProjectWorkspaceKind::Cargo { cargo, build_scripts, .. } = &workspace.kind {
                 targets.push(PathBuf::from(cargo.target_directory()));
+                for package in cargo.packages() {
+                    if let Some(dylib) = build_scripts.proc_macro_dylib(package) {
+                        proc_macros.record_proc_macro(dylib.as_ref(), &cargo[package].name);
+                    }
+                }
             }
         }
-        Self { installed, targets }
+        Self { installed, targets, proc_macros }
     }
 
     fn immutable(&self, path: &Path) -> bool {
@@ -6158,8 +6165,8 @@ impl WatchPaths {
         for (file, path) in &added {
             let now = self.file(Watched::Source(*file), path, &db.on_disk(path));
             let as_rustc_read = match &now {
-                Some(watched) => SymbolTable::generated_as_read(
-                    tables.clone(),
+                Some(watched) => symbols::GeneratedInputs::as_read(
+                    tables.clone().map(|table| &table.generated_inputs).chain([&self.proc_macros]),
                     path,
                     db.file_text(*file).text(db),
                 )
@@ -7973,6 +7980,9 @@ fn follow_cargo(
             checkouts.loaded.replace(beside.at, workspace);
             let Checkouts { loaded, cargo_config, load_config, .. } = checkouts;
             loaded.add(Vec::new(), &cargo_config.extra_env, load_config, vfs, db)?;
+            if all {
+                checkouts.watch = WatchPaths::for_workspaces(loaded.workspaces());
+            }
             beside.applied = lines.len();
             all_applied = all;
         }
@@ -10516,6 +10526,7 @@ fn main() {}
                 ws.join(".cargo/registry"),
             ],
             targets: vec![ws.join("custom-output")],
+            ..WatchPaths::default()
         };
         for source in [
             "src/registry/rule_set.rs",
