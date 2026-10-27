@@ -8105,7 +8105,8 @@ fn run_holding(
         eprintln!("backend: {backend}");
     }
     process_wide();
-    if args.socket.is_some() || args.watch {
+    // A spare starts lowering before cargo supplies its socket in the final arguments.
+    if ahead || args.socket.is_some() || args.watch {
         hir_ty_codegen::builds_edits();
     }
     if args.exe.is_some() {
@@ -8310,6 +8311,9 @@ fn run_holding(
             selection: args.selection,
             ..whole
         };
+        if args.exe.is_some() {
+            hir_ty_codegen::links_own();
+        }
         let links = |file: &PathBuf| args.symbol_files.contains(file);
         anyhow::ensure!(
             library.is_some_and(|it| !it.is_empty() && it.iter().all(links)),
