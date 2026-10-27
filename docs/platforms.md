@@ -100,7 +100,7 @@ there.
 
 ## Windows x86-64 (MSVC)
 
-Runs on `windows-latest` in CI under both backends. Objects are COFF and link with MSVC
+Both backends produce COFF objects and link with MSVC
 `link.exe` using rustc's line, with `/FORCE:MULTIPLE` so that ra-jit's definitions win.
 
 What is specific to the port:

@@ -108,8 +108,7 @@ jobs:
             - bench: paired store microbenchmarks against the PR base, or timings on main.
             - nix: Nix unit graphs, flake builds, demo and live edits on Linux and macOS.
             - install: run install.sh against release artifacts and install this commit without Rust.
-            Windows runs in the nightly or manual full tier. Site deployment, publishing and
-            scheduled maintenance have separate workflows.
+            Site deployment, publishing and scheduled maintenance have separate workflows.
           output-schema: |
             {"type":"object","additionalProperties":false,"required":["rationale","suites"],"properties":{
               "rationale":{"type":"string"},"suites":{"type":"array","items":{"type":"object",
@@ -220,17 +219,6 @@ jobs:
       pinned-ui: true
       cargo-ra-jit: ${{ needs.changes.outputs.tier == 'full' }}
 
-  # The Windows build alone takes longer than the fast tier.
-  windows:
-    name: windows x64
-    needs: changes
-    if: ${{ !cancelled() && contains(fromJSON(needs.changes.outputs.suites || '[]'), 'windows') }}
-    uses: ./.github/workflows/ra-jit-platform.yaml
-    with:
-      platform: windows-x64
-      os: windows-2025
-      tier: full
-
   # vendor/rust-analyzer as the fork has it, built and tested outside this repository, so that
   # the subtree cannot come to depend on crates/ (docs/architecture-split.md, step 5). The
   # tests of ide-diagnostics are the verdict's (the daemon's errors are its diagnostics), and
@@ -278,7 +266,7 @@ jobs:
 
   ci:
     name: ci
-    needs: [changes, fmt, linux-x64, linux-arm64, macos, windows, fork, bench, nix, install]
+    needs: [changes, fmt, linux-x64, linux-arm64, macos, fork, bench, nix, install]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

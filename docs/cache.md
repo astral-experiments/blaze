@@ -170,7 +170,7 @@ These act on the store `cargo ra-jit status` names.
 
 ### Limits
 
-- The store harnesses run in CI on Linux, Windows and macOS. `storefull.py` (a full disk)
+- The store harnesses run in CI on Linux and macOS. `storefull.py` (a full disk)
   runs on Linux only. On Windows a pack that another process has open cannot be removed,
   so eviction of a pack in use fails and the pack is kept; this is not measured.
 - Power loss was not tested. The harness kills the daemon, which does not lose the page

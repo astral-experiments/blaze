@@ -29,8 +29,8 @@ need a few gigabytes there.
 
 ### The gate
 
-The gate is what CI runs: its fast tier on every pull request and push to main, all of it
-nightly ([CI](#ci)). A change is not done until all of it exits 0 under both backends.
+Luna selects CI suites for pull requests and pushes to main. The full harness runs nightly
+on Linux and macOS ([CI](#ci)). A change is not done until all of it exits 0 under both backends.
 `harness/ci.py` is the one list of it: which harness runs in which part, in which tier, on
 which hosts and under which backend.
 
@@ -362,7 +362,7 @@ or cargo ([no-rustc.md](no-rustc.md)). A script does nothing when
 imported: its work is under `if __name__ == "__main__":`.
 
 The **full tier** runs nightly and by hand (`gh workflow run ra-jit.yaml --ref <branch> -f
-tier=full`, or `-f tier=fast`), and takes about an hour. It adds Windows x86-64, every part
+tier=full`, or `-f tier=fast`), and takes about an hour. It runs every part
 of `ci.py --parts` (`keys.py`, `buildmodel.py`, the store and the daemon harnesses,
 `debuginfo.py`), `cargo_ra_jit.py` on its checks, on ripgrep and hyperfine and on fd (Linux
 x86-64 and macOS), and on ripgrep, fd, bat, hyperfine, just, axum and nushell with each
@@ -373,8 +373,8 @@ project's tests (Linux AArch64), and the ripgrep bench. A failed nightly opens a
 Blaze builds the compiler and runs its unit tests on Namespace's 16-core Ubuntu 24.04
 x86-64 profile and its Apple Silicon macOS 15 (Sequoia) profile. The Linux and macOS
 harness shards run those artifacts on GitHub-hosted runners. Darwin Nix builds and live
-edits use Namespace. Linux ARM64, Windows, fork and Dependabot PRs, and merge-queue entries
-use GitHub-hosted runners.
+edits use Namespace. Linux ARM64, fork and Dependabot PRs, and merge-queue entries use
+GitHub-hosted runners. Windows CI is paused.
 
 The build and the unit tests compile through sccache, which keeps rustc's output in the
 Actions cache; rust-cache keeps the dependencies from crates.io and leaves out the crates of
