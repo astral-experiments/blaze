@@ -887,8 +887,64 @@ def fake_toolchain(dir, version):
     os.chmod(rustc, 0o755)
 
 
+def duplicate_local_type_ids(work, check):
+    """Macro expansion can add another local type with the same spelling."""
+    ws = os.path.join(work, "duplicate-type-ids")
+    os.makedirs(os.path.join(ws, "src"))
+    os.makedirs(os.path.join(ws, "model/src"))
+    open(os.path.join(ws, "Cargo.toml"), "w").write("""[package]
+name = "duplicate-ids"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+model = { path = "model" }
+[profile.dev.package.model]
+opt-level = 2
+""")
+    open(os.path.join(ws, "model/Cargo.toml"), "w").write('[package]\nname="model"\nversion="0.0.0"\nedition="2021"\n')
+    main = os.path.join(ws, "src/main.rs")
+    open(os.path.join(ws, "model/src/lib.rs"), "w").write("""#![feature(f128)]
+use std::any::TypeId;
+pub struct Jar<T>(T);
+macro_rules! make { () => {{ #[derive(Clone, Copy)] struct Key; Key }} }
+pub fn pair() -> (impl Copy, impl Copy) {
+    let a = { #[derive(Clone, Copy)] struct Key; Key };
+    (a, make!())
+}
+fn id<T: 'static>(_: T) -> TypeId { TypeId::of::<Jar<T>>() }
+#[unsafe(no_mangle)]
+pub extern "Rust" fn native_ids() -> [TypeId; 2] {
+    std::hint::black_box(1.0f128);
+    let (a, b) = pair();
+    [id(a), id(b)]
+}
+""")
+    open(main, "w").write("""use std::any::TypeId;
+fn id<T: 'static>(_: T) -> TypeId { TypeId::of::<model::Jar<T>>() }
+fn main() {
+    extern "Rust" { #[link_name = "native_ids"] fn registered() -> [TypeId; 2]; }
+    let native = unsafe { registered() };
+    let (a, b) = model::pair();
+    println!("{} {} {}", native[0] != native[1], id(0u8) == native[0], id(0u16) == native[1]);
+}
+""")
+    side = Side(ws, dict(base_env(os.path.join(work, "home-duplicate-ids")), RA_JIT_RUSTC_BASE="0"), True)
+    try:
+        _, cold = side.cargo("run")
+        check("native code distinguishes the two local types", cold.returncode == 0 and cold.stdout.strip() == "true false false", cold.stderr[-300:])
+        wait_warm(side, ws)
+        rewrite(main, "id(0u8) == native[0], id(0u16)", "id(a) == native[0], id(b)")
+        _, edited = side.cargo("run")
+        check("both local type IDs match their native registrations after an edit",
+              edited.returncode == 0 and edited.stdout.strip() == "true true true",
+              f"{how_built(edited.stderr)}, printed {edited.stdout.strip()!r}")
+    finally:
+        side.cargo("stop")
+
+
 def cached_type_ids(work, check):
     """A cached lookup must agree with a rustc-built registration after crate metadata changes."""
+    duplicate_local_type_ids(work, check)
     ws = os.path.join(work, "type-ids")
     os.makedirs(os.path.join(ws, "src"))
     open(os.path.join(ws, "Cargo.toml"), "w").write('[package]\nname = "ids"\nversion = "0.1.0"\nedition = "2021"\n')
