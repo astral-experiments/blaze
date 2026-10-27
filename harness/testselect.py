@@ -392,6 +392,52 @@ fn library() { assert_eq!(half(8_u32), 4.0); }
     return "\n".join(failures) or "ok"
 
 
+def generated_after_restart(root, env):
+    """A new worker must reject a native test built before its generated assertion changed."""
+    ws = Path(root, "generated")
+    (ws / "src").mkdir(parents=True)
+    (ws / "Cargo.toml").write_text(
+        '[package]\nname = "generated"\nversion = "0.1.0"\nedition = "2021"\n'
+        '[profile.dev]\nopt-level = 1\n'
+    )
+    (ws / "build.rs").write_text("""fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    let dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(dir.join("value.expr"), "8_u32").unwrap();
+}
+""")
+    (ws / "src/lib.rs").write_text("""#![feature(f128)]
+#[test]
+fn value() {
+    let x = include!(concat!(env!("OUT_DIR"), "/value.expr"));
+    assert_eq!((std::hint::black_box(x as f128) / 2.0) as f64, 4.0);
+}
+""")
+    env = dict(env, RUSTC_BOOTSTRAP="1", CARGO_INCREMENTAL="0")
+    for value, code, status in [(None, 0, "ok"), ("10_u32", 101, "FAILED"), ("8_u32", 0, "ok")]:
+        if value is not None:
+            subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, check=True,
+                           capture_output=True, timeout=120)
+            paths = list((ws / "target").rglob("value.expr"))
+            if len(paths) != 1:
+                return f"FAILED to locate value.expr in {ws}: {paths}"
+            paths[0].write_text(value)
+            # Reinstalled objects can be newer than the input whose old value they contain.
+            objects = list((ws / "target").glob("**/.ra-jit-units/*/*/*.rcgu.o"))
+            if not objects:
+                return f"FAILED to locate saved native objects in {ws}"
+            for obj in objects:
+                obj.touch()
+        actual, said = test(ws, env, "all --lib")
+        if value is None and "[ra-jit] target(s)" not in said:
+            return f"FAILED to serve the original native test\n{said[-3000:]}"
+        if actual != code or RAN.findall(said) != [("value", status)]:
+            return f"FAILED with value.expr = {value}: exit {actual}\n{said[-3000:]}"
+        if value is not None and (not paths[0].exists() or paths[0].read_text() != value):
+            return f"FAILED: Cargo regenerated {paths[0]}"
+    return "ok"
+
+
 def benched(root, env):
     """A test added to a program with a bench: what the step's line says."""
     ws, env = os.path.join(root, "benched"), dict(env, RUSTC_BOOTSTRAP="1", CARGO_UNSTABLE_CHECKSUM_FRESHNESS="false")
@@ -495,13 +541,16 @@ def main():
         verdict = unchanged_instances(root, env)
         wrong += verdict != "ok"
         print(f"{'unchanged native instance across harnesses':34} {verdict}", flush=True)
+        verdict = generated_after_restart(root, env)
+        wrong += verdict != "ok"
+        print(f"{'generated test after worker restart':34} {verdict}", flush=True)
         verdict = benched(root, env)
         wrong += verdict != "ok"
         print(f"{'a test added beside a bench':34} {verdict}", flush=True)
     finally:
         subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, capture_output=True, timeout=120)
         shutil.rmtree(OUTSIDE, ignore_errors=True)
-    print(f"{len(STEPS) + 2 - wrong} of {len(STEPS) + 2} right; under {root}, the daemon's home {home}")
+    print(f"{len(STEPS) + 3 - wrong} of {len(STEPS) + 3} right; under {root}, the daemon's home {home}")
     if wrong:
         sys.exit(1)
     shutil.rmtree(root, ignore_errors=True)
