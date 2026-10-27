@@ -54,6 +54,21 @@ CASES = {
     "tab_and_wide_chars": {
         "src/main.rs": ALLOW + "fn main() {\n\tlet s = \"h\u00e9llo\"; let _: u32 = s;\n}\n",
     },
+    "nested_projection_outlives": {
+        "src/main.rs": ALLOW + """struct State<T>(T);
+trait Buffer {
+    type Context;
+    fn state(&self) -> &State<Self::Context>;
+    fn state_mut(&mut self) -> &mut State<Self::Context>;
+}
+impl<W: Buffer<Context = C> + ?Sized, C> Buffer for &mut W {
+    type Context = C;
+    fn state(&self) -> &State<Self::Context> { (**self).state() }
+    fn state_mut(&mut self) -> &mut State<Self::Context> { (**self).state_mut() }
+}
+fn main() {}
+""",
+    },
     # The error is in a module file of a library that a binary of the same package uses: the
     # unit is the library.
     "lib_module": {
