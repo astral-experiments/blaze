@@ -1,8 +1,16 @@
 name: Downstream tests
-run-name: Single-file Blaze and Cargo tests (trials ${{ inputs.trials }})
+run-name: Single-file tests on ${{ inputs.blaze_ref }} (trials ${{ inputs.trials }}, probe ${{ inputs.probe }})
 on:
   workflow_dispatch:
     inputs:
+      blaze_ref:
+        description: Blaze revision to build and measure
+        default: fc6eaf680e4cf47e9bfe6e7b6406ab0bb263b9c7
+        required: true
+      probe:
+        description: Only run the affected assertion on Blaze and save compiler diagnostics
+        type: boolean
+        default: false
       trials:
         description: JSON array of paired trial numbers (odd starts with Cargo)
         default: "[1,2,3,4]"
@@ -24,6 +32,7 @@ jobs:
     runs-on: namespace-profile-ubuntu-24-04-16
     timeout-minutes: 330
     env:
+      FILE_BENCH_PROBE: ${{ inputs.probe && '1' || '0' }}
       SUITE: ${{ matrix.suite }}
       TRIAL: ${{ matrix.trial }}
       BLAZE_SANDBOX: 'off'
@@ -42,7 +51,7 @@ jobs:
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 95257d3d26fff396b168d405e2304bf138de83eb
+          ref: ${{ inputs.blaze_ref }}
           path: blaze
           persist-credentials: false
       - name: Install the pinned Rust toolchain and build Blaze outside the measurements

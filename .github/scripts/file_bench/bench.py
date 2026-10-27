@@ -75,6 +75,9 @@ def main():
     here = Path(__file__).resolve().parent
     package, target_name, selector, witness, target_src, features = CONFIG[suite]
     expected = Counter("ok\t" + name for name in (here / "expected" / f"{suite}.txt").read_text().splitlines())
+    probe = os.environ.get("FILE_BENCH_PROBE") == "1"
+    if probe:
+        expected = Counter({"ok\t" + witness: 1})
     patch = here / "edits" / f"{suite}.patch"
     changed = re.findall(r"^--- a/(.+)$", patch.read_text(), re.M)
     assert len(changed) == 2
@@ -82,7 +85,9 @@ def main():
     shutil.copyfile(patch, out / "edit.patch")
     target = Path("target").resolve()
     order = ["cargo", "blaze"] if trial % 2 else ["blaze", "cargo"]
-    job = dict(suite=suite, trial=trial, order=order, run=os.environ["GITHUB_RUN_ID"],
+    if probe:
+        order = ["blaze"]
+    job = dict(probe=probe, suite=suite, trial=trial, order=order, run=os.environ["GITHUB_RUN_ID"],
                workflow=os.environ["GITHUB_SHA"],
                downstream=output("git", "rev-parse", "HEAD"), blaze=output("git", "-C", "../blaze", "rev-parse", "HEAD"),
                rustc=output("rustc", "-vV"), cargo=output("cargo", "-V"), kernel=platform.release(),
@@ -105,6 +110,8 @@ def main():
             cmd = ["uv", "run", "--locked", *group, engine, "test", "--locked", "-p", package,
                    "--test", target_name, *features, "--"]
             filters = ["--exact", selector] if suite == "ty" else [selector]
+            if probe:
+                filters = ["--exact", witness]
             try:
                 for phase in ("clean", "edit"):
                     if phase == "edit":
@@ -124,7 +131,7 @@ def main():
                     save()
                 # This check runs after all four timed phases once per suite. Keep the new
                 # assertion and restore only production code to verify that stale code fails.
-                if trial == 2 and engine == "cargo":
+                if not probe and trial == 2 and engine == "cargo":
                     assert order[-1] == engine
                     Path(changed[0]).write_bytes(originals[0])
                     row, actual = run([*cmd, "--exact", witness], env, out / "negative-control.log")
@@ -136,11 +143,16 @@ def main():
             finally:
                 if engine == "blaze":
                     subprocess.run(["blaze", "stop"], env=env, timeout=90)
+                    if probe:
+                        for log in Path(daemon).rglob("*.log"):
+                            if log.is_file():
+                                shutil.copyfile(log, out / ("compiler-" + "-".join(log.relative_to(daemon).parts)))
                 for path, original in zip(changed, originals):
                     Path(path).write_bytes(original)
                 if target.exists():
                     shutil.rmtree(target)
-    if any(not row["valid"] for row in job["measurements"]) or (trial == 2 and not job["negative_control"]["confirmed"]):
+    if any(not row["valid"] or (row["engine"] == "blaze" and row["backend"] != "Blaze")
+           for row in job["measurements"]) or (not probe and trial == 2 and not job["negative_control"]["confirmed"]):
         raise SystemExit("Test file validation failed; see measurements.json and the corresponding logs.")
 
 
