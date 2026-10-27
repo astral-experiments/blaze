@@ -1577,10 +1577,11 @@ impl<'db> Builder<'_, '_, 'db> {
         true
     }
 
-    /// The closure's parameter `index` written `&dyn Trait`, as `&'r (dyn Trait + 'r)` with
-    /// its reference's lifetime, as rustc's object lifetime default, where inference gave the
-    /// object a region of its own.
+    /// Set the default object lifetime of a closure parameter written `&'r dyn Trait`.
+    /// It is `'static` when required by the trait, and otherwise `'r`.
     fn written_object_default(&mut self, index: usize, ty: Ty<'db>) -> Option<Ty<'db>> {
+        use rustc_type_ir::inherent::BoundExistentialPredicates as _;
+
         let closure = self.ctx.closure_expr?;
         let hir_def::hir::Expr::Closure { arg_types, .. } = &self.ctx.store[closure] else {
             return None;
@@ -1594,10 +1595,14 @@ impl<'db> Builder<'_, '_, 'db> {
         let TyKind::Ref(region, inner, mutability) = ty.kind() else { return None };
         let TyKind::Dynamic(predicates, _) = inner.kind() else { return None };
         let interner = self.interner();
+        let object = match predicates.principal_def_id() {
+            Some(it) if static_trait(self.ctx.db, it.0) => Region::new_static(interner),
+            _ => region,
+        };
         Some(Ty::new_ref(
             interner,
             region,
-            Ty::new_dynamic(interner, predicates, region),
+            Ty::new_dynamic(interner, predicates, object),
             mutability,
         ))
     }
