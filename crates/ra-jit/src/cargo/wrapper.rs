@@ -708,12 +708,21 @@ impl Unit {
             }
             copies.push(Copied { original, copy });
         }
-        // The daemon tells which crate a file of rustc's is by the dep-info next to it, of
-        // which it reads the first source: the root of the crate.
+        // The first source identifies the crate. The rest tell the daemon whether the
+        // native code it is about to reuse predates an edit to any of its inputs.
         let stem =
             format!("{}{}", self.crate_name, record.codegen("extra-filename").unwrap_or_default());
-        let root = dep_info::escaped(&compiled.display().to_string());
-        std::fs::write(to.join(format!("{stem}.d")), format!("{stem}: {root}\n"))?;
+        let mut rule = format!("{stem}: {}", dep_info::escaped(&compiled.display().to_string()));
+        if compiled == self.source {
+            for file in record.inputs().files {
+                if file != compiled {
+                    rule.push(' ');
+                    rule.push_str(&dep_info::escaped(&file.display().to_string()));
+                }
+            }
+        }
+        rule.push('\n');
+        std::fs::write(to.join(format!("{stem}.d")), rule)?;
         if self.script
             && let Some(linked) = record.outputs().first()
         {

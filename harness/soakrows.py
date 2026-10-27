@@ -1006,6 +1006,16 @@ pub fn anchor() -> u64 { located(1u32) }
         raise Wrong(f"the workspace could not be built by the daemon: {how}")
     in_place(callee, "pub fn value() -> u64 { 20 }\n")
     row.both("edit the forwarded instance's callee", want="located 20")
+    row.stop()
+    in_place(callee, "pub fn value() -> u64 { 30 }\n")
+    row.both("edit before the next worker loads", want="located 30")
+    data = row.path("core/src/value byte.txt")
+    in_place(data, "A")
+    in_place(callee, 'pub fn value() -> u64 { u64::from(include_bytes!("value byte.txt")[0]) }\n')
+    row.both("read an included byte", want="located 65")
+    row.stop()
+    in_place(data, "B")
+    row.both("edit the included byte before loading", want="located 66")
 
 
 def statics_one_unit_uses(row):

@@ -1053,7 +1053,7 @@ impl SymbolTable {
     /// A source that was written after rustc built the crate it is of: what rustc built is
     /// then not what it would build now.
     pub(crate) fn written_since_built(&self) -> Option<&Path> {
-        self.all_written_since_built().next()
+        self.all_written_since_built().next().map(|(_, file)| file)
     }
 
     /// Every file rustc read of the crates it built, as their dep-info files list them.
@@ -1061,15 +1061,17 @@ impl SymbolTable {
         self.built_from.iter().flat_map(|(_, sources)| sources.iter().map(|it| &*it.path))
     }
 
-    /// Every source that was written after rustc built the crate it is of.
-    pub(crate) fn all_written_since_built(&self) -> impl Iterator<Item = &Path> {
+    /// Each source written after rustc built its crate, paired with the crate's root.
+    pub(crate) fn all_written_since_built(&self) -> impl Iterator<Item = (&Path, &Path)> {
         let finished = self.finished();
         self.built_from.iter().flat_map(move |(_, sources)| {
-            let built = sources.first().and_then(|root| finished.get(&root.path).copied());
-            sources
-                .iter()
-                .filter(move |it| built.is_some_and(|built| it.written_since(built)))
-                .map(|it| &*it.path)
+            let unit = sources
+                .first()
+                .and_then(|root| Some((root.path.as_path(), *finished.get(&root.path)?)));
+            sources.iter().filter_map(move |source| {
+                let (root, built) = unit?;
+                source.written_since(built).then_some((root, source.path.as_path()))
+            })
         })
     }
 
