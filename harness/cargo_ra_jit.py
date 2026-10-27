@@ -1015,6 +1015,19 @@ pub fn shadowed<Key>() -> impl Copy {
     Key
 }
 
+#[allow(non_upper_case_globals)]
+pub fn nested<const query: u8>() -> (impl Copy, impl Copy) {
+    fn query() -> impl Copy { #[derive(Copy, Clone)] struct Key; Key }
+    (query, query())
+}
+#[unsafe(no_mangle)]
+pub extern "Rust" fn registered_nested() -> [TypeId; 2] {
+    std::hint::black_box(1.0f128);
+    fn of<T: 'static>(_: T) -> TypeId { TypeId::of::<Jar<T>>() }
+    let (func, key) = nested::<0>();
+    [of(func), of(key)]
+}
+
 pub trait Query { type Key; fn registered() -> TypeId; }
 pub trait Witness { fn id() -> TypeId; }
 pub struct First;
@@ -1068,15 +1081,25 @@ fn main() {
         check("the daemon hashes keys from a macro-generated impl and a local type shadowing a type parameter",
               edited.returncode == 0 and edited.stdout.strip() == "true true" and how == "daemon",
               f"{how}, printed {edited.stdout.strip()!r}")
-        rewrite(main, '    println!("{} {}", of(model::Model::key()) == native[0], of(model::shadowed::<()>()) == native[1]);', """    extern "Rust" { fn registered_consts() -> [TypeId; 2]; }
+        const_lookup = """    extern "Rust" { fn registered_consts() -> [TypeId; 2]; }
     type First = <model::First as model::Query>::Key;
     type Second = <model::Second as model::Query>::Key;
     let native = unsafe { registered_consts() };
-    println!("{} {}", TypeId::of::<model::Jar<First>>() == native[0], TypeId::of::<model::Jar<Second>>() == native[1]);""")
+    println!("{} {}", TypeId::of::<model::Jar<First>>() == native[0], TypeId::of::<model::Jar<Second>>() == native[1]);"""
+        rewrite(main, '    println!("{} {}", of(model::Model::key()) == native[0], of(model::shadowed::<()>()) == native[1]);', const_lookup)
         _, edited = side.cargo("run")
         how = how_built(edited.stderr)
         check("the daemon distinguishes two anonymous constants in native registrations",
               edited.returncode == 0 and edited.stdout.strip() == "true true" and how == "daemon", f"{how}, printed {edited.stdout.strip()!r}")
+        rewrite(main, const_lookup, """    extern "Rust" { fn registered_nested() -> [TypeId; 2]; }
+    let (func, key) = model::nested::<0>();
+    let native = unsafe { registered_nested() };
+    println!("{} {}", of(func) == native[0], of(key) == native[1]);""")
+        _, nested = side.cargo("run")
+        how = how_built(nested.stderr)
+        check("a nested function shadowing a const parameter and its local key match their native IDs",
+              nested.returncode == 0 and nested.stdout.strip() == "true true" and how == "daemon",
+              f"{how}, printed {nested.stdout.strip()!r}")
     finally:
         side.cargo("stop")
 

@@ -361,20 +361,27 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
     /// A function that the items of its body are children of.
     fn body_path(&mut self, func: FunctionId) -> Option<Fingerprint> {
         let db = self.db;
+        let name = &FunctionSignature::of(db, func).name;
+        let mut earlier = 0;
         let parent = match func.lookup(db).container {
             ItemContainerId::ImplId(id) if self.ours => self.own_impl(id)?,
             ItemContainerId::ImplId(id) => self.impl_path(id)?,
             ItemContainerId::ModuleId(module) if module.is_block_module(db) && !self.ours => {
-                self.around_local(module.block(db)?, &FunctionSignature::of(db, func).name)?
+                let around = self.around_local(module.block(db)?, name)?;
+                // A const parameter of the enclosing function already occupies this value name.
+                let params = &FunctionSignature::of(db, around).generic_params;
+                earlier = u32::from(params.iter_type_or_consts().any(|(_, param)| {
+                    param.const_param().is_some_and(|param| param.name.as_str() == name.as_str())
+                }));
+                self.body_path(around)?
             }
             ItemContainerId::ModuleId(module) => self.module(module)?,
             ItemContainerId::TraitId(trait_) => self.trait_path(trait_)?,
             ItemContainerId::ExternBlockId(_) => return None,
         };
-        let name = &FunctionSignature::of(db, func).name;
         // `#[test]` and `#[bench]` put a constant of the function's name ahead of it.
         let flags = AttrFlags::query(db, func.into());
-        let earlier = u32::from(flags.intersects(AttrFlags::IS_TEST | AttrFlags::IS_BENCH));
+        earlier += u32::from(flags.intersects(AttrFlags::IS_TEST | AttrFlags::IS_BENCH));
         Some(parent.child_at(DefPathData::ValueNs(name.as_str()), earlier))
     }
 
@@ -398,7 +405,7 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
         let name = &FunctionSignature::of(db, func).name;
         let parent = match func.lookup(db).container {
             ItemContainerId::ModuleId(module) if module.is_block_module(db) && !self.ours => {
-                self.around_local(module.block(db)?, name)?
+                return self.body_path(func);
             }
             ItemContainerId::ModuleId(module) => self.module(module)?,
             ItemContainerId::TraitId(trait_) => self.trait_path(trait_)?,
@@ -411,10 +418,10 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
     /// The function whose body declares, in `block`, the one function of it named `name`:
     /// rustc makes that function a child of this one, whichever block it is written in.
     fn around_local(
-        &mut self,
+        &self,
         block: hir_def::BlockIdLt<'db>,
         name: &hir_expand::name::Name,
-    ) -> Option<Fingerprint> {
+    ) -> Option<FunctionId> {
         let db = self.db;
         let (owner, _) = hir_ty::mir::type_name::block_owner(db, block)?;
         let DefWithBodyId::FunctionId(around) = owner else { return None };
@@ -433,7 +440,7 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
         if named_so.count() != 1 {
             return None;
         }
-        self.body_path(around)
+        Some(around)
     }
 
     /// The `DefPathHash` rustc gives a closure of a crate it compiled, which only code rustc
