@@ -112,7 +112,7 @@ impl Source {
     fn written_since(&self, built: SystemTime) -> bool {
         match self.generated {
             Some(generated) => content(&self.path) != Some(generated),
-            None => written(&self.path).is_some_and(|it| it > built),
+            None => written(&self.path).is_none_or(|it| it > built),
         }
     }
 }
@@ -301,7 +301,7 @@ fn names_of_object(data: &[u8], names: &mut Vec<Named>, copied: bool) {
 }
 
 /// A symbol of an object that may be rustc's copy of a static under a name LLVM gave it, or
-/// one private to the object: a named Rust static, with something after
+/// one private to the object: Rust's symbol of data in the loaded image, with something after
 /// the symbol rustc gave it (`.0`, `.llvm.<hash>`), or local.
 struct CopyOfStatic<'data> {
     /// Without Mach-O's `_`.
@@ -322,7 +322,7 @@ impl<'data> CopyOfStatic<'data> {
             return None;
         }
         let section = object.section_by_index(symbol.section_index()?).ok()?;
-        if !static_section(&section) {
+        if !matches_static_section(&section) {
             return None;
         }
         let name = symbol.name().ok()?;
@@ -342,24 +342,24 @@ impl<'data> CopyOfStatic<'data> {
     }
 }
 
-/// Sections that can hold a named Rust static. Read-only statics have observable addresses too.
-fn static_section(section: &object::Section<'_, '_>) -> bool {
-    let name = section.name_bytes().unwrap_or_default();
+/// Sections in which rustc can put a named static, including read-only relocation tables.
+fn matches_static_section(section: &object::Section<'_, '_>) -> bool {
     match section.flags() {
-        object::SectionFlags::MachO { .. } => macho_static_section(name),
-        object::SectionFlags::Elf { sh_flags } => elf_static_section(sh_flags, name),
+        object::SectionFlags::MachO { .. } => section.name_bytes().is_ok_and(macho_static_section),
+        object::SectionFlags::Elf { sh_flags } => elf_static_section(sh_flags),
         _ => false,
     }
 }
 
+/// Whether this Mach-O section can contain a static or a thread-local descriptor.
 pub(crate) fn macho_static_section(name: &[u8]) -> bool {
     matches!(name, b"__data" | b"__bss" | b"__common" | b"__thread_vars" | b"__const")
 }
 
-pub(crate) fn elf_static_section(flags: u64, name: &[u8]) -> bool {
-    flags & u64::from(object::elf::SHF_WRITE) != 0
-        || name == b".rodata"
-        || name.starts_with(b".rodata.")
+/// Whether an ELF data symbol belongs to the loaded image without being executable code.
+pub(crate) fn elf_static_section(flags: u64) -> bool {
+    flags & u64::from(object::elf::SHF_ALLOC) != 0
+        && flags & u64::from(object::elf::SHF_EXECINSTR) == 0
 }
 
 /// How long the symbol rustc made is at the start of `name`, a symbol LLVM may have put a
@@ -1058,7 +1058,7 @@ impl SymbolTable {
     /// A source that was written after rustc built the crate it is of: what rustc built is
     /// then not what it would build now.
     pub(crate) fn written_since_built(&self) -> Option<&Path> {
-        self.all_written_since_built().next()
+        self.all_written_since_built().next().map(|(_, file)| file)
     }
 
     /// Every file rustc read of the crates it built, as their dep-info files list them.
@@ -1066,15 +1066,17 @@ impl SymbolTable {
         self.built_from.iter().flat_map(|(_, sources)| sources.iter().map(|it| &*it.path))
     }
 
-    /// Every source that was written after rustc built the crate it is of.
-    pub(crate) fn all_written_since_built(&self) -> impl Iterator<Item = &Path> {
+    /// Each source written after rustc built its crate, paired with the crate's root.
+    pub(crate) fn all_written_since_built(&self) -> impl Iterator<Item = (&Path, &Path)> {
         let finished = self.finished();
         self.built_from.iter().flat_map(move |(_, sources)| {
-            let built = sources.first().and_then(|root| finished.get(&root.path).copied());
-            sources
-                .iter()
-                .filter(move |it| built.is_some_and(|built| it.written_since(built)))
-                .map(|it| &*it.path)
+            let unit = sources
+                .first()
+                .and_then(|root| Some((root.path.as_path(), *finished.get(&root.path)?)));
+            sources.iter().filter_map(move |source| {
+                let (root, built) = unit?;
+                source.written_since(built).then_some((root, source.path.as_path()))
+            })
         })
     }
 
