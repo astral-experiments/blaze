@@ -1,4 +1,4 @@
-name: Diagnose the multi-harness CI failure
+name: Locate the generated test executable fault
 on:
   push:
     branches: [charlie/ci-control-pr-7]
@@ -25,13 +25,18 @@ jobs:
           run-id: 40450861091
       - run: tar -xf ra-jit.tar
         working-directory: target/release
-      - name: Compare the unmodified CI fixture with the pinned rustc
+      - name: Record the sandboxed process core
         working-directory: harness
         shell: bash
         run: |
+          command -v gdb || { sudo apt-get update -qq && sudo apt-get install -y gdb; }
+          sudo sysctl -w 'kernel.core_pattern=|/bin/dd of=/tmp/blaze-ci-fixture.core status=none'
+          sudo sysctl -w kernel.core_pipe_limit=1
+          ulimit -c unlimited
           python3 - <<'PY'
           import os
           import pathlib
+          import re
           import shutil
           import subprocess
           import tempfile
@@ -39,34 +44,41 @@ jobs:
           import testselect
 
           binaries = pathlib.Path("../target/release").resolve()
-          cases = (("CI Cranelift", {"RA_JIT_BACKEND":"cranelift","RA_JIT_OPT":"2","RA_JIT_EMIT":"fast"}),
-                   ("CI LLVM", {"RA_JIT_BACKEND":"llvm","RA_JIT_OPT":"2","RA_JIT_EMIT":"fast"}),
-                   ("workstation defaults", {}))
-          failures = 0
-          for label, settings in cases:
-              with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory(dir="/tmp") as home:
-                  env = dict(os.environ, PATH=f"{binaries}:{os.environ['PATH']}", RA_JIT_BIN=str(binaries/"ra-jit"),
-                             RA_JIT_HOME=home, RUST_BACKTRACE="0", **settings)
-                  ws = pathlib.Path(root) / "unchanged"
-                  try:
-                      result = testselect.unchanged_instances(root, env)
-                      print(f"{label}: {result}", flush=True)
-                      failures += result != "ok"
-                      if label == "CI Cranelift":
-                          bootstrap = dict(env, RUSTC_BOOTSTRAP="1")
-                          rustc = subprocess.run(["cargo","test","--tests","--target-dir",str(ws/"oracle")],
-                                                 cwd=ws, env=bootstrap, text=True, capture_output=True)
-                          print(f"pinned rustc: {rustc.returncode}\n{rustc.stdout}{rustc.stderr}", flush=True)
-                          failures += rustc.returncode != 0
-                          if result != "ok" and shutil.which("strace"):
-                              trace = pathlib.Path(root) / "trace"
-                              more = subprocess.run(["strace","-f","-e","trace=wait4,waitid,exit_group",
-                                  "-o",str(trace),"cargo","ra-jit","test","--lib","-v"],
-                                  cwd=ws, env=dict(bootstrap, RA_JIT_TESTS="all"), text=True, capture_output=True)
-                              print(f"sandboxed rerun: {more.returncode}\n{more.stdout}{more.stderr}", flush=True)
-                              print("\n".join(s for s in trace.read_text().splitlines()
-                                    if any(k in s for k in ("SIGSEGV","SIGSYS","SIGILL","SIGABRT","SIGBUS")))[-3000:])
-                  finally:
-                      subprocess.run(["cargo","ra-jit","stop"], env=env, cwd=ws, capture_output=True)
-          raise SystemExit(bool(failures))
+          evidence = pathlib.Path(os.environ["RUNNER_TEMP"]) / "fixture-evidence"
+          evidence.mkdir()
+          root = tempfile.mkdtemp()
+          ws = pathlib.Path(root) / "unchanged"
+          env = dict(os.environ, PATH=f"{binaries}:{os.environ['PATH']}", RA_JIT_BIN=str(binaries/"ra-jit"),
+                     RA_JIT_BACKEND="cranelift", RA_JIT_OPT="2", RA_JIT_EMIT="fast",
+                     RA_JIT_HOME=tempfile.mkdtemp(dir="/tmp"), RUST_BACKTRACE="0", CARGO_TERM_COLOR="never")
+          result = testselect.unchanged_instances(root, env)
+          print(result, flush=True)
+          match = re.search(r"Running unittests src/lib.rs \(([^)]+)\)", result)
+          if not match:
+              raise SystemExit("failed to identify the emitted test executable")
+          shutil.copy2(ws/match.group(1), evidence/"blaze-unchanged")
+          native = subprocess.run(["cargo","test","--lib","--target-dir",str(ws/"oracle"),"--message-format=json"],
+                                  cwd=ws, env=dict(env, RUSTC_BOOTSTRAP="1"), text=True, capture_output=True, check=True)
+          import json
+          for line in native.stdout.splitlines():
+              if line.startswith("{") and (exe := json.loads(line).get("executable")):
+                  shutil.copy2(exe, evidence/"rustc-unchanged")
+          subprocess.run(["cargo","ra-jit","stop"], env=env, cwd=ws, capture_output=True)
+          for log in pathlib.Path(env["RA_JIT_HOME"]).rglob("log"):
+              if log.is_file() and log.stat().st_size < 4_000_000:
+                  shutil.copy2(log,evidence/("worker-" + log.parent.name + ".log"))
           PY
+          dir="$RUNNER_TEMP/fixture-evidence"
+          sudo cp /tmp/blaze-ci-fixture.core "$dir/core"
+          sudo chown "$(id -u):$(id -g)" "$dir/core"
+          gdb --batch -q "$dir/blaze-unchanged" "$dir/core" \
+            -ex 'set pagination off' -ex 'bt 16' -ex 'info registers rip rsp' \
+            -ex 'info symbol $pc' -ex 'info symbol *(void**)$rsp' \
+            -ex 'x/8gx $rsp' -ex 'x/12i *(void**)$rsp-24' -ex 'info proc mappings' \
+            2>&1 | tee "$dir/gdb.txt"
+          ls -lh "$dir"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: native-fixture-evidence
+          path: ${{ runner.temp }}/fixture-evidence
+          retention-days: 2
