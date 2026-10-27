@@ -1,0 +1,9 @@
+[package]
+name = "branch_frames"
+version = "0.0.0"
+edition = "2024"
+
+[workspace]
+
+[profile.test]
+opt-level = 1

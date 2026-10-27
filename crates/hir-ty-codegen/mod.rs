@@ -121,6 +121,7 @@ mod promote;
 mod revision;
 mod settled;
 mod stable;
+mod stack;
 mod startup;
 use ra_jit_store as store;
 pub use stable::{block_place, lower_declared, static_place};
@@ -9358,6 +9359,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
         }
         let unmentioned = unmentioned_locals(body);
+        let mut stack_locals = Vec::new();
         for (local, data) in body.locals.iter() {
             if self.locals.contains_idx(local)
                 || forwarded.contains_key(&local)
@@ -9407,6 +9409,9 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                     None if plain => self.promoted_slot(&layout)?,
                     None => self.stack_slot(&layout),
                 }
+            } else if frame.is_none() && !layout.is_unsized() {
+                stack_locals.push((local, layout));
+                continue;
             } else {
                 self.stack_slot(&layout)
             };
@@ -9417,6 +9422,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
             self.locals.insert(local, LocalSlot { addr, borrowed: false });
         }
+        stack::allocate(self, body, &forwarded, stack_locals);
         for (temp, to) in forwarded {
             self.locals.insert(temp, self.locals[to]);
         }
