@@ -24,7 +24,7 @@ jobs:
       BLAZE_SANDBOX: 'off'
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       RUST_MIN_STACK: 33554432
-      RUST_TEST_THREADS: ${{ inputs.suite == 'ruff-and-ty' && '1' || '4' }}
+      RUST_TEST_THREADS: 1
       INSTA_UPDATE: 'no'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -87,7 +87,8 @@ jobs:
               export UV_INTERNAL__TEST_NOCOW_FS=/tmpfs UV_INTERNAL__TEST_ALT_FS=/tmpfs
               export UV_INTERNAL__TEST_LOWLINKS_FS="$RUNNER_TEMP"
               cmd=(uv run --locked --only-group test blaze test --workspace --locked --no-fail-fast
-                   --features test-python-patch,test-universal,native-auth,secret-service)
+                   --features test-python-patch,test-universal,native-auth,secret-service
+                   -- --skip test::malformed_option::)
               ;;
             uv-archive-fixtures)
               cmd=(blaze test --locked -p uv --test build -- extract::)
@@ -100,6 +101,21 @@ jobs:
           if [[ "$SUITE" == uv-archive-fixtures ]]; then
             grep -Fq '39 passed; 0 failed' "$log"
           fi
+      - name: Run the shared inline snapshot once per process
+        if: ${{ !cancelled() && inputs.suite == 'uv' }}
+        working-directory: downstream
+        run: |
+          log="$RUNNER_TEMP/blaze-tests.log"
+          exe=$(awk '$1 == "Running" && $2 == "unittests" && $4 ~ /\/uv_requirements_txt-[[:xdigit:]]+\)$/ { print substr($4, 2, length($4)-2) }' "$log")
+          exe=$(realpath "$exe")
+          export CARGO_MANIFEST_DIR="$PWD/crates/uv-requirements-txt"
+          cd "$CARGO_MANIFEST_DIR"
+          mapfile -t cases < <("$exe" --list test::malformed_option:: | sed -n 's/: test$//p')
+          test "${#cases[@]}" -eq 3
+          for name in "${cases[@]}"; do
+            "$exe" --exact "$name" | tee "$RUNNER_TEMP/inline-snapshot.log"
+            grep -Fq '1 passed; 0 failed' "$RUNNER_TEMP/inline-snapshot.log"
+          done
       - name: Save Blaze-built executables for the Btrfs cases
         if: ${{ !cancelled() && inputs.suite == 'uv' }}
         working-directory: downstream
