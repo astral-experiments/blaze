@@ -33,7 +33,7 @@ use cli::{Asked, Invocation, Subcommand};
 use client::Start;
 use daemon::{Checkout, NotBuilt, Reply, Request};
 use state::{Built, Counts, Held, Staged, State};
-pub(crate) use units::Record;
+pub(crate) use units::{ProcMacroInputs, Record};
 
 /// `ra-jit cargo ...`: runs the command and ends with the status cargo would end with.
 pub(crate) fn command(args: impl Iterator<Item = String>) -> anyhow::Result<()> {
@@ -234,7 +234,7 @@ fn build(asked: &Invocation) -> anyhow::Result<i32> {
         let finished = format!("`{}` profile [ra-jit] target(s) in {took:.2}s", state.profile);
         say::status(asked.flags.quiet, "Finished", &finished);
     };
-    let read = State::read(&key);
+    let read = State::read_for_build(&key);
     note("client read state", CLIENT, started);
     if let Ok(state) = &read
         && asked.subcommand == Subcommand::Test
@@ -353,7 +353,7 @@ fn check(asked: &Invocation) -> anyhow::Result<i32> {
         toolchain::note_failed();
         Ok(FAILED)
     };
-    if let Ok(state) = State::read(&asked.key(&cwd))
+    if let Ok(state) = State::read_for_build(&asked.key(&cwd))
         && !state.programs.is_empty()
     {
         match by_daemon(state) {
