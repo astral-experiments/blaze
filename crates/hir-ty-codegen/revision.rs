@@ -7,7 +7,12 @@ use std::sync::LazyLock;
 
 use cranelift_codegen::ir::Signature;
 use hir_def::{FunctionId, HasModule};
-use hir_ty::{ParamEnvAndCrate, db::HirDatabase, mir::MirBody, next_solver::GenericArgs};
+use hir_ty::{
+    ParamEnvAndCrate,
+    db::HirDatabase,
+    mir::{MirBody, TerminatorKind},
+    next_solver::GenericArgs,
+};
 use serde_derive::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -41,6 +46,13 @@ fn edit_bodies(proof: &Proof) -> Vec<FunctionId> {
     proof.bodies.iter().map(|&index| proof.callees[index as usize]).collect()
 }
 
+/// Looking for inline callees in a leaf needs no proof of its source or literal tables.
+fn has_calls(body: &MirBody<'_>) -> bool {
+    body.basic_blocks.iter().any(|(_, block)| {
+        block.terminator.as_ref().is_some_and(|t| matches!(t.kind, TerminatorKind::Call { .. }))
+    })
+}
+
 /// Applies the edit worker's body proof while building a small callee for LLVM.
 pub(super) fn nested_edit_bodies<'db>(
     db: &'db dyn HirDatabase,
@@ -49,7 +61,7 @@ pub(super) fn nested_edit_bodies<'db>(
     env: ParamEnvAndCrate<'db>,
     checked: bool,
 ) -> Vec<FunctionId> {
-    if edit_inlining() && func.krate(db).data(db).origin.is_local() {
+    if edit_inlining() && func.krate(db).data(db).origin.is_local() && has_calls(body) {
         return proof::prove(db, func, body, env, checked, Policy::LlvmAnnotated)
             .as_ref()
             .map(edit_bodies)
@@ -106,7 +118,7 @@ pub(super) fn compile<'db>(
         .any(|name| std::env::var_os(name).is_some())
     });
     let store = store.filter(|_| !*CHECKING);
-    let proof = if store.is_some() || policy == Policy::LlvmAnnotated {
+    let proof = if store.is_some() || (policy == Policy::LlvmAnnotated && has_calls(body)) {
         proof::prove(db, func, body, env, checked, policy)
     } else {
         None
@@ -163,7 +175,7 @@ struct Record {
     calls: Vec<(u32, Signature)>,
     /// Validated bodies shown to LLVM. Their code can matter even after a call disappears.
     inlined: Vec<u32>,
-    /// Rust MIR can put integer literals in read-only data. These contain no pointers.
+    /// Read-only literals in dependency order. Their pointers name earlier entries.
     literals: Vec<ConstBlob>,
     /// Indices into the current body's source locations.
     spans: Vec<u32>,
@@ -198,7 +210,7 @@ impl Record {
             let DataRequest::Blob { blob, identity: DataIdentity::Shared } = data else {
                 return None;
             };
-            if !blob.type_ids.is_empty() || !blob.sound(0, 0) {
+            if !literal_is_sound(blob, &literals) {
                 return None;
             }
             literals.push(blob.clone());
@@ -265,7 +277,11 @@ impl Record {
         env: ParamEnvAndCrate<'_>,
         checked: bool,
     ) -> Option<CompiledFunction> {
-        if !self.literals.iter().all(|blob| blob.sound(0, 0))
+        if !self
+            .literals
+            .iter()
+            .enumerate()
+            .all(|(i, blob)| literal_is_sound(blob, &self.literals[..i]))
             || !self.code.sound(|ns| match ns {
                 0 => self.calls.len(),
                 1 => self.literals.len(),
@@ -320,6 +336,33 @@ impl Record {
             variables: (!vars.is_empty()).then(|| (env.store(), vars)),
             layouts: Vec::new(),
         })
+    }
+}
+
+/// A literal can refer to bytes in an earlier shared allocation. Stitching rebinds those
+/// indices in order, so no function, type or data address from the producer can escape.
+fn literal_is_sound(blob: &ConstBlob, earlier: &[ConstBlob]) -> bool {
+    blob.type_ids.is_empty()
+        && blob.sound(0, earlier.len())
+        && blob.relocs.iter().all(|&(_, target, addend)| {
+            usize::try_from(addend)
+                .is_ok_and(|offset| offset <= earlier[target.as_u32() as usize].bytes.len())
+        })
+}
+
+#[test]
+fn literal_pointers_stay_in_an_earlier_allocation() {
+    let earlier = [ConstBlob { bytes: vec![1, 2], ..ConstBlob::default() }];
+    let mut blob = ConstBlob {
+        bytes: vec![0; super::word()],
+        relocs: vec![(0, super::DataId::from_u32(0), 1)],
+        ..ConstBlob::default()
+    };
+    assert!(literal_is_sound(&blob, &earlier));
+    assert!(!literal_is_sound(&blob, &[]));
+    for offset in [-1, 3] {
+        blob.relocs[0].2 = offset;
+        assert!(!literal_is_sound(&blob, &earlier));
     }
 }
 

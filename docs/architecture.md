@@ -252,6 +252,14 @@ and a range check such as `self.start <= byte && byte <= self.end`. The proof ch
 receiver’s size and alignment, each field’s type and offset, and which fields the method
 reads. Changing the struct representation can recompile an unchanged method.
 
+A constructor with no arguments can also reuse a read-only lookup table assembled from
+literal arrays, tuples and shared borrows. For example, regex-syntax constructs its
+case folder from a module constant of type `&[(char, &[char])]`. Blaze checks the
+resolved initializer and the layouts of the values the constructor builds, including
+enum tags and field offsets. A hit restores the code and its immutable allocations
+without evaluating the table again. Each pointer in the stored table refers to an
+earlier allocation in the same record.
+
 At `-O2` and `-O3`, LLVM edit workers can inline small workspace functions marked
 `#[inline]` or `#[inline(always)]`. Reuse depends on the MIR of every body LLVM could
 inline, including transitive calls. Whole-program LLVM builds check every workspace body

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check per-function disk reuse when a fresh Blaze worker starts after an edit or its undo.
 
-    RA_JIT_BIN=.../ra-jit python3 harness/storerevisions.py [leaf|inline|signature|binding|tag|field|layout ...]
+    RA_JIT_BIN=.../ra-jit python3 harness/storerevisions.py [case ...]
 
 Each forward build starts on a copy of the store containing only A. Each undo starts on a
 store populated independently from B, so an exact hit for the old checkout cannot hide an
@@ -26,6 +26,7 @@ LIVE_HELPER = """#[inline]
 pub fn cache_inline(x: i32) -> i32 { x + 2 }
 """
 LIB = """pub mod fields;
+pub mod tables;
 mod tags;
 use cache_leaf as selected;
 
@@ -34,6 +35,13 @@ impl fields::Header {
     pub fn cache_field(&self) -> u8 { self.value }
     #[inline(never)]
     pub fn cache_contains(&self, byte: u8) -> bool { self.value <= byte && byte <= self.prefix }
+}
+
+impl tables::Folder {
+    #[inline(never)]
+    pub fn cache_folder() -> Result<Self, tables::FoldError> {
+        Ok(Self { table: tables::FOLDS, last: None, flag: tables::Flag::Idle, next: 0 })
+    }
 }
 
 #[inline(never)]
@@ -73,6 +81,13 @@ overflow-checks = false
     "lib/Cargo.toml": '[package]\nname = "store_dep"\nversion = "0.1.0"\nedition = "2021"\n',
     "lib/src/lib.rs": LIB,
     "lib/src/fields.rs": "#[repr(C)] pub struct Header { pub prefix: u8, pub value: u8, pub tail: u32 }\n",
+    "lib/src/tables.rs": """pub const FOLDS: &[(char, &[char])] = &[('K', &['k', 'K']), ('S', &['s', 'ſ'])];
+#[repr(u8)]
+pub enum Flag { Idle = 1, Other = 7 }
+#[repr(C)]
+pub struct Folder { pub last: Option<char>, pub flag: Flag, pub table: &'static [(char, &'static [char])], pub next: usize }
+pub struct FoldError(());
+""",
     "lib/src/tags.rs": "pub const TAG: i32 = 1;\n",
     "src/main.rs": """#[inline(never)]
 fn cache_public_caller(x: u8) -> i32 { store_dep::cache_public(x) as i32 }
@@ -85,8 +100,11 @@ fn main() {
     bytes[4] = x as u8 + 150;
     let header: store_dep::fields::Header = unsafe { std::mem::transmute(bytes) };
     let needle = if x == 1 { 50 } else { 125 };
-    println!("{} {} {} {} {} {} {} {} {} {} {}", store_dep::cache_leaf_caller(x), store_dep::cache_inline_caller(x),
+    let Ok(folder) = store_dep::tables::Folder::cache_folder() else { std::process::exit(2) };
+    let folded = folder.table[folder.next].1[1] as u32;
+    println!("{} {} {} {} {} {} {} {} {} {} {} {} {} {}", store_dep::cache_leaf_caller(x), store_dep::cache_inline_caller(x),
              header.cache_field(), header.cache_contains(needle),
+             folded, std::mem::offset_of!(store_dep::tables::Folder, table), folder.flag as u8,
              cache_public_caller(x as u8), store_dep::cache_sibling(x), store_dep::cache_if(signed),
              store_dep::cache_switch(x), store_dep::cache_switch(signed), store_dep::cache_arm(signed),
              store_dep::cache_embedded());
@@ -106,6 +124,9 @@ CASES = {
     "tag": ("TAG: i32 = 1", "TAG: i32 = 2", {"cache_switch"}, {"cache_if", "cache_sibling"}),
     "field": ("{ self.value }", "{ self.prefix }", {"cache_field"}, {"cache_sibling", "cache_contains"}),
     "layout": ("#[repr(C)]", "#[repr(Rust)]", {"cache_field", "cache_contains"}, {"cache_sibling"}),
+    "table": ("'K'", "'Å'", {"cache_folder"}, {"cache_sibling"}),
+    "table-layout": ("#[repr(C)]", "#[repr(Rust)]", {"cache_folder"}, {"cache_sibling"}),
+    "table-tag": ("Idle = 1, Other = 7", "Idle = 7, Other = 1", {"cache_folder"}, {"cache_sibling"}),
 }
 
 
@@ -224,6 +245,7 @@ def build(ws, store, label, inline=False, live=False):
 def decisions(log, label, lowered, reused):
     header = "<store_dep::fields::Header>"
     paths = {"cache_public_caller": "store_app::cache_public_caller",
+             "cache_folder": "<store_dep::tables::Folder>::cache_folder",
              "cache_field": f"{header}::cache_field", "cache_contains": f"{header}::cache_contains"}
     events = {"lowered": set(), "reused": set()}
     for action, path in re.findall(r"^function cache: (lowered|reused) (.+)$", log, re.M):
@@ -259,9 +281,13 @@ def main():
     llvm = os.environ.get("RA_JIT_BACKEND") == "llvm"
     for case in cases:
         old, new, lowered, reused = CASES[case]
+        if "cache_folder" not in lowered:
+            reused = reused | {"cache_folder"}
         if llvm and case != "inline":
             reused = reused | {"cache_inline_caller", "cache_arm"}
-        filename = {"tag": "lib/src/tags.rs", "layout": "lib/src/fields.rs"}.get(case, "lib/src/lib.rs")
+        filename = {"tag": "lib/src/tags.rs", "layout": "lib/src/fields.rs",
+                    "table": "lib/src/tables.rs", "table-layout": "lib/src/tables.rs",
+                    "table-tag": "lib/src/tables.rs"}.get(case, "lib/src/lib.rs")
         contents = FILES[filename]
         assert contents.count(old) == 1
         edited = checkout(ws, f"{case}-edit")
@@ -276,6 +302,14 @@ def main():
         if case == "layout":
             assert [s.split()[3] for s in original] == ["true", "false"]
             assert [s.split()[3] for s in changed] == ["false", "true"]
+        if case == "table":
+            assert all(int(s.split()[4]) == ord("K") for s in original)
+            assert all(int(s.split()[4]) == ord("Å") for s in changed)
+        if case == "table-layout":
+            assert all(a.split()[4] == b.split()[4] and a.split()[5] != b.split()[5]
+                       for a, b in zip(original, changed))
+        if case == "table-tag":
+            assert all(a.split()[6] == "1" and b.split()[6] == "7" for a, b in zip(original, changed))
         if case == "inline":
             assert [a.split()[-2] != b.split()[-2] for a, b in zip(original, changed)] == [True, False]
         if case == "tag":
