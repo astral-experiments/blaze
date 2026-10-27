@@ -76,14 +76,22 @@ fn serving() -> bool {
 fn main() {
     let numbers: Vec<usize> = (0..std::env::args().count() + 3).collect();
     assert!(std::ptr::eq(REGISTERED.load(Ordering::Relaxed), &RULE));
-    println!("{} {}", serving(), numbers.len() + value());
+    let registered = unsafe { *REGISTERED.load(Ordering::Relaxed) };
+    assert_eq!(registered, RULE);
+    println!("{} {} {}", serving(), numbers.len() + value(), registered);
 }
 """,
 }
 # (what the step is, (old, new) in app/src/main.rs, what the program prints after it)
+COLD_EDIT = "a later edit with a fresh worker"
 STEPS = [
-    ("a value `serving()` inlines", ("    1\n", "    2\n"), "true 6"),
-    ("and again", ("    2\n", "    5\n"), "true 9"),
+    ("a value `serving()` inlines", ("    1\n", "    2\n"), "true 6 invalid-assignment"),
+    ("and again", ("    2\n", "    5\n"), "true 9 invalid-assignment"),
+    ("change a shared readonly initializer", ('= "invalid-assignment";', '= "changed rule";'), "true 9 changed rule"),
+    ("change code alongside the new value", ("    5\n", "    6\n"), "true 10 changed rule"),
+    ("restore its initializer", ('= "changed rule";', '= "invalid-assignment";'), "true 10 invalid-assignment"),
+    ("change the initializer before a restart", ('= "invalid-assignment";', '= "cold rule";'), "true 10 cold rule"),
+    (COLD_EDIT, ("    6\n", "    7\n"), "true 11 cold rule"),
 ]
 
 
@@ -138,12 +146,17 @@ def main():
             text = open(source).read()
             assert old in text, (what, old)
             open(source, "w").write(text.replace(old, new, 1))
+            cold = what == COLD_EDIT
+            if cold:
+                subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, check=True,
+                               capture_output=True, timeout=120)
             said = build(ws, env, what)
             printed = subprocess.run([program], capture_output=True, text=True, timeout=60).stdout.strip()
             verdict = "ok"
             if printed != expected:
                 verdict = f"PRINTED {printed!r}, NOT {expected!r}"
-            elif "[ra-jit]" not in said:
+            # A fresh worker may need Cargo to rebuild the stale native allocation.
+            elif not cold and "[ra-jit]" not in said:
                 why = [line for line in said.splitlines() if "ra-jit" in line]
                 verdict = "NOT SERVED BY THE DAEMON: " + " | ".join(why)[-600:]
             wrong += verdict != "ok"

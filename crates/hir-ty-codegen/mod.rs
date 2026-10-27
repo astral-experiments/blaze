@@ -6623,10 +6623,19 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         // address rustc took with one we take, even when neither side writes to the static.
         let linked_static = !self.symbols.nothing_of_rustc()
             && symbol.as_ref().is_some_and(|it| self.symbols.linked(it));
-        let shared =
-            linked_static && in_base.map_or_else(|| self.rustc_values.kept(db, id), |it| it.shared);
+        // A patch of an immutable static writes the new initializer at the base symbol,
+        // preserving the address embedded in rustc's code and data.
+        let replacing = in_base.is_some_and(|it| it.shared && !it.writable)
+            && self.replaced.changed.contains(&patch::Node::Static(id));
+        let shared = linked_static
+            && !replacing
+            && in_base.map_or_else(|| self.rustc_values.kept(db, id), |it| it.shared);
+        if linked_static && !shared && !replacing && in_base.is_none() && !stateful() {
+            let name = StaticSignature::of(db, id).name.as_str().to_owned();
+            unsupported!("the linked read-only static `{name}` is from before the edit");
+        }
         // The program has the base's copy, and what it wrote there.
-        let base_owns = linked_static && in_base.is_some_and(|it| !it.shared);
+        let base_owns = replacing || linked_static && in_base.is_some_and(|it| !it.shared);
         let ours = !shared
             && (base_owns || self.own_statics.replaces(db, id))
             && compiled_static(db, id).is_ok();
@@ -6651,12 +6660,28 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             if linked_static {
                 self.shared_statics.insert(id, data);
             }
-            // rustc's value of the static points to rustc's copies of functions.
-            if self.on_demand_crates.contains(&id.krate(db))
+            let on_demand = self.on_demand_crates.contains(&id.krate(db));
+            if (linked_static || on_demand)
                 && let Ok(compiled) = compiled_static(db, id).as_ref()
             {
-                let unseen = self.want_requested(&compiled.requests);
-                self.want_all_called(&unseen);
+                if on_demand {
+                    // rustc's value of the static points to rustc's copies of functions.
+                    let unseen = self.want_requested(&compiled.requests);
+                    self.want_all_called(&unseen);
+                }
+                // rustc's initializer can also point into another static. Record that
+                // allocation so a later edit updates what the pointer actually addresses.
+                if linked_static {
+                    for request in &compiled.requests.datas {
+                        if let DataRequest::Static(child) = request
+                            && let Err(error) = self.static_data(*child)
+                        {
+                            self.imported_statics.remove(&id);
+                            self.shared_statics.remove(&id);
+                            return Err(error);
+                        }
+                    }
+                }
             }
             return Ok(data);
         }
