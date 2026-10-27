@@ -1684,7 +1684,6 @@ impl Rejections {
     /// Notes that files rustc read, as it read them, were taken in for the first time: a build
     /// of the daemon's own compiled without them, and what rustc linked is of them.
     pub fn touch_own(&mut self, db: &dyn HirDatabase) {
-        self.frozen.edit(base_db::all_crates(db).iter().copied());
         if let Some(base) = &mut self.base {
             base.touch(db, None);
         }
