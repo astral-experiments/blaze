@@ -138,10 +138,22 @@ fn prove_body<'db>(
     {
         return None;
     }
-    let mut proof = Evidence { db, body, env, hash: Sha256::new(), callees: Vec::new(), policy };
+    let mut proof = Evidence {
+        db,
+        body,
+        env,
+        hash: Sha256::new(),
+        callees: Vec::new(),
+        policy,
+        receiver: None,
+    };
     // Most functions have a pointer or a Rust aggregate. Decline them before reading source.
-    for (_, local) in body.locals.iter() {
-        proof.field(integer(local.ty.as_ref())?);
+    for (id, local) in body.locals.iter() {
+        if let Some(ty) = integer(local.ty.as_ref()) {
+            proof.field(ty);
+        } else {
+            proof.receiver = Some(proof.shared_receiver(func, id, local.ty.as_ref())?);
+        }
     }
     let source = proof.signature(func)?;
     // Span and binding indices are local to a written body. Macros and conditional source
@@ -223,7 +235,7 @@ fn prove_body<'db>(
                 target,
                 cleanup,
                 from_hir_call: true,
-            } => {
+            } if proof.receiver.is_none() => {
                 proof.field(b"call");
                 proof.callee(func)?;
                 for arg in args {
@@ -242,6 +254,9 @@ fn prove_body<'db>(
             TerminatorKind::Unreachable => proof.field(b"unreachable"),
             _ => return None,
         }
+    }
+    if proof.receiver.is_some_and(|receiver| !receiver.read) {
+        return None;
     }
     Some((proof.hash.finalize().into(), proof.callees))
 }
@@ -275,6 +290,14 @@ struct Evidence<'a, 'db> {
     hash: Sha256,
     callees: Vec<FunctionId>,
     policy: Policy,
+    receiver: Option<SharedReceiver<'db>>,
+}
+
+struct SharedReceiver<'db> {
+    local: LocalId,
+    pointee: Ty<'db>,
+    fields: Vec<Ty<'db>>,
+    read: bool,
 }
 
 impl<'db> Evidence<'_, 'db> {
@@ -300,11 +323,72 @@ impl<'db> Evidence<'_, 'db> {
         self.index(id);
     }
 
+    /// A shared receiver made entirely of primitive fields. LLVM's pointee attributes
+    /// depend on its size, alignment and `Freeze`, even if only one field is read.
+    fn shared_receiver(
+        &mut self,
+        func: FunctionId,
+        local: LocalId,
+        ty: Ty<'db>,
+    ) -> Option<SharedReceiver<'db>> {
+        if self.body.param_locals.first() != Some(&local) {
+            return None;
+        }
+        let TyKind::Ref(_, pointee, Mutability::Not) = ty.kind() else { return None };
+        let TyKind::Adt(def, args) = pointee.kind() else { return None };
+        let AdtId::StructId(id) = def.def_id() else { return None };
+        let db = self.db;
+        let ItemContainerId::ImplId(impl_) = func.lookup(db).container else { return None };
+        if !args.is_empty()
+            || self
+                .body
+                .locals
+                .iter()
+                .any(|(id, other)| id != local && integer(other.ty.as_ref()).is_none())
+            || !FunctionSignature::of(db, func).has_self_param()
+            || db.impl_trait(impl_).is_some()
+            || !id.krate(db).data(db).origin.is_local()
+        {
+            return None;
+        }
+        let interner = DbInterner::new_with(db, self.env.krate);
+        let decls = id.fields(db).fields();
+        let types = db.field_types(id.into());
+        let mut fields = Vec::with_capacity(decls.len());
+        self.field(b"shared scalar fields");
+        for (decl, _) in decls.iter() {
+            let ty = types.get(decl)?.ty().instantiate(interner, args).skip_norm_wip();
+            if ty.is_unit() {
+                return None;
+            }
+            self.field(integer(ty)?);
+            fields.push(ty);
+        }
+        if impl_.lookup(db).source(db).value.generic_param_list().is_some()
+            || db.impl_self_ty(impl_).instantiate(interner, args).skip_norm_wip() != pointee
+            || !hir_ty::drop::is_freeze(db, interner, pointee)
+        {
+            return None;
+        }
+        let layout = db.layout_of_ty(pointee.store(), self.env.store()).ok()?;
+        if !matches!(layout.variants, Variants::Single { .. })
+            || layout.fields.count() != fields.len()
+        {
+            return None;
+        }
+        self.field(&layout.size.bytes().to_le_bytes());
+        self.field(&layout.align.abi.bytes().to_le_bytes());
+        for index in 0..fields.len() {
+            self.field(&layout.fields.offset(index).bytes().to_le_bytes());
+        }
+        Some(SharedReceiver { local, pointee, fields, read: false })
+    }
+
     fn signature(&mut self, func: FunctionId) -> Option<ast::Fn> {
         let db = self.db;
         let loc = func.lookup(db);
         let sig = FunctionSignature::of(db, func);
-        if !matches!(loc.container, ItemContainerId::ModuleId(_))
+        if self.receiver.is_none() && !matches!(loc.container, ItemContainerId::ModuleId(_))
             || !func.krate(db).data(db).origin.is_local()
             || sig.abi != ExternAbi::Rust
             || sig.is_varargs()
@@ -346,7 +430,17 @@ impl<'db> Evidence<'_, 'db> {
         }
         let types = db.callable_item_signature(func.into()).skip_binder().skip_binder();
         self.field(rustc_function_name(db, func, &[])?.as_bytes());
-        for ty in types.inputs() {
+        let inputs = if let Some(receiver) = &self.receiver {
+            let (arg, rest) = types.inputs().split_first()?;
+            if !matches!(arg.kind(), TyKind::Ref(_, ty, Mutability::Not) if ty == receiver.pointee)
+            {
+                return None;
+            }
+            rest
+        } else {
+            types.inputs()
+        };
+        for ty in inputs {
             self.field(integer(*ty)?);
         }
         self.field(b"returns");
@@ -393,6 +487,9 @@ impl<'db> Evidence<'_, 'db> {
 
     fn place(&mut self, place: &StoredPlace) -> Option<LocalId> {
         let local = place.as_ref().as_local()?;
+        if self.receiver.as_ref().is_some_and(|receiver| receiver.local == local) {
+            return None;
+        }
         self.index(local.into_raw().into_u32());
         Some(local)
     }
@@ -402,8 +499,22 @@ impl<'db> Evidence<'_, 'db> {
         Some(match &operand.kind {
             OperandKind::Copy(p) => {
                 self.field(b"copy");
-                let local = self.place(p)?;
-                self.body.locals[local].ty.as_ref()
+                if let [ProjectionElem::Deref, ProjectionElem::Field(field)] =
+                    p.projection.as_slice()
+                {
+                    let receiver = self.receiver.as_mut()?;
+                    if p.local != receiver.local {
+                        return None;
+                    }
+                    let ty = *receiver.fields.get(field.0 as usize)?;
+                    receiver.read = true;
+                    self.field(b"receiver field");
+                    self.index(field.0);
+                    ty
+                } else {
+                    let local = self.place(p)?;
+                    self.body.locals[local].ty.as_ref()
+                }
             }
             OperandKind::Move(p) => {
                 self.field(b"move");

@@ -246,6 +246,12 @@ can therefore invalidate the matcher even when its source is unchanged. A hit sk
 and emission and rebinds relocations and debug locations to the current checkout.
 Changing an out-of-line callee's body can preserve the caller's entry.
 
+An inherent method on a non-generic struct of integers and booleans can also be reused
+when it reads fields through `&self` and uses scalar operations. Examples include a getter
+and a range check such as `self.start <= byte && byte <= self.end`. The proof checks the
+receiver’s size and alignment, each field’s type and offset, and which fields the method
+reads. Changing the struct representation can recompile an unchanged method.
+
 At `-O2` and `-O3`, LLVM edit workers can inline small workspace functions marked
 `#[inline]` or `#[inline(always)]`. Reuse depends on the MIR of every body LLVM could
 inline, including transitive calls. Whole-program LLVM builds check every workspace body
