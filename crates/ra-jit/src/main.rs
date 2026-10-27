@@ -6087,7 +6087,7 @@ impl WatchPaths {
                 targets.push(PathBuf::from(cargo.target_directory()));
                 for package in cargo.packages() {
                     if let Some(dylib) = build_scripts.proc_macro_dylib(package) {
-                        proc_macros.record_proc_macro(dylib.as_ref(), &cargo[package].name);
+                        proc_macros.record_proc_macro(dylib.as_ref());
                     }
                 }
             }

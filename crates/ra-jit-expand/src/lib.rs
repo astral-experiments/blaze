@@ -110,6 +110,17 @@ fn wrap(
     Arc::new(Kept { inner, dylib: Dylib::at(dylib), name: name.into(), kind, skipped })
 }
 
+/// The identity of the host binary whose expansions can enter downstream compiler artifacts.
+pub fn dylib_hash(db: &dyn SourceDatabase, krate: base_db::Crate) -> Option<[u8; KEY]> {
+    if !krate.data(db).target_kind.is_proc_macro() {
+        return None;
+    }
+    let macros = hir_expand::proc_macro::ProcMacros::get_for_crate(db, krate)?;
+    let expander = &*macros.macros()?.first()?.expander;
+    let kept = (expander as &dyn Any).downcast_ref::<Kept>()?;
+    kept.dylib.hash().copied()
+}
+
 /// A dylib of proc macros, hashed the first time one of its macros expands.
 #[derive(Debug)]
 struct Dylib {

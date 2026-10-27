@@ -130,6 +130,9 @@ fn key_of(
             field(&hash);
         }
     }
+    if let Some(hash) = ra_jit_expand::dylib_hash(db, krate) {
+        field(&hash);
+    }
     let deps: Vec<_> =
         data.dependencies.iter().map(|it| (it.crate_id, it.name.to_string())).collect();
     for (dep, name) in deps {

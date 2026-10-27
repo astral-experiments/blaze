@@ -20,33 +20,11 @@ pub(crate) struct GeneratedInputs(FxHashMap<PathBuf, Option<u64>>);
 impl GeneratedInputs {
     /// Captures the generated inputs read by a host proc macro. Its dylib is loaded by the
     /// compiler and has no symbols in the target's native link.
-    pub(crate) fn record_proc_macro(&mut self, dylib: &Path, package: &str) {
-        let name = dylib.file_name().and_then(|name| name.to_str());
-        let Some(stem) = name
-            .and_then(|name| name.strip_prefix(std::env::consts::DLL_PREFIX))
-            .and_then(|name| name.strip_suffix(std::env::consts::DLL_SUFFIX))
-        else {
-            return;
-        };
-        let Ok(text) = std::fs::read_to_string(dylib.with_file_name(format!("{stem}.d"))) else {
-            return;
-        };
-        let fingerprint = if let Some(unit) = crate::cargo::layout::unit_dir(dylib) {
-            Some(unit.dir.join("fingerprint"))
-        } else {
-            stem.rsplit_once('-').and_then(|(_, hash)| {
-                crate::cargo::layout::profile_of(dylib)
-                    .map(|p| p.join(".fingerprint").join(format!("{package}-{hash}")))
-            })
-        };
-        let started = fingerprint.and_then(|dir| written(&dir.join("invoked.timestamp")));
-        let started = started.filter(|start| written(dylib).is_some_and(|built| *start <= built));
-        // Cargo passes OUT_DIR as an absolute path. The proc macro's working directory may
-        // differ from the workspace root for the other paths in its dep-info.
-        for path in
-            DepInfo::parse(&text).files.into_iter().map(PathBuf::from).filter(|p| p.is_absolute())
-        {
-            self.record_source(path, started);
+    pub(crate) fn record_proc_macro(&mut self, dylib: &Path) {
+        if let Some(inputs) = crate::cargo::ProcMacroInputs::of(dylib) {
+            for path in inputs.generated {
+                self.record_source(path, inputs.started);
+            }
         }
     }
 
@@ -1855,7 +1833,7 @@ mod tests {
             for (written, expected) in [(1, true), (3, false)] {
                 source.set_modified(UNIX_EPOCH + Duration::from_secs(written)).unwrap();
                 let mut inputs = super::GeneratedInputs::default();
-                inputs.record_proc_macro(&dylib, "version-macro");
+                inputs.record_proc_macro(&dylib);
                 assert_eq!(
                     super::GeneratedInputs::as_read([&inputs].into_iter(), &path, "8"),
                     Some(expected)

@@ -314,6 +314,41 @@ BENCHED_ADDED = ("src/lib.rs", "    #[test]\n    fn adds()",
                  "    #[test]\n    fn added() {\n        assert_eq!(add(2), 3);\n    }\n\n    #[test]\n    fn adds()")
 
 
+def generated_proc_macro_input(root, env):
+    """An edit to a host macro's generated input changes what its test expands to."""
+    app = Path(root, "macro-app")
+    macro = Path(root, "version-macro")
+    files = {
+        app / "Cargo.toml": '[package]\nname="macro-app"\nversion="0.1.0"\nedition="2021"\n'
+                            '[dependencies]\nversion-macro={path="../version-macro"}\n[workspace]\n',
+        app / "src/lib.rs": '#[test]\nfn selected_version() { assert_eq!(version_macro::version!(), 1); }\n',
+        macro / "Cargo.toml": '[package]\nname="version-macro"\nversion="0.1.0"\nedition="2021"\n'
+                              '[lib]\nproc-macro=true\n[workspace]\n',
+        macro / "build.rs": '''fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    let dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(dir.join("version.expr"), "1_u32").unwrap();
+}
+''',
+        macro / "src/lib.rs": '''const VERSION: u32 = include!(concat!(env!("OUT_DIR"), "/version.expr"));
+#[proc_macro]
+pub fn version(_: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    VERSION.to_string().parse().unwrap()
+}
+''',
+    }
+    for path, text in files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    for value, status, expected in [(None, 0, "ok"), (2, 101, "FAILED"), (1, 0, "ok")]:
+        if value is not None:
+            (expression,) = (app / "target/debug/build").rglob("version.expr")
+            expression.write_text(f"{value}_u32")
+        code, said = test(app, env, "all --lib")
+        if code != status or "[ra-jit]" not in said or ("selected_version", expected) not in RAN.findall(said):
+            return f"FAILED with version {value}\n{said[-3000:]}"
+    return "ok"
+
 def unchanged_instances(root, env):
     """Both harnesses use the same native instance. Only the second reads the edited expression."""
     ws = os.path.join(root, "unchanged")
@@ -492,6 +527,9 @@ def main():
                 print(said[-4000:])
             if manifest:
                 served(f"after {what}")
+        verdict = generated_proc_macro_input(root, env)
+        wrong += verdict != "ok"
+        print(f"{'generated proc macro input':34} {verdict}", flush=True)
         verdict = unchanged_instances(root, env)
         wrong += verdict != "ok"
         print(f"{'unchanged native instance across harnesses':34} {verdict}", flush=True)
@@ -501,7 +539,7 @@ def main():
     finally:
         subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, capture_output=True, timeout=120)
         shutil.rmtree(OUTSIDE, ignore_errors=True)
-    print(f"{len(STEPS) + 2 - wrong} of {len(STEPS) + 2} right; under {root}, the daemon's home {home}")
+    print(f"{len(STEPS) + 3 - wrong} of {len(STEPS) + 3} right; under {root}, the daemon's home {home}")
     if wrong:
         sys.exit(1)
     shutil.rmtree(root, ignore_errors=True)

@@ -120,6 +120,9 @@ impl Contents {
         let name = krate.extra_data(db).display_name.as_ref().map(|it| it.to_string());
         field(name.unwrap_or_default().as_bytes());
         field(format!("{:?} {}", data.edition, data.target_kind.is_proc_macro()).as_bytes());
+        if let Some(hash) = ra_jit_expand::dylib_hash(db, krate) {
+            field(&hash);
+        }
         for attr in &data.crate_attrs {
             field(attr.as_bytes());
         }
@@ -255,6 +258,9 @@ impl Contents {
         };
         field(b"ra-jit library 4");
         field(Self::version(db, krate).as_bytes());
+        if let Some(hash) = ra_jit_expand::dylib_hash(db, krate) {
+            field(&hash);
+        }
         // Where cargo fetched it to is under another directory on another machine.
         let root = root.to_string_lossy();
         let home = self.cargo_home(db);
@@ -284,6 +290,9 @@ impl Contents {
     /// id is 64 bits and rustc's to choose, so it is never all that tells two crates apart.
     fn outside(db: &RootDatabase, krate: Crate, rustc_id: Option<u64>) -> Hash {
         let mut hasher = Sha256::new();
+        if let Some(hash) = ra_jit_expand::dylib_hash(db, krate) {
+            hasher.update(hash);
+        }
         let named = Self::version(db, krate);
         hasher.update((named.len() as u64).to_le_bytes());
         hasher.update(named.as_bytes());

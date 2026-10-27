@@ -13,6 +13,27 @@ use serde::{Deserialize, Serialize};
 
 use crate::dep_info::DepInfo;
 
+/// The unit's fingerprint directories in either Cargo layout.
+fn fingerprints(out_dir: &Path, extra: &str) -> Vec<PathBuf> {
+    if let Some(unit) = super::layout::unit_dir(out_dir) {
+        return vec![unit.dir.join("fingerprint")];
+    }
+    let Some(profile) = out_dir.parent() else { return Vec::new() };
+    let Ok(units) = std::fs::read_dir(profile.join(".fingerprint")) else { return Vec::new() };
+    let units = units
+        .flatten()
+        .filter(|it| !extra.is_empty() && it.file_name().to_string_lossy().ends_with(extra));
+    units.map(|it| it.path()).collect()
+}
+
+/// The earliest compiler invocation recorded for the unit.
+fn invoked_at(fingerprints: &[PathBuf]) -> Option<SystemTime> {
+    fingerprints
+        .iter()
+        .filter_map(|dir| std::fs::metadata(dir.join("invoked.timestamp")).ok()?.modified().ok())
+        .min()
+}
+
 /// The directory of the records, in the directory cargo builds a profile in.
 const RECORDS: &str = ".ra-jit-units";
 
@@ -22,6 +43,37 @@ const DESCRIBED: &str = "crate.json";
 /// A stamp dir of a unit that no state names is deleted once it is this old: a build under
 /// way may be about to name it.
 const UNUSED_FOR: Duration = Duration::from_secs(3600);
+
+/// The generated files named in the dep-info of a host procedural macro. Its dylib is
+/// loaded by the compiler and is absent from the target executable's native symbol table.
+pub(crate) struct ProcMacroInputs {
+    pub(crate) generated: Vec<PathBuf>,
+    pub(crate) started: Option<SystemTime>,
+}
+
+impl ProcMacroInputs {
+    /// Reads the inputs of the dylib Cargo selected and when its compilation began.
+    pub(crate) fn of(dylib: &Path) -> Option<Self> {
+        let stem = dylib
+            .file_name()?
+            .to_str()?
+            .strip_prefix(std::env::consts::DLL_PREFIX)?
+            .strip_suffix(std::env::consts::DLL_SUFFIX)?;
+        let text = std::fs::read_to_string(dylib.with_file_name(format!("{stem}.d"))).ok()?;
+        let extra = stem.rfind('-').map(|at| &stem[at..]).unwrap_or_default();
+        let started = invoked_at(&fingerprints(dylib.parent()?, extra));
+        let built = std::fs::metadata(dylib).ok()?.modified().ok()?;
+        let started = started.filter(|start| *start <= built);
+        // OUT_DIR is absolute even when the macro compilation ran outside the workspace.
+        let generated = DepInfo::parse(&text)
+            .files
+            .into_iter()
+            .map(PathBuf::from)
+            .filter(|path| path.is_absolute() && super::script::in_out_dir(path))
+            .collect();
+        Some(Self { generated, started })
+    }
+}
 
 /// One run of rustc on a crate of the workspace that succeeded.
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -276,24 +328,11 @@ impl Record {
     /// When cargo last ran rustc for the unit, by the file it writes to its fingerprint
     /// directory just before: a source written after it is a change to cargo.
     pub(crate) fn cargo_ran_at(&self) -> Option<SystemTime> {
-        let stamps = self.fingerprints().into_iter().map(|it| it.join("invoked.timestamp"));
-        stamps.filter_map(|it| std::fs::metadata(it).and_then(|it| it.modified()).ok()).min()
+        invoked_at(&self.fingerprints())
     }
 
-    /// The unit's directories in cargo's fingerprint directory: in the second layout the one
-    /// in the unit's own directory.
     fn fingerprints(&self) -> Vec<PathBuf> {
-        let extra = self.extra_filename();
-        let Some(out_dir) = self.out_dir() else { return Vec::new() };
-        if let Some(unit) = super::layout::unit_dir(&out_dir) {
-            return vec![unit.dir.join("fingerprint")];
-        }
-        let Some(profile) = out_dir.parent() else { return Vec::new() };
-        let Ok(units) = std::fs::read_dir(profile.join(".fingerprint")) else { return Vec::new() };
-        let units = units
-            .flatten()
-            .filter(|it| !extra.is_empty() && it.file_name().to_string_lossy().ends_with(extra));
-        units.map(|it| it.path()).collect()
+        self.out_dir().map_or_else(Vec::new, |out| fingerprints(&out, self.extra_filename()))
     }
 
     /// The copy of `original`, when it is a file of this unit.

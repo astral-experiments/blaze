@@ -44,6 +44,10 @@ pub(crate) struct State {
     pub(crate) profile: String,
     pub(crate) programs: Vec<Program>,
     guards: Vec<Guard>,
+    /// Generated inputs compiled into the loaded host proc macros. A change requires
+    /// rebuilding the dylib before a worker can expand the target with it.
+    #[serde(default)]
+    proc_macro_inputs: BTreeMap<PathBuf, Option<u128>>,
     /// What the daemon is asked for: the programs that are not unit tests, and the ones
     /// that are.
     pub(crate) checkouts: Vec<Checkout>,
@@ -697,6 +701,16 @@ impl State {
         keys.filter_map(|it| State::read(&it).ok()).collect()
     }
 
+    /// Returns a reusable build. A changed host macro input needs the cold build path to
+    /// rebuild the dylib before its expansions can be compiled by the worker.
+    pub(crate) fn read_for_build(key: &str) -> Result<State, Option<&'static str>> {
+        let state = Self::read(key)?;
+        if state.proc_macro_inputs.iter().any(|(path, saved)| written_at(path) != *saved) {
+            return Err(None);
+        }
+        Ok(state)
+    }
+
     /// Why the next build is cargo's: something cargo acts on changed since it built.
     pub(crate) fn broken_guard(&mut self) -> Option<String> {
         self.guards.iter_mut().find_map(|it| it.broken(self.built_at))
@@ -924,6 +938,7 @@ impl State {
             profile: asked.profile().to_owned(),
             programs: Vec::new(),
             guards: Vec::new(),
+            proc_macro_inputs: BTreeMap::new(),
             checkouts: Vec::new(),
             refusal: None,
             doc_tests: false,
@@ -1068,6 +1083,16 @@ impl State {
         let documented = |it: &&Package| it.targets.iter().any(|it| library(it) && it.doctest);
         state.doc_tests =
             metadata.packages.iter().filter(|it| tested.contains(&it.id)).any(|it| documented(&it));
+        for artifact in built.artifacts.iter().filter(|it| it.target.is_proc_macro()) {
+            for library in &artifact.filenames {
+                if let Some(inputs) = super::ProcMacroInputs::of(library.as_std_path()) {
+                    for path in inputs.generated {
+                        let written = written_at(&path);
+                        state.proc_macro_inputs.insert(path, written);
+                    }
+                }
+            }
+        }
         state.guards = guards(cwd, &metadata, &used, &built.scripts, &state.checkouts);
         let kept: Vec<PathBuf> = State::all()
             .iter()
