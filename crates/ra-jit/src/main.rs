@@ -1581,13 +1581,39 @@ impl SymbolResolver for Resolver<'_> {
         let it = hir::Impl::from(id);
         let source = it.source(db)?;
         if source.file_id.is_macro() {
-            let mut places = it.items(db).into_iter().filter_map(|item| {
-                let hir::AssocItem::Function(func) = item else { return None };
-                let symbol = self.function(FunctionId::try_from(func).ok()?)?;
-                symbols::impl_place(&symbol)
-            });
-            let place = places.next()?;
-            return places.all(|p| p == place).then_some(place);
+            let mut places = Vec::new();
+            for item in it.items(db) {
+                let hir::AssocItem::Function(method) = item else { continue };
+                let Ok(method) = FunctionId::try_from(method) else { continue };
+                if let Some(place) = self.function(method).and_then(|s| symbols::impl_place(&s, 0))
+                {
+                    places.push(place);
+                    continue;
+                }
+                // Inlining can remove the method while leaving its writable statics in the
+                // native object. Their mangled paths still contain the method's impl.
+                let mut bodies = vec![(DefWithBodyId::FunctionId(method), 1)];
+                while let Some((body, depth)) = bodies.pop() {
+                    for (_, map) in Body::of(db, body).blocks(db) {
+                        for (_, module) in map.modules(db) {
+                            let scope = module.scope(db);
+                            if depth == 1 {
+                                bodies.extend(scope.unnamed_consts().map(|id| (id.into(), 2)));
+                            }
+                            for def in scope.declarations() {
+                                let ModuleDefId::StaticId(id) = def else { continue };
+                                if let Some(place) =
+                                    self.static_(id).and_then(|s| symbols::impl_place(&s, depth))
+                                {
+                                    places.push(place);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let place = *places.first()?;
+            return places.iter().all(|&p| p == place).then_some(place);
         }
         let start = |it: &hir::InFile<ast::Impl>| it.value.syntax().text_range().start();
         let mut earlier = 0;

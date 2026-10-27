@@ -1400,23 +1400,29 @@ fn without_ids(demangled: &str, drop: impl Fn(&str) -> bool) -> String {
 }
 
 /// The impl disambiguator of a native method, followed by its encoded parent.
-fn method_impl(symbol: &str) -> Option<(u32, V0<'_>)> {
+fn method_impl(symbol: &str, nested_values: u8) -> Option<(u32, V0<'_>)> {
     let mut v = V0 { rest: symbol.strip_prefix("_R")?.as_bytes() };
     v.eat(b'I');
+    for _ in 0..nested_values {
+        if !v.eat(b'N') || !v.eat(b'v') {
+            return None;
+        }
+    }
     if !v.eat(b'N') || !v.eat(b'v') || !matches!(v.next()?, b'M' | b'X') {
         return None;
     }
     Some((v.disambiguator()?.try_into().ok()?, v))
 }
 
-/// The disambiguator of the impl defining this method.
-pub(crate) fn impl_place(symbol: &str) -> Option<u32> {
-    Some(method_impl(symbol)?.0)
+/// The native impl disambiguator of a method, or of a value nested under it by
+/// `nested_values` value-namespace segments.
+pub(crate) fn impl_place(symbol: &str, nested_values: u8) -> Option<u32> {
+    Some(method_impl(symbol, nested_values)?.0)
 }
 
 /// The disambiguator of the `const _` containing the impl of this method.
 pub(crate) fn impl_const_place(symbol: &str) -> Option<u32> {
-    let (_, mut v) = method_impl(symbol)?;
+    let (_, mut v) = method_impl(symbol, 0)?;
     if !v.eat(b'N') || !v.eat(b'v') {
         return None;
     }
