@@ -2423,6 +2423,37 @@ fn deps_of(
     krate.transitive_deps(db).into_iter().collect()
 }
 
+/// Finds dependencies whose linker-kept statics the program requests through source alone.
+/// A dependency import can run a constructor even when no emitted code refers to the crate.
+fn source_dependencies_with_kept(
+    db: &RootDatabase,
+    main: FunctionId,
+    statics: &[StaticId],
+) -> FxHashSet<ide_db::base_db::Crate> {
+    let candidates: FxHashSet<_> =
+        statics.iter().map(|id| hir_def::HasModule::krate(id, db)).collect();
+    let sema = hir::Semantics::new(db);
+    let mut reached = FxHashSet::default();
+    let mut pending = vec![hir_def::HasModule::krate(&main, db)];
+    while let Some(krate) = pending.pop() {
+        if !reached.insert(krate) {
+            continue;
+        }
+        let from = Crate::from(krate);
+        let scope = ide_db::search::SearchScope::module_and_children(db, from.root_module(db));
+        for dep in &krate.data(db).dependencies {
+            if reached.contains(&dep.crate_id) || deps_of(db, dep.crate_id).is_disjoint(&candidates)
+            {
+                continue;
+            }
+            if scope.loads_dependency(&sema, from, dep) {
+                pending.push(dep.crate_id);
+            }
+        }
+    }
+    reached
+}
+
 /// The crates called `krate` to build: the ones rustc built into this program, when it built
 /// any, which may be a crate of the checkout and a dependency of the same name both. Otherwise
 /// what `crates_named` finds.
@@ -4673,6 +4704,14 @@ fn build(
                 kept_if_used.extend(&listed.kept);
             }
         }
+    }
+    if let Some(main) = resolver.new_main
+        && !kept_if_used.is_empty()
+    {
+        let used = source_dependencies_with_kept(db, main, &kept_if_used);
+        kept.extend(
+            kept_if_used.iter().filter(|id| used.contains(&hir_def::HasModule::krate(*id, db))),
+        );
     }
     // A library built before the programs that use it has every static a generic function
     // of it uses, for the instances they compile.

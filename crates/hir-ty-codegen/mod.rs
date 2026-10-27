@@ -5234,7 +5234,9 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         let db = self.db;
         let mut used: FxHashSet<_> = compiled.iter().map(|(root, _)| root.krate(db)).collect();
         used.extend(self.statics.keys().chain(self.frozen_statics.keys()).map(|id| id.krate(db)));
-        used.extend(self.instances.keys().filter_map(|it| home::mentioned_crates(db, it)).flatten());
+        used.extend(
+            self.instances.keys().filter_map(|it| home::mentioned_crates(db, it)).flatten(),
+        );
         let before = candidates.len();
         for id in candidates.extract_if(.., |id| used.contains(&id.krate(db))) {
             self.static_data(id)?;

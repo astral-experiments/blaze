@@ -444,7 +444,7 @@ static INITIALIZE: extern "C" fn() = initialize;
 """
     FIRST_MAIN_CASES["termination-first-main-initializers"] = ({
         **TERMINATION_FILES,
-        "app/Cargo.toml": FILES["app/Cargo.toml"] + 'unused = { path = "../unused" }\n',
+        "app/Cargo.toml": FILES["app/Cargo.toml"] + 'hook = { package = "unused", path = "../unused" }\n',
         "unused/Cargo.toml": FILES["dep/Cargo.toml"].replace('"dep"', '"unused"'),
         "unused/src/lib.rs": 'extern "C" fn initialize() { std::process::exit(71); }\n' + INIT_ARRAY,
         D: """use std::process::{ExitCode, Termination};
@@ -457,10 +457,16 @@ impl Termination for Status {
     fn report(self) -> ExitCode { ExitCode::from(CODE.load(Ordering::Relaxed) + self.0 as u8) }
 }
 """ + INIT_ARRAY,
-    }, NATIVE_MAIN, TERMINATION_FILES[M])
+    }, NATIVE_MAIN, "fn main() -> dep::Status { let hook = std::env::args().len() > 1; dep::Status(hook) }\n")
 for name, (_, native, rust) in FIRST_MAIN_CASES.items():
-    SCENARIOS[name] = ([[edit(M, native, rust)], [edit(M, rust, native)]],
-                       [None, None], 0, {"RA_JIT_SPARE": "0"})
+    sources = [native, rust]
+    if name == "termination-first-main-initializers":
+        # Either active import runs hook's initializer. The disabled import and local name do not.
+        disabled = "#[cfg(any())]\nuse hook as _;\n" + rust
+        sources = [native, disabled, "use hook as _;\n" + disabled, disabled, "extern crate hook as _;\n" + rust]
+    sources.append(native)
+    edits = [[edit(M, old, new)] for old, new in zip(sources, sources[1:])]
+    SCENARIOS[name] = (edits, [None] * len(edits), 0, {"RA_JIT_SPARE": "0"})
 
 # Only the runtime's concrete Termination::report reaches the helpers, including startup_leaf::<u8>.
 STARTUP_FILES = {
@@ -959,8 +965,10 @@ def main():
                 theirs = outputs(os.path.join(reference, "debug", "app"), ws)
                 how = how_built(lines)
                 same = ours == theirs
-                if name == "termination-first-main-initializers" and step == 1 and [it[0] for it in theirs] != [67, 68]:
-                    failed.append(f"{name}: expected Cargo exit codes 67 and 68 from dep's initializer, got {theirs}")
+                if name == "termination-first-main-initializers":
+                    expected_codes = ([67, 68], [71, 71], [67, 68], [71, 71], [17, 23])[step - 1]
+                    if [it[0] for it in theirs] != expected_codes:
+                        failed.append(f"{name} edit {step}: expected Cargo exit codes {expected_codes}, got {theirs}")
                 if step == 1 and invalidation and (how == "patch" or not any(
                         it.startswith(invalidation) for it in lines)):
                     failed.append(f"{name}: expected a rebuild of the rustc base ({invalidation}), got {how}")
