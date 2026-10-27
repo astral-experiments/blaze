@@ -14,6 +14,9 @@ on:
         description: the hosted runner
         type: string
         required: true
+      build-os:
+        description: Optional larger runner for the compiler build and unit tests
+        type: string
       tier:
         description: "`fast` (the quick harnesses) or `full` (every harness), as in harness/ci.py"
         type: string
@@ -67,7 +70,7 @@ defaults:
 jobs:
   tests:
     name: tests
-    runs-on: ${{ inputs.os }}
+    runs-on: ${{ inputs.build-os || inputs.os }}
     timeout-minutes: 60
     steps:
       - if: runner.os == 'Windows'
@@ -87,7 +90,7 @@ jobs:
 
   build:
     name: build
-    runs-on: ${{ inputs.os }}
+    runs-on: ${{ inputs.build-os || inputs.os }}
     timeout-minutes: 60
     outputs:
       parts: ${{ steps.parts.outputs.parts }}
@@ -154,7 +157,7 @@ jobs:
         with:
           llvm: run
           # What `buildmodel.py` builds for besides the host.
-          targets: ${{ matrix.part == 'buildmodel' && inputs.os == 'ubuntu-24.04' && 'aarch64-unknown-linux-gnu x86_64-unknown-linux-musl' || '' }}
+          targets: ${{ matrix.part == 'buildmodel' && inputs.platform == 'linux-x64' && 'aarch64-unknown-linux-gnu x86_64-unknown-linux-musl' || '' }}
       - name: Linux tools
         if: runner.os == 'Linux' && (matrix.part == 'core' || matrix.part == 'quick-1' || (matrix.part == 'buildmodel' && runner.arch == 'X64'))
         uses: ./.github/actions/apt

@@ -50,7 +50,8 @@ Linux only, where ra-jit links proc-macro libraries so far.
 On Linux every binary in DIR, the server's included, is refused when it asks for a glibc newer
 than `GLIBC` (RHEL 9's; Debian 12 and Ubuntu 22.04 have newer): the release builds on the
 oldest hosted Ubuntu, and a binary linked on a newer system asks for that system's glibc
-(GitHub issue #351). install.sh says the same floor to a system below it.
+(GitHub issue #351). install.sh says the same floor to a system below it. The flake passes
+`--glibc-floor` for the glibc its Nix closure provides.
 """
 
 import argparse
@@ -290,18 +291,25 @@ def glibc_asked(binary):
     return max(found, default=None)
 
 
-def check_glibc(out):
-    """Refuses the build when a binary in `out` asks for a glibc newer than `GLIBC`."""
-    shown = ".".join(map(str, GLIBC))
+def glibc_version(value):
+    match = re.fullmatch(r"(\d+)\.(\d+)", value)
+    if not match:
+        raise argparse.ArgumentTypeError("expected MAJOR.MINOR")
+    return tuple(map(int, match.groups()))
+
+
+def check_glibc(out, floor):
+    """Refuses the build when a binary in `out` needs a glibc newer than the target's."""
+    shown = ".".join(map(str, floor))
     newer = []
     for binary in sorted(out.iterdir()):
         if binary.is_file() and binary.read_bytes()[:4] == b"\x7fELF":
             asked = glibc_asked(binary)
-            if asked and asked > GLIBC:
+            if asked and asked > floor:
                 newer.append(f"{binary.name} asks for glibc {'.'.join(map(str, asked))}")
     if newer:
-        sys.exit(f"error: build_release: {'; '.join(newer)}, newer than RHEL 9's {shown}, so it does not start "
-                 "there: build on Ubuntu 22.04, as the release does")
+        hint = " Build the release on Ubuntu 22.04 for RHEL 9." if floor == GLIBC else ""
+        sys.exit(f"error: build_release: {'; '.join(newer)}, newer than the target glibc {shown}.{hint}")
     print(f"build_release: the binaries in {out} ask for glibc {shown} or older", flush=True)
 
 
@@ -315,7 +323,7 @@ def ship(args, binaries):
     if args.server:
         proc_macro_server(args.out / "ra-jit", args.out)
     if "linux" in args.target:
-        check_glibc(args.out)
+        check_glibc(args.out, args.glibc_floor)
 
 
 def main():
@@ -325,6 +333,8 @@ def main():
     parser.add_argument("--train", type=Path, metavar="DIR", help="train a new profile into DIR")
     parser.add_argument("--pin", nargs="+", metavar="DIR", help="pin the profiles trained into DIR")
     parser.add_argument("--out", type=Path, metavar="DIR", help="copy the binaries into DIR")
+    parser.add_argument("--glibc-floor", type=glibc_version, default=GLIBC, metavar="MAJOR.MINOR",
+                        help="oldest glibc the staged Linux binaries must support (default: 2.34)")
     parser.add_argument("--features", help="cargo features of ra-jit (`llvm`); a release has none")
     parser.add_argument("--server", action="store_true", help="build blaze's proc-macro server into --out with that ra-jit")
     parser.add_argument("--strict", action="store_true", help="fail when the profile is of other crates (a release)")

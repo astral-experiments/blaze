@@ -12,26 +12,20 @@
 #   live edits    macOS arm64: edit a running program's function, ra-jit-live applies the patch
 name: nix and live
 on:
-  push:
-    branches: ["main"]
-    paths:
-      - "flake.nix"
-      - "flake.lock"
-      - "nix/**"
-      - "Cargo.lock"
-      - "**/Cargo.toml"
-      - ".github/workflows/nix-live.yaml"
-  pull_request:
-    paths:
-      - "flake.nix"
-      - "flake.lock"
-      - "nix/**"
-      - "Cargo.lock"
-      - "**/Cargo.toml"
-      - ".github/workflows/nix-live.yaml"
+  workflow_call:
+    inputs:
+      linux-runner:
+        type: string
+        required: true
+      macos-runner:
+        type: string
+        required: true
   schedule:
     - cron: "11 5 * * *"
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: nix-live-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
@@ -59,7 +53,7 @@ jobs:
 
   nix:
     name: nix build (x86_64-linux)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.linux-runner || (github.repository_id == '1434979395' && 'namespace-profile-ubuntu-24-04-16' || 'ubuntu-24.04') }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
@@ -84,7 +78,7 @@ jobs:
 
   nix-darwin:
     name: nix build (aarch64-darwin)
-    runs-on: macos-15
+    runs-on: ${{ inputs.macos-runner || (github.repository_id == '1434979395' && 'nscloud-macos-tahoe-arm64-6x14' || 'macos-15') }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
@@ -100,7 +94,7 @@ jobs:
 
   demo:
     name: demo/life and ra-jit-live (linux)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.linux-runner || (github.repository_id == '1434979395' && 'namespace-profile-ubuntu-24-04-16' || 'ubuntu-24.04') }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -128,7 +122,7 @@ jobs:
 
   live-edits:
     name: live edits (macOS arm64)
-    runs-on: macos-15
+    runs-on: ${{ inputs.macos-runner || (github.repository_id == '1434979395' && 'nscloud-macos-tahoe-arm64-6x14' || 'macos-15') }}
     timeout-minutes: 60
     # Not required: it runs a daemon, a program and a patch between them on a hosted macOS VM,
     # which has been the least steady thing in the repository. Whatever it says is still shown.

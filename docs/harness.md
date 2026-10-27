@@ -326,16 +326,24 @@ For a CI failure, the last line of the harness step lists which scripts failed.
 `.github/workflows/ra-jit.yaml` runs in two tiers. It calls `ra-jit-platform.yaml` once for
 each platform, each on a machine of its own kind.
 
-Upstream uses a **merge queue**. The queue takes pull requests in order,
-merges each onto main and the entries ahead of it, runs the fast tier on that, and moves main to
-it once it passes; an entry that fails leaves the queue, and the ones behind it are tested again
-without it. So main is always a commit the fast tier passed on. A pull request's own run is
-`fmt` alone, which lets it join the queue within a minute: the queue tests it merged anyway, and
-testing it alone first would make every landing wait for the fast tier twice. For the fast tier
-on a branch before queueing it, `gh workflow run ra-jit.yaml --ref <branch> -f tier=fast`.
+On same-repository pull requests and pushes to main, Luna reads a bounded GitHub diff and
+selects from `fmt`, `linux-x64`, `linux-arm64`, `macos`, `fork`, `bench`, `nix`
+and `install`. Each selected platform runs its fast tier. A documentation change can select
+no suites. The **Resolve CI plan** job records the rationale and suite IDs in its summary and
+in the `luna-ci-plan-<attempt>` artifact. The planner runs on a fresh GitHub-hosted runner
+with the `automations` environment's `OPENAI_API_KEY` and only the diff in its workspace.
 
-The **fast tier** runs on every entry of the merge queue, every push to main and by hand, and
-takes about ten minutes. On Linux x86-64, Linux AArch64 and macOS arm64 it:
+Fork and Dependabot PRs use the existing defaults. The same defaults apply if Luna is
+unavailable or returns an invalid decision. PRs get formatting and the applicable benchmark,
+Nix and installer checks. Main also gets the fast platform and subtree checks for code changes.
+If the comparison is unavailable, every applicable default runs. Main finishes the active run
+and replaces pending pushes. Its next comparison starts at the last successful main run so it
+includes changes from any replaced or failed runs.
+
+The upstream merge queue tests each entry merged onto main and the
+entries ahead of it. It runs the fast tier for code changes and formatting for documentation.
+Run `gh workflow run ra-jit.yaml --ref <branch> -f tier=fast` to request the entire fast tier.
+On Linux x86-64, Linux AArch64 and macOS arm64, the **fast tier**:
 
 - builds ra-jit once, with the `llvm` feature, and hands the binary to its other jobs;
 - runs `harness/unittests.py`;
@@ -362,10 +370,10 @@ project's tests (Linux AArch64), and the ripgrep bench. A failed nightly opens a
 "Nightly ra-jit failed", or comments on it while it is open
 (`.github/actions/nightly-issue`).
 
-A change to nothing but documentation or the site runs `fmt` and nothing else. On a pull
-request a newer push cancels the run before it. Every push to main and every merge-queue entry
-runs to the end in a concurrency group of its own: with one group for main, a merge every few
-minutes replaced each waiting run with the next, and 7 of 10 runs on main were cancelled.
+Blaze uses Namespace's 16-core Ubuntu 24.04 profile for selected x86-64 builds and unit tests.
+Linux harness shards reuse the build artifact on GitHub-hosted runners. The Apple Silicon
+suite uses Namespace's Tahoe profile. Linux ARM64, Windows, fork and Dependabot PRs, and
+merge-queue entries use GitHub-hosted runners.
 
 The build and the unit tests compile through sccache, which keeps rustc's output in the
 Actions cache; rust-cache keeps the dependencies from crates.io and leaves out the crates of
@@ -384,7 +392,7 @@ on 2026-10-22 ([reports/CI.md](reports/CI.md)): the fast tier took 13.3 minutes 
 and 20.4 at p90 on main, where the longest path is the macOS build (4 minutes) and then its
 slowest harness part (6), and the p90 is the package mirror. No job waits for a runner.
 
-The repository ruleset `main` (Settings, Rules) is active and holds the default branch to four
+The upstream repository's ruleset `main` (Settings, Rules) is active and holds the default branch to four
 rules: a change comes through the merge queue, a push needs `ci` to have passed on the commit
 pushed, the branch can't be deleted, and it can't be force-pushed. The queue merges with a
 merge commit, builds up to five entries at once, merges up to five together, needs every entry
