@@ -44,33 +44,36 @@ const DESCRIBED: &str = "crate.json";
 /// way may be about to name it.
 const UNUSED_FOR: Duration = Duration::from_secs(3600);
 
-/// The generated files named in the dep-info of a host procedural macro. Its dylib is
-/// loaded by the compiler and is absent from the target executable's native symbol table.
-pub(crate) struct ProcMacroInputs {
+/// Generated inputs compiled into a native library selected by Cargo.
+pub(crate) struct NativeInputs {
     pub(crate) generated: Vec<PathBuf>,
     pub(crate) started: Option<SystemTime>,
 }
 
-impl ProcMacroInputs {
-    /// Reads the inputs of the dylib Cargo selected and when its compilation began.
-    pub(crate) fn of(dylib: &Path) -> Option<Self> {
-        let stem = dylib
-            .file_name()?
-            .to_str()?
-            .strip_prefix(std::env::consts::DLL_PREFIX)?
-            .strip_suffix(std::env::consts::DLL_SUFFIX)?;
-        let text = std::fs::read_to_string(dylib.with_file_name(format!("{stem}.d"))).ok()?;
-        let extra = stem.rfind('-').map(|at| &stem[at..]).unwrap_or_default();
-        let started = invoked_at(&fingerprints(dylib.parent()?, extra));
-        let built = std::fs::metadata(dylib).ok()?.modified().ok()?;
-        let started = started.filter(|start| *start <= built);
-        // OUT_DIR is absolute even when the macro compilation ran outside the workspace.
-        let generated = DepInfo::parse(&text)
+impl NativeInputs {
+    /// Reads the library's dep-info and the start time of its compiler invocation.
+    pub(crate) fn of(library: &Path) -> Option<Self> {
+        let name = library.file_name()?.to_str()?;
+        let stem =
+            name.strip_suffix(".rlib").and_then(|name| name.strip_prefix("lib")).or_else(|| {
+                name.strip_prefix(std::env::consts::DLL_PREFIX)?
+                    .strip_suffix(std::env::consts::DLL_SUFFIX)
+            })?;
+        let text = std::fs::read_to_string(library.with_file_name(format!("{stem}.d"))).ok()?;
+        // OUT_DIR is absolute even when rustc ran outside the workspace.
+        let generated: Vec<_> = DepInfo::parse(&text)
             .files
             .into_iter()
             .map(PathBuf::from)
             .filter(|path| path.is_absolute() && super::script::in_out_dir(path))
             .collect();
+        if generated.is_empty() {
+            return None;
+        }
+        let extra = stem.rfind('-').map(|at| &stem[at..]).unwrap_or_default();
+        let started = invoked_at(&fingerprints(library.parent()?, extra));
+        let built = std::fs::metadata(library).ok()?.modified().ok()?;
+        let started = started.filter(|start| *start <= built);
         Some(Self { generated, started })
     }
 }
