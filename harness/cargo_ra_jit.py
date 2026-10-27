@@ -867,6 +867,7 @@ def daemon(work):
     in_place(work, check)
     through_link(work, check)
     cached_type_ids(work, check)
+    macro_impl_type_id(work, check)
     pinned(work, check)
     own_toolchain(work, check)
     return checks
@@ -920,6 +921,64 @@ fn main() {
                   f"{how_built(ran.stderr)}, printed {ran.stdout.strip()!r}")
         finally:
             side.cargo("stop")
+
+
+def macro_impl_type_id(work, check):
+    """A lookup introduced by an edit must agree with the native registration."""
+    ws = os.path.join(work, "macro-impl-type-id")
+    os.makedirs(os.path.join(ws, "model", "src"))
+    os.makedirs(os.path.join(ws, "src"))
+    open(os.path.join(ws, "Cargo.toml"), "w").write("""[package]
+name = "lookup"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+model = { path = "model" }
+[profile.dev.package.model]
+opt-level = 2
+""")
+    open(os.path.join(ws, "model/Cargo.toml"), "w").write('[package]\nname="model"\nversion="0.0.0"\nedition="2021"\n')
+    open(os.path.join(ws, "model/src/lib.rs"), "w").write("""#![feature(f128)]
+use std::any::TypeId;
+pub struct Model;
+pub struct Jar<T>(T);
+macro_rules! make {
+    () => { impl Model {
+        #[inline(never)]
+        pub fn key() -> impl Copy {
+            std::hint::black_box(17u8);
+            #[derive(Copy, Clone)] struct Key;
+            Key
+        }
+    } }
+}
+make!();
+#[unsafe(no_mangle)]
+pub extern "Rust" fn registered() -> TypeId {
+    std::hint::black_box(1.0f128);
+    fn of<T: 'static>(_: T) -> TypeId { TypeId::of::<Jar<T>>() }
+    of(Model::key())
+}
+""")
+    main = os.path.join(ws, "src/main.rs")
+    open(main, "w").write("""use std::any::TypeId;
+fn of<T: 'static>(_: T) -> TypeId { TypeId::of::<model::Jar<T>>() }
+fn main() {
+    extern "Rust" { fn registered() -> TypeId; }
+    println!("{}", of(0u8) == unsafe { registered() });
+}
+""")
+    side = Side(ws, dict(base_env(os.path.join(work, "home-macro-impl")), RA_JIT_RUSTC_BASE="0"), True)
+    try:
+        _, cold = side.cargo("run")
+        check("the original lookup has another type", cold.returncode == 0 and cold.stdout.strip() == "false", cold.stderr[-300:])
+        wait_warm(side, ws)
+        rewrite(main, "of(0u8)", "of(model::Model::key())")
+        _, edited = side.cargo("run")
+        how = how_built(edited.stderr)
+        check("the daemon hashes a type local to a macro-generated impl", edited.returncode == 0 and edited.stdout.strip() == "true" and how == "daemon", f"{how}, printed {edited.stdout.strip()!r}")
+    finally:
+        side.cargo("stop")
 
 
 def pinned(work, check):
@@ -1794,7 +1853,9 @@ def main():
                 raise SystemExit(1)
 
         with tempfile.TemporaryDirectory(prefix="rj-ids-", dir="/tmp" if sys.platform == "darwin" else None) as work:
-            cached_type_ids(os.path.realpath(work), check)
+            work = os.path.realpath(work)
+            cached_type_ids(work, check)
+            macro_impl_type_id(work, check)
         return
     names = [a for a in argv if not a.startswith("--")] or (SMALL if "--small" in argv else list(PROJECTS))
     modes = [m for m in MODES if f"--{m}" in argv] or list(MODES)

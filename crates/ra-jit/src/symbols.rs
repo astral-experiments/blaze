@@ -1400,6 +1400,16 @@ fn without_ids(demangled: &str, drop: impl Fn(&str) -> bool) -> String {
     path
 }
 
+/// The disambiguator rustc gave the impl defining this method.
+pub(crate) fn impl_place(symbol: &str) -> Option<u32> {
+    let mut v = V0 { rest: symbol.strip_prefix("_R")?.as_bytes() };
+    v.eat(b'I');
+    if !v.eat(b'N') || !v.eat(b'v') || !matches!(v.next()?, b'M' | b'X') {
+        return None;
+    }
+    v.disambiguator()?.try_into().ok()
+}
+
 /// A reader of v0 symbols, for what `rustc_demangle` reads and does not print.
 struct V0<'a> {
     rest: &'a [u8],
