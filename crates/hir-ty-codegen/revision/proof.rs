@@ -1,4 +1,6 @@
-//! What a plain integer function and its direct calls mean before Cranelift IR is built.
+//! Stable evidence for the MIR and dependencies a function can use before building native IR.
+
+mod table;
 
 use crate::*;
 use hir_ty::mir::{SwitchTargets, type_name::rustc_function_name};
@@ -146,22 +148,28 @@ fn prove_body<'db>(
         callees: Vec::new(),
         policy,
         receiver: None,
+        table_types: table::candidate(body).then(Vec::new),
     };
     // Most functions have a pointer or a Rust aggregate. Decline them before reading source.
     for (id, local) in body.locals.iter() {
-        if let Some(ty) = integer(local.ty.as_ref()) {
+        if proof.table_types.is_some() {
+            proof.table_type(local.ty.as_ref())?;
+        } else if let Some(ty) = integer(local.ty.as_ref()) {
             proof.field(ty);
         } else {
             proof.receiver = Some(proof.shared_receiver(func, id, local.ty.as_ref())?);
         }
     }
     let source = proof.signature(func)?;
-    // Span and binding indices are local to a written body. Macros and conditional source
-    // inside it can change their meaning even when the text of the function stays put.
+    // Span and binding indices are local to a written body. A table constructor also records
+    // the resolved layout, variant and literal of every active assignment under `#[cfg]`.
     let syntax = source.body()?;
     if syntax.syntax().descendants().any(|it| {
         ast::MacroCall::can_cast(it.kind())
-            || ast::Attr::can_cast(it.kind())
+            || ast::Attr::cast(it.clone()).is_some_and(|attr| {
+                proof.table_types.is_none()
+                    || !attr.simple_name().is_some_and(|it| it.as_str() == "cfg")
+            })
             || ast::Item::can_cast(it.kind())
     }) {
         return None;
@@ -193,8 +201,12 @@ fn prove_body<'db>(
             match &stmt.kind {
                 StatementKind::Assign(place, value) => {
                     proof.field(b"assign");
-                    proof.place(place)?;
-                    proof.rvalue(value)?;
+                    let local = proof.place(place)?;
+                    if proof.table_types.is_some() {
+                        proof.table_assignment(body.locals[local].ty.as_ref(), value)?;
+                    } else {
+                        proof.rvalue(value)?;
+                    }
                 }
                 StatementKind::StorageLive(local) => {
                     proof.field(b"live");
@@ -219,7 +231,7 @@ fn prove_body<'db>(
                 proof.field(b"goto");
                 proof.index(target.into_raw().into_u32());
             }
-            TerminatorKind::SwitchInt { discr, targets } => {
+            TerminatorKind::SwitchInt { discr, targets } if proof.table_types.is_none() => {
                 proof.field(b"switch");
                 let ty = proof.operand(discr)?;
                 if ty.is_unit() {
@@ -235,7 +247,7 @@ fn prove_body<'db>(
                 target,
                 cleanup,
                 from_hir_call: true,
-            } if proof.receiver.is_none() => {
+            } if proof.receiver.is_none() && proof.table_types.is_none() => {
                 proof.field(b"call");
                 proof.callee(func)?;
                 for arg in args {
@@ -291,6 +303,7 @@ struct Evidence<'a, 'db> {
     callees: Vec<FunctionId>,
     policy: Policy,
     receiver: Option<SharedReceiver<'db>>,
+    table_types: Option<Vec<Ty<'db>>>,
 }
 
 struct SharedReceiver<'db> {
@@ -388,7 +401,9 @@ impl<'db> Evidence<'_, 'db> {
         let db = self.db;
         let loc = func.lookup(db);
         let sig = FunctionSignature::of(db, func);
-        if self.receiver.is_none() && !matches!(loc.container, ItemContainerId::ModuleId(_))
+        if self.receiver.is_none()
+            && !matches!(loc.container, ItemContainerId::ModuleId(_))
+            && !(self.table_types.is_some() && table::inherent(db, loc.container))
             || !func.krate(db).data(db).origin.is_local()
             || sig.abi != ExternAbi::Rust
             || sig.is_varargs()
@@ -430,6 +445,11 @@ impl<'db> Evidence<'_, 'db> {
         }
         let types = db.callable_item_signature(func.into()).skip_binder().skip_binder();
         self.field(rustc_function_name(db, func, &[])?.as_bytes());
+        if self.table_types.is_some() {
+            return (types.inputs().is_empty()
+                && types.output() == self.body.locals[returned_local(self.body)].ty.as_ref())
+            .then_some(source.value);
+        }
         let inputs = if let Some(receiver) = &self.receiver {
             let (arg, rest) = types.inputs().split_first()?;
             if !matches!(arg.kind(), TyKind::Ref(_, ty, Mutability::Not) if ty == receiver.pointee)
