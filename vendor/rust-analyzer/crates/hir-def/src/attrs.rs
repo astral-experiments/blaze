@@ -863,7 +863,8 @@ impl AttrFlags {
             .unwrap_or_else(AttrFlags::empty)
     }
 
-    pub(crate) fn is_cfg_enabled_for(
+    /// Evaluates an owner's `cfg` and `cfg_attr` gates against the crate's configuration.
+    pub fn is_cfg_enabled_for(
         owner: &dyn HasAttrs,
         cfg_options: &CfgOptions,
     ) -> Result<(), CfgExpr> {

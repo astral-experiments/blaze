@@ -1,0 +1,190 @@
+name: Downstream tests
+run-name: Blaze on ${{ inputs.suite }}
+on:
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Upstream test suite
+        type: choice
+        required: true
+        options: [ruff-and-ty, uv, uv-archive-fixtures]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ github.repository_id == '1434979395' && 'namespace-profile-ubuntu-24-04-16' || 'ubuntu-24.04' }}
+    timeout-minutes: 300
+    defaults:
+      run:
+        shell: bash
+    env:
+      SUITE: ${{ inputs.suite }}
+      BLAZE_SANDBOX: 'off'
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+      RUST_MIN_STACK: 33554432
+      RUST_TEST_THREADS: 1
+      INSTA_UPDATE: 'no'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: blaze
+          persist-credentials: false
+      - name: Build Blaze
+        working-directory: blaze
+        run: |
+          tc=$(cat harness/toolchain)
+          rustup toolchain install "$tc" --profile minimal -c rust-src
+          cargo +"$tc" build --locked --release -p ra-jit
+          echo "RUSTUP_TOOLCHAIN=$tc" >> "$GITHUB_ENV"
+          echo "$PWD/target/release" >> "$GITHUB_PATH"
+      - name: Check out the upstream workspace
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: ${{ inputs.suite == 'ruff-and-ty' && 'astral-sh/ruff' || 'astral-sh/uv' }}
+          ref: ${{ inputs.suite == 'ruff-and-ty' && '07872adbafa7c00f42f1174d8aa3c3e324033009' || '5b5a53e1803d426ba04f4af8ff7d6ff747548218' }}
+          path: downstream
+          persist-credentials: false
+      - if: inputs.suite != 'uv-archive-fixtures'
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: '0.13.5'
+          checksum: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
+          enable-cache: false
+      - name: Install uv's Linux test dependencies
+        if: inputs.suite == 'uv'
+        working-directory: downstream
+        env:
+          UV_PYTHON_DOWNLOADS_JSON_URL: crates/uv-python-managed/download-metadata.json
+        run: |
+          export UV_PYTHON_CACHE_DIR="$RUNNER_TEMP/uv-python-cache"
+          echo "UV_PYTHON_CACHE_DIR=$UV_PYTHON_CACHE_DIR" >> "$GITHUB_ENV"
+          uv python install
+          uv python install 3.12d 3.13d 3.13t 3.13td
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends --allow-downgrades \
+            git/noble-updates git-man/noble-updates libcurl3t64-gnutls/noble-updates git-lfs gnome-keyring
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNNER_TEMP/uv-test-bus"
+          dbus-daemon --session --fork --address="$DBUS_SESSION_BUS_ADDRESS"
+          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
+          gnome-keyring-daemon --components=secrets --daemonize --unlock <<< 'uv-test'
+          gdbus call --session --dest org.freedesktop.secrets \
+            --object-path /org/freedesktop/secrets --method org.freedesktop.Secret.Service.ReadAlias default
+          sudo mkdir /tmpfs
+          sudo mount -t tmpfs -o size=256m tmpfs /tmpfs
+          sudo chown "$(id -u):$(id -g)" /tmpfs
+      - name: Run the upstream tests under Blaze
+        working-directory: downstream
+        env:
+          UV_HTTP_RETRIES: 5
+        run: |
+          case "$SUITE" in
+            ruff-and-ty)
+              cmd=(uv run --locked --only-dev blaze test --workspace --all-features --locked --no-fail-fast)
+              ;;
+            uv)
+              export UV_INTERNAL__TEST_NOCOW_FS=/tmpfs UV_INTERNAL__TEST_ALT_FS=/tmpfs
+              export UV_INTERNAL__TEST_LOWLINKS_FS="$RUNNER_TEMP"
+              cmd=(uv run --locked --only-group test blaze test --workspace --locked --no-fail-fast
+                   --features test-python-patch,test-universal,native-auth,secret-service
+                   -- --skip test::malformed_option::)
+              ;;
+            uv-archive-fixtures)
+              cmd=(blaze test --locked -p uv --test build -- extract::)
+              ;;
+          esac
+          log="$RUNNER_TEMP/blaze-tests.log"
+          "${cmd[@]}" 2>&1 | tee "$log"
+          grep -Fq 'profile [ra-jit] target(s)' "$log"
+          if grep -Fq "this build is cargo's" "$log"; then exit 1; fi
+          if [[ "$SUITE" == uv-archive-fixtures ]]; then
+            grep -Fq '39 passed; 0 failed' "$log"
+          fi
+      - name: Run the shared inline snapshot once per process
+        if: ${{ !cancelled() && inputs.suite == 'uv' }}
+        working-directory: downstream
+        run: |
+          log="$RUNNER_TEMP/blaze-tests.log"
+          exe=$(awk '$1 == "Running" && $2 == "unittests" && $4 ~ /\/uv_requirements_txt-[[:xdigit:]]+\)$/ { print substr($4, 2, length($4)-2) }' "$log")
+          exe=$(realpath "$exe")
+          export CARGO_MANIFEST_DIR="$PWD/crates/uv-requirements-txt"
+          cd "$CARGO_MANIFEST_DIR"
+          mapfile -t cases < <("$exe" --list test::malformed_option:: | sed -n 's/: test$//p')
+          test "${#cases[@]}" -eq 3
+          for name in "${cases[@]}"; do
+            "$exe" --exact "$name" | tee "$RUNNER_TEMP/inline-snapshot.log"
+            grep -Fq '1 passed; 0 failed' "$RUNNER_TEMP/inline-snapshot.log"
+          done
+      - name: Save Blaze-built executables for the Btrfs cases
+        if: ${{ !cancelled() && inputs.suite == 'uv' }}
+        working-directory: downstream
+        run: |
+          log="$RUNNER_TEMP/blaze-tests.log"
+          grep -Fq 'profile [ra-jit] target(s)' "$log"
+          if grep -Fq "this build is cargo's" "$log"; then exit 1; fi
+          mkdir "$RUNNER_TEMP/uv-cow"
+          for t in build pip_install; do
+            exe=$(awk -v target="tests/$t/main.rs" '$1 == "Running" && $2 == target { print substr($3, 2, length($3)-2) }' "$log")
+            cp "$exe" "$RUNNER_TEMP/uv-cow/$t"
+          done
+          cp target/debug/uv "$RUNNER_TEMP/uv-cow/uv"
+          strip --strip-debug "$RUNNER_TEMP/uv-cow/"*
+          tar -czf "$RUNNER_TEMP/uv-cow.tar.gz" -C "$RUNNER_TEMP/uv-cow" .
+      - if: ${{ !cancelled() && inputs.suite == 'uv' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: uv-cow-tests
+          path: ${{ runner.temp }}/uv-cow.tar.gz
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+
+  uv-cow:
+    needs: test
+    if: ${{ !cancelled() && inputs.suite == 'uv' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: astral-sh/uv
+          ref: 5b5a53e1803d426ba04f4af8ff7d6ff747548218
+          path: downstream
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: uv-cow-tests
+          path: ${{ runner.temp }}
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: '0.13.5'
+          checksum: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
+          enable-cache: false
+      - name: Run the upstream copy-on-write tests on Btrfs
+        shell: bash
+        working-directory: downstream
+        env:
+          UV_PYTHON_DOWNLOADS_JSON_URL: crates/uv-python-managed/download-metadata.json
+          INSTA_UPDATE: 'no'
+          UV_INTERNAL__TEST_COW_FS: /btrfs
+        run: |
+          uv python install 3.12
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends btrfs-progs
+          truncate -s 1G "$RUNNER_TEMP/cow.img"
+          mkfs.btrfs "$RUNNER_TEMP/cow.img"
+          sudo mkdir /btrfs
+          sudo mount -o loop "$RUNNER_TEMP/cow.img" /btrfs
+          sudo chown "$(id -u):$(id -g)" /btrfs
+          dir="$RUNNER_TEMP/uv-cow"
+          mkdir "$dir"
+          tar -xzf "$RUNNER_TEMP/uv-cow.tar.gz" -C "$dir"
+          export CARGO_BIN_EXE_uv="$dir/uv" CARGO_MANIFEST_DIR="$PWD/crates/uv"
+          cd crates/uv
+          for name in cache_clean::clean_all_cloned_file cache_clean::clean_all_cached_clones cache_clean::clean_all_compressed_file \
+                      pip_install::install_executable_clone pip_install::install_copy_on_write_fs; do
+            test_bin=build
+            if [[ "$name" == pip_install::* ]]; then test_bin=pip_install; fi
+            "$dir/$test_bin" --exact "$name" | tee "$RUNNER_TEMP/cow-result"
+            grep -Fq '1 passed; 0 failed' "$RUNNER_TEMP/cow-result"
+          done
