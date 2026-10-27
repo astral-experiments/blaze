@@ -909,6 +909,9 @@ fn main() {
     for metadata in ("first", "second", "first"):
         side = Side(ws, dict(env, RUSTFLAGS=f"-Cmetadata={metadata}", RA_JIT_RUSTC_BASE="0"), True)
         try:
+            _, built = side.cargo("build")
+            built.check_returncode()
+            wait_warm(side, ws)
             _, ran = side.cargo("run")
             check(f"cached TypeId matches rustc with metadata {metadata}",
                   ran.returncode == 0 and ran.stdout.strip() == "true" and how_built(ran.stderr) == "daemon",
