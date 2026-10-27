@@ -1,8 +1,5 @@
-# The claims of docs/results.md that no job of ra-jit.yaml runs: rustc's own `tests/ui`
-# run-pass tests give the same output built by ra-jit, and the scoreboard of real crates does
-# not lose coverage. Nightly and by hand, all of tests/ui (about 3800 programs, both backends);
-# a pull request has the pinned few of them in ra-jit.yaml's pinned-ui job. A failed nightly
-# opens an issue, or adds to the one still open.
+# Compare ra-jit's output with rustc's run-pass tests on both backends and check the
+# scoreboard's coverage floor. The pinned-ui job runs a smaller sample on pull requests.
 name: claims
 on:
   schedule:

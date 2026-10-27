@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Live edits that add, move to and delete types (macOS on AArch64, Linux on x86-64), as a game's
 components change while it runs: a component is never changed in place, a new type takes its
-place ([live.md](../docs/live.md#types)).
+place.
 
 usage: live_types.py        (RA_JIT_BIN names the ra-jit built; cargo-ra-jit is found next to it)
 

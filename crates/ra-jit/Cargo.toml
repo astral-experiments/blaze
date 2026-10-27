@@ -1,8 +1,6 @@
 [package]
 name = "ra-jit"
 description = "blaze: cargo build, test and run from a daemon that keeps your workspace compiled, with live edits"
-# Published as `cargo-blaze` by .github/scripts/publish_crates.py, which publishes the vendored
-# crates it depends on by path as `ra-jit-<name>` and rewrites this manifest to name them.
 publish = false
 
 version.workspace = true
@@ -15,20 +13,9 @@ homepage.workspace = true
 keywords.workspace = true
 categories = ["development-tools::cargo-plugins", "development-tools::build-utils", "compilers"]
 
-# The program the other binaries run, named apart from the package, which is published as
-# `cargo-blaze`.
 [[bin]]
 name = "ra-jit"
 path = "src/main.rs"
-
-# `cargo binstall cargo-blaze`: the archive the release workflow makes for each target, named and
-# laid out as `blaze-v<version>-<target>/` in .github/workflows/release.yaml (and install.sh). A
-# target with no archive is built from source; a third party's build is never used.
-[package.metadata.binstall]
-pkg-url = "{ repo }/releases/download/v{ version }/blaze-v{ version }-{ target }{ archive-suffix }"
-bin-dir = "blaze-v{ version }-{ target }/{ bin }{ binary-ext }"
-pkg-fmt = "tgz"
-disabled-strategies = ["quick-install"]
 
 [dependencies]
 # The store of `#[ra_jit::cache]`, which `cargo ra-jit cache` lists and clears; its library is

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """fncache.py: `#[ra_jit::cache]` keeps what a pure function returns across runs, by the code
-ra-jit compiled for it and everything that code reaches (docs/fn-cache.md).
+ra-jit compiled for it and everything that code reaches.
 
 usage: fncache.py            (RA_JIT_BIN names the ra-jit built)
        fncache.py --live     (macOS on AArch64: a live edit drops what the old code kept;

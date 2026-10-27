@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """leanprof.py PROJECT [--work DIR] [--edits KIND,...] [--rounds N] [--env NAME=VALUE]...:
-the phases of a project's first hour, each with the monotonic time it began and ended, for a
-profile of the whole run to be cut by ([research/lean-frontend.md](../docs/research/lean-frontend.md)).
+record each phase's start and end on the monotonic clock so a profile can be split by phase.
 
     perf record -k CLOCK_MONOTONIC -g -F 199 -o run.data -- python3 leanprof.py nushell --work W
     perf script -i run.data > run.txt

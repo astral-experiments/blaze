@@ -1,0 +1,91 @@
+name: Live edits and demo
+on:
+  workflow_call:
+    inputs:
+      linux-runner:
+        type: string
+        required: true
+      macos-runner:
+        type: string
+        required: true
+  schedule:
+    - cron: "11 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+
+jobs:
+  demo:
+    name: demo/life and ra-jit-live (linux)
+    runs-on: ${{ inputs.linux-runner || (github.repository_id == '1434979395' && 'namespace-profile-ubuntu-24-04-16' || 'ubuntu-24.04') }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - run: tc=$(cat harness/toolchain) && rustup toolchain install "$tc" --profile minimal -c rust-src && rustup default "$tc"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            demo/life -> target
+      # ra-jit-live is a stub where live edits are not supported, and says so.
+      - run: cargo test --release -p ra-jit-live
+      - run: cargo build --locked
+        working-directory: demo/life
+      - name: window opens and stays up
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libgl1-mesa-dri libglx-mesa0 libxkbcommon-x11-0 libxcursor1 libxi6 libxrandr2 libwayland-client0
+          export LIBGL_ALWAYS_SOFTWARE=1 RUST_BACKTRACE=1
+          status=0
+          timeout 15 xvfb-run -a --server-args="-screen 0 1280x800x24" demo/life/target/debug/life > life.log 2>&1 || status=$?
+          cat life.log
+          # timeout's own 124: the window was still up when it was stopped.
+          test "$status" = 124 || { echo "::error::the window exited ($status) before it was stopped"; exit 1; }
+          ! grep -E -i "panicked|Err\(" life.log
+
+  live-edits:
+    name: live edits (macOS arm64)
+    runs-on: ${{ inputs.macos-runner || (github.repository_id == '1434979395' && 'nscloud-macos-sequoia-arm64-6x14' || 'macos-15') }}
+    timeout-minutes: 60
+    # Not required: it runs a daemon, a program and a patch between them on a hosted macOS VM,
+    # which has been the least steady thing in the repository. Whatever it says is still shown.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - run: tc=$(cat harness/toolchain) && rustup toolchain install "$tc" --profile minimal -c rust-src && rustup default "$tc"
+      - uses: Swatinem/rust-cache@v2
+      # Where it is real code: the whole of macos.rs and the patch format.
+      - run: cargo test --release -p ra-jit-live
+      - run: cargo build --release -p ra-jit
+      - name: edit a running program
+        run: RA_JIT_BIN="$GITHUB_WORKSPACE/target/release/ra-jit" python3 harness/live_e2e.py
+      - name: crash reports
+        if: failure()
+        run: |
+          for report in "$HOME"/Library/Logs/DiagnosticReports/*; do
+            case "$report" in *ra-jit*|*liveprobe*) echo "::group::$report"; head -c 20000 "$report"; echo; echo "::endgroup::";; esac
+          done
+      - name: the demo builds on macOS
+        run: cargo build --locked
+        working-directory: demo/life
+
+  nightly:
+    name: nightly issue
+    needs: [demo, live-edits]
+    if: always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/nightly-issue

@@ -20,8 +20,7 @@ held at once (VmHWM on Linux, the lifetime peak physical footprint on macOS), re
 of each turn. Plain cargo never builds here: bench.py compares against cargo, this compares
 builds of ra-jit. `--env NAME=KEY=VALUE` sets a variable for one build only (an allocator
 option, for example); the same DIR may be given under two names with different variables.
-`--train` ends each turn so that an instrumented build writes its profile
-(.github/scripts/build_release.py trains the release build this way).
+`--train` ends each turn so that an instrumented build writes its profile.
 """
 import ctypes, json, os, platform, re, shutil, statistics, subprocess, sys, tempfile, time
 

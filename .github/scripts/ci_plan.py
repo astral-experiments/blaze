@@ -12,7 +12,7 @@ from ci import focused
 
 
 FAST = ["fmt", "linux-x64", "linux-arm64", "macos", "fork"]
-SUITES = FAST + ["nix", "install"]
+SUITES = FAST + ["live"]
 LINUX_CHECKS = ["borrowck", "pinned-ui", "bun-e2e"]
 PLATFORMS = {"linux-x64": ("linux", "x86_64"), "linux-arm64": ("linux", "aarch64"),
              "macos": ("macos", "aarch64")}
@@ -32,7 +32,8 @@ def changed_paths(base, head, event):
 
 
 def compiler_change(path):
-    return (path.endswith((".rs", "/Cargo.toml")) or path in {"Cargo.toml", "Cargo.lock", "harness/toolchain"}
+    return (path.endswith((".rs", "/Cargo.toml"))
+            or path in {"Cargo.toml", "Cargo.lock", "flake.nix", "flake.lock", "harness/toolchain"}
             or path.startswith(("crates/", "vendor/")) and not path.endswith(".md"))
 
 
@@ -43,11 +44,9 @@ def defaults(paths):
         suites.append("linux-x64")
     if any(p.startswith("vendor/rust-analyzer/") and not p.endswith(".md") for p in paths):
         suites.append("fork")
-    if any(p in {"Cargo.lock", "Cargo.toml", "flake.nix", "flake.lock", ".github/workflows/nix-live.yaml"}
-           or p.startswith("nix/") or p.endswith("/Cargo.toml") for p in paths):
-        suites.append("nix")
-    if any(p in {"install.sh", ".github/workflows/install.yaml"} for p in paths):
-        suites.append("install")
+    if any(p in {"Cargo.lock", "Cargo.toml", "harness/live_e2e.py", ".github/workflows/live.yaml"}
+           or p.startswith(("crates/ra-jit-live/", "demo/life/")) for p in paths):
+        suites.append("live")
     return suites
 
 

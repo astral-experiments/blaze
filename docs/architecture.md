@@ -4,7 +4,7 @@ This is a map of the code for someone who wants to read or change it. Paths are 
 published tree: `crates/ra-jit` is the daemon, `crates/hir-ty-codegen` is the code generator
 (a crate over `hir-ty`'s MIR), and
 `vendor/rust-analyzer` is the front end, with the borrow checker as its crate `hir-ty-borrowck`
-([borrowck.md](borrowck.md)).
+([borrowck.md](https://github.com/astral-experiments/blaze/blob/1a855cab876f5c092ca2b411354bd66c3ff3c44d/docs/borrowck.md)).
 
 ## The idea
 
@@ -105,7 +105,7 @@ made from; its IDE source map is that one moved to where the item is. The places
 debuggers report (`hir-ty-codegen/places.rs`) are found the same way, as a row and column in
 the item, and where the item begins is added when an object is stitched. An edit inside one
 function of a 500-function file lowers, infers and compiles that function and lowers no
-other: [reports/INCREMENTAL.md](reports/INCREMENTAL.md).
+other: [reports/INCREMENTAL.md](https://github.com/astral-experiments/blaze/blob/1a855cab876f5c092ca2b411354bd66c3ff3c44d/docs/reports/INCREMENTAL.md).
 
 ## From MIR to code
 
@@ -156,8 +156,8 @@ The target is an input of the process (`target.rs`): `--target <triple>`, else t
 Everything platform-dependent asks the `Target` for architecture, object format, calling
 convention and unwind format, and never asks what ra-jit itself was built for. The parser
 accepts x86-64, AArch64 and wasm32 with ELF, Mach-O, COFF or wasm objects. What has been
-run on each is in [support.md](support.md), and how each port works is in
-[platforms.md](platforms.md).
+run on each is in [support.md](https://github.com/astral-experiments/blaze/blob/1a855cab876f5c092ca2b411354bd66c3ff3c44d/docs/support.md), and how each port works is in
+[platforms.md](https://github.com/astral-experiments/blaze/blob/1a855cab876f5c092ca2b411354bd66c3ff3c44d/docs/platforms.md).
 
 ## Linking and splicing
 
@@ -239,7 +239,7 @@ about the instance.
 
 On disk the store is a set of immutable packs named by the SHA-256 of their bytes, their
 values in zstd blocks behind an index, plus one open pack per running daemon. Format,
-locking, integrity checks and size limits are in [cache.md](cache.md).
+locking, integrity checks and size limits are in [cache.md](https://github.com/astral-experiments/blaze/blob/1a855cab876f5c092ca2b411354bd66c3ff3c44d/docs/cache.md).
 
 ## The remote store
 
@@ -298,7 +298,7 @@ program's own are left to read. Every line of cargo's reaches it through the dae
 says it, and the spare reads its input from its first moment: a full pipe would have cargo
 wait. The daemon starts a spare as it starts and another as each build of a workspace it has
 no worker for begins (`Request::Ahead`); none is started to wait once a workspace is loaded,
-unless `RA_JIT_SPARE=ready` ([cargo.md](cargo.md#environment-variables)).
+unless `RA_JIT_SPARE=ready` ([cargo.md](https://github.com/astral-experiments/blaze/blob/1a855cab876f5c092ca2b411354bd66c3ff3c44d/docs/cargo.md#environment-variables)).
 
 A patch over rustc has no marks of before to compare with, so the daemon takes them just in
 time: before an edit's text reaches the database, `home` notes the functions written in the
@@ -380,11 +380,4 @@ but a function ra-jit refuses then has no rustc copy to fall back on, so it is u
 `debuginfo.rs` writes DWARF 4 for ra-jit's functions: line tables, a subprogram entry per
 function, and under Cranelift the parameters and locals. Debug info is written for ELF
 targets. It is not written for Windows, and has not been checked on macOS. See
-[support.md](support.md).
-
-## ra-jit in the browser
-
-`crates/ra-jit-wasm` is an experiment that builds the compiler itself for wasm and runs it in
-a web page. It is excluded from the workspace and is not part of the daemon. See
-[reports/WASM.md](reports/WASM.md). The website runs a small
-version of it: [playground.md](playground.md).
+[support.md](https://github.com/astral-experiments/blaze/blob/1a855cab876f5c092ca2b411354bd66c3ff3c44d/docs/support.md).

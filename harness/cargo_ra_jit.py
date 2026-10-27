@@ -966,7 +966,7 @@ class Bare(Side):
 
 
 def own_toolchain(work, check):
-    """A machine with no rustup and no Rust on the path (docs/self-contained.md): blaze builds
+    """A machine with no rustup and no Rust on the path: blaze builds
     with its own copy of its release, laid out in `BLAZE_HOME` as rustup lays one out (here a
     copy of rustup's, so nothing is downloaded), runs cargo and rustc from it, and the edit
     after the first build is the daemon's."""
