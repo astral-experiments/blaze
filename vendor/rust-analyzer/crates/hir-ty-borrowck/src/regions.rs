@@ -919,6 +919,7 @@ impl<'db> Builder<'_, '_, 'db> {
         } else if self.ctx.closure_local.is_none() {
             // The declared signature, as the parameters' local types have their lifetimes
             // erased.
+            let mut elides_to_non_static = false;
             let signature = match owner {
                 InferBodyId::DefWithBodyId(DefWithBodyId::FunctionId(function)) => {
                     let sig = self
@@ -993,8 +994,18 @@ impl<'db> Builder<'_, '_, 'db> {
                     // What an `impl Trait` it returns has for the lifetimes its parameters
                     // leave out.
                     if aligned {
-                        let regions =
-                            hir_ty::elided_lifetimes(self.ctx.db, function).regions(&errors);
+                        let lifetimes = hir_ty::elided_lifetimes(self.ctx.db, function);
+                        let regions = lifetimes.regions(&errors);
+                        elides_to_non_static = match lifetimes.output {
+                            Some(hir_ty::ElidedOutput::Elided(_)) => true,
+                            Some(hir_ty::ElidedOutput::Written(id)) => !matches!(
+                                written.store[hir_def::type_ref::LifetimeRefId::from_raw(
+                                    la_arena::RawIdx::from_u32(id),
+                                )],
+                                hir_def::type_ref::LifetimeRef::Static
+                            ),
+                            None => false,
+                        };
                         output =
                             hir_ty::with_elided_regions(self.ctx.db, output, function, &regions);
                     }
@@ -1047,6 +1058,11 @@ impl<'db> Builder<'_, '_, 'db> {
                 }
                 _ => None,
             };
+            // A lowered input can contain an implicit 'static, as in &dyn Any. It does
+            // not participate when the signature selects the lifetime of a borrow.
+            if elides_to_non_static && inputs.iter().any(|&it| it != static_region) {
+                inputs.retain(|&it| it != static_region);
+            }
             inputs.dedup();
             let elided = match (inputs.as_slice(), self_region) {
                 (_, Some(region)) => Some(region),
