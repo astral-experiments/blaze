@@ -2243,7 +2243,18 @@ pub mod async_frames {
         sum
     }
 
+    /// The early return can suspend before `?` produces a value to drop.
+    async fn take_or_collect(owned: String, tag: u8) -> Result<(String, Vec<u8>), String> {
+        let bytes = match tag {
+            0 => return std::future::ready(Ok((owned, vec![3]))).await,
+            1 => std::future::ready(Ok(owned.as_bytes().to_vec())).await,
+            _ => Err(String::new()),
+        }?;
+        Ok((owned, bytes))
+    }
+
     pub fn run() -> (u64, u64, u64, u64) {
+        assert_eq!(block_on(take_or_collect(String::from("abc"), 1)).unwrap().1, b"abc");
         let packet = Packet { payload: Some(String::from("abc")), bias: 2 };
         (
             block_on(leaf(3)),
