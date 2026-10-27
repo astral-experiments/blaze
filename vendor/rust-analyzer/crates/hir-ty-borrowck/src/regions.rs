@@ -2519,7 +2519,16 @@ impl<'db> Builder<'_, '_, 'db> {
                     let mut components = Vec::new();
                     let mut params = Vec::new();
                     outlives_components(referent, &mut components, &mut params);
-                    alias_components(referent, &mut params);
+                    let mut aliases = Vec::new();
+                    alias_components(referent, &mut aliases);
+                    // A bound on an associated type also holds of the type it normalizes to,
+                    // even when the projection occurs inside an aggregate.
+                    for &alias in &aliases {
+                        if let Some(normalized) = self.normalize(alias) {
+                            outlives_components(normalized, &mut components, &mut params);
+                        }
+                    }
+                    params.extend(aliases);
                     pairs.extend(components.into_iter().map(|longer| (longer, shorter)));
                     self.regions.type_bounds.extend(params.into_iter().map(|it| (it, shorter)));
                 }

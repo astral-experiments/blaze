@@ -2230,8 +2230,27 @@ pub mod async_frames {
         ((0..4).map(|which| block_on(arms(which))).collect(), size < 2 * 4096)
     }
 
-    pub fn run() -> (u64, u64, u64) {
-        (block_on(leaf(3)), block_on(borrows(5)), block_on(nested(1)))
+    struct Packet {
+        payload: Option<String>,
+        bias: u8,
+    }
+
+    async fn partial_packet(packet: Packet) -> u64 {
+        let payload = if let Some(text) = packet.payload { text } else { String::new() };
+        let sum = payload.len() as u64 + u64::from(packet.bias);
+        drop(payload);
+        Twice(false).await;
+        sum
+    }
+
+    pub fn run() -> (u64, u64, u64, u64) {
+        let packet = Packet { payload: Some(String::from("abc")), bias: 2 };
+        (
+            block_on(leaf(3)),
+            block_on(borrows(5)),
+            block_on(nested(1)),
+            block_on(partial_packet(packet)),
+        )
     }
 }
 

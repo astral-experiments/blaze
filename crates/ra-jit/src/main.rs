@@ -9333,6 +9333,15 @@ fn run_holding(
         let sources = outlines.after_edit(&db, &listed, sources);
         let outlined = start.elapsed();
         for outline::Changed { file, bodies_only, copied, generics, inline, added } in sources {
+            let crates = ide_db::base_db::relevant_crates(&db, file);
+            let crates = (!crates.is_empty()).then_some(crates);
+            if untouched.contains(&file) {
+                // Only the in-memory harness changed. Rebuild it without invalidating the
+                // functions and statics rustc compiled from the unchanged file on disk.
+                programs.iter_mut().for_each(|it| it.known.touch_bases(&db, crates));
+                listed.touch(&db, crates);
+                continue;
+            }
             if copied || !generics.is_empty() || !inline.is_empty() {
                 let why = "an edit of a generic, inline or default trait function, which rustc copies into its callers";
                 let inline_unlinked = |program: &Program| {
@@ -9361,8 +9370,6 @@ fn run_holding(
                 listed.touch(&db, Some(&crates));
                 continue;
             }
-            let crates = ide_db::base_db::relevant_crates(&db, file);
-            let crates = (!crates.is_empty()).then_some(crates);
             programs.iter_mut().for_each(|it| it.known.touch(&db, crates));
             listed.touch(&db, crates);
         }
