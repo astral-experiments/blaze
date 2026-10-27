@@ -64,7 +64,7 @@ mod tests {
     fn borrow_through_a_trait_object_with_a_static_supertrait() {
         check_diagnostics(
             r#"
-//- minicore: sized
+//- minicore: sized, fn
 trait Database: 'static {
     fn get(&self) -> &u32;
     fn get_mut(&mut self) -> &mut u32;
@@ -72,6 +72,9 @@ trait Database: 'static {
 fn read(db: &dyn Database) -> &u32 { db.get() }
 fn write(db: &mut dyn Database) -> &mut u32 { db.get_mut() }
 fn named<'db>(db: &'db dyn Database) -> &u32 { db.get() }
+fn through_closure<'db>(db: &'db dyn Database) -> &'db u32 {
+    (|db: &'db dyn Database| db.get())(db)
+}
 fn escape(db: &dyn Database) -> &'static u32 {
     db.get()
   //^^^^^^^^ error: lifetime may not live long enough

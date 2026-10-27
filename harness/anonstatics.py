@@ -20,6 +20,9 @@ generic code the program instantiates) and `app` the program, whose `frame` inli
 Both libraries are outside the workspace, so rustc builds them. Every edit has to be served by
 the daemon and the program has to print the offset rustc's code wrote plus the edited value.
 
+The local class in `on_main` comes from an attribute macro. Its offset and the module-level
+class offset have the same name and are set to different values.
+
 Python 3, stdlib only.
 """
 import os
@@ -51,6 +54,13 @@ fn main() {
     println!("{}", frame());
 }
 """,
+    "attr/Cargo.toml": '[package]\nname="aattr"\nversion="0.1.0"\nedition="2021"\n[lib]\nproc-macro=true\n',
+    "attr/src/lib.rs": """use proc_macro::TokenStream;
+#[proc_macro_attribute]
+pub fn declare(_: TokenStream, _: TokenStream) -> TokenStream {
+    "amac::declare!(Local);".parse().unwrap()
+}
+""",
     "mac/Cargo.toml": '[package]\nname = "amac"\nversion = "0.1.0"\nedition = "2021"\n',
     "mac/src/lib.rs": """pub trait Declared {
     fn __offset() -> isize;
@@ -69,8 +79,8 @@ macro_rules! declare {
             static mut __OFFSET: isize = 0;
             impl $name {
                 #[inline(never)]
-                pub fn register() {
-                    unsafe { __OFFSET = 42 };
+                pub fn register(value: isize) {
+                    unsafe { __OFFSET = value };
                 }
             }
             impl $crate::Declared for $name {
@@ -84,16 +94,18 @@ macro_rules! declare {
 }
 """,
     "dep/Cargo.toml": '[package]\nname = "adep"\nversion = "0.1.0"\nedition = "2021"\n\n'
-                      '[dependencies]\namac = { path = "../mac" }\n',
+                      '[dependencies]\namac = { path = "../mac" }\naattr = { path = "../attr" }\n',
     "dep/src/lib.rs": """amac::declare!(Delegate);
 
 #[inline]
 pub fn on_main<R, F: FnOnce(isize) -> R>(f: F) -> R {
-    f(amac::ivar_ptr::<Delegate>(0))
+    #[aattr::declare] struct Local;
+    Local::register(30);
+    f(amac::ivar_ptr::<Delegate>(amac::ivar_ptr::<Local>(0)))
 }
 
 pub fn register() {
-    Delegate::register();
+    Delegate::register(12);
 }
 """,
 }

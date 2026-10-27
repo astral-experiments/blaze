@@ -1006,6 +1006,19 @@ macro_rules! make {
             #[derive(Copy, Clone)] struct Key;
             Key
         }
+    }
+    impl Model {
+        #[inline(always)]
+        pub fn inlined_key() -> impl Copy {
+            #[derive(Copy, Clone)] struct Key;
+            const _: () = {
+                use std::sync::atomic::{AtomicUsize, Ordering};
+                static CALLS: AtomicUsize = AtomicUsize::new(0);
+                impl Key { fn note() { CALLS.fetch_add(1, Ordering::Relaxed); } }
+            };
+            Key::note();
+            Key
+        }
     } }
 }
 make!();
@@ -1053,11 +1066,16 @@ pub extern "Rust" fn registered_consts() -> [TypeId; 2] {
     std::hint::black_box(1.0f128);
     [First::registered(), Second::registered()]
 }
+fn of<T: 'static>(_: T) -> TypeId { TypeId::of::<Jar<T>>() }
 #[unsafe(no_mangle)]
 pub extern "Rust" fn registered() -> [TypeId; 2] {
     std::hint::black_box(1.0f128);
-    fn of<T: 'static>(_: T) -> TypeId { TypeId::of::<Jar<T>>() }
     [of(Model::key()), of(shadowed::<()>())]
+}
+#[unsafe(no_mangle)]
+pub extern "Rust" fn registered_inlined() -> TypeId {
+    std::hint::black_box(1.0f128);
+    of(Model::inlined_key())
 }
 """)
     main = os.path.join(ws, "src/main.rs")
@@ -1100,6 +1118,12 @@ fn main() {
         check("a nested function shadowing a const parameter and its local key match their native IDs",
               nested.returncode == 0 and nested.stdout.strip() == "true true" and how == "daemon",
               f"{how}, printed {nested.stdout.strip()!r}")
+        rewrite(main, '    println!("{} {}",', '''    extern "Rust" { fn registered_inlined() -> TypeId; }
+    println!("{} {} {}", of(model::Model::inlined_key()) == unsafe { registered_inlined() },''')
+        _, edited = side.cargo("run")
+        how = how_built(edited.stderr)
+        check("a static preserves the impl disambiguator of an inlined method",
+              edited.returncode == 0 and edited.stdout.strip() == "true true true" and how == "daemon", f"{how}, printed {edited.stdout.strip()!r}")
     finally:
         side.cargo("stop")
 
