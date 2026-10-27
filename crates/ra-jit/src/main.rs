@@ -800,7 +800,7 @@ impl Resolver<'_> {
         }
         // A patch of what rustc linked redirects a function private to its object as well,
         // by the symbol the executable keeps of it.
-        if let Some(symbol) = self.rustcs().and_then(|it| it.private(&path)) {
+        if let Some(symbol) = self.rustcs().and_then(|it| it.private_function(&path)) {
             return Some(symbol.to_owned());
         } // rustc has built nothing of the crate: the function is ours to name, unless it is
         // declared in an `extern` block, where what it links to names it.
@@ -1431,7 +1431,7 @@ impl SymbolResolver for Resolver<'_> {
             path.push_str("::");
             path.push_str(segment);
         }
-        let private = || self.rustcs()?.private(&path);
+        let private = || self.rustcs()?.private_function(&path);
         self.table.get(&path).or_else(private).map(str::to_owned)
     }
 
@@ -1582,7 +1582,8 @@ impl SymbolResolver for Resolver<'_> {
         };
         let module = it.module(self.db);
         let name = it.name(self.db);
-        let private = |path: &str| self.rustcs().and_then(|it| it.private(path)).map(str::to_owned);
+        let private =
+            |path: &str| self.rustcs().and_then(|it| it.private_static(path)).map(str::to_owned);
         if module.nearest_non_block_module(self.db) == module {
             let path = self.item_path(module, name.as_str())?;
             return self.table.get(&path).map(str::to_owned).or_else(|| private(&path));
@@ -1644,7 +1645,7 @@ impl SymbolResolver for Resolver<'_> {
     fn path(&self, path: &str) -> Option<String> {
         // A patch of rustc's executable can call what is private to an object of it too, as
         // the copies rustc made of a generic function of another crate are.
-        let private = || self.rustcs()?.private(path);
+        let private = || self.rustcs()?.private_function(path);
         self.table.get(path).or_else(private).map(str::to_owned)
     }
 
