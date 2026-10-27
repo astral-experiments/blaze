@@ -29,15 +29,16 @@ need a few gigabytes there.
 
 ### The gate
 
-Luna selects CI suites for pull requests and pushes to main. The full harness runs nightly
-on Linux and macOS ([CI](#ci)). A change is not done until all of it exits 0 under both backends.
+Luna selects regressions for pull requests and pushes to main. The full harness runs nightly
+on Linux and macOS ([CI](#ci)).
 `harness/ci.py` is the one list of it: which harness runs in which part, in which tier, on
 which hosts and under which backend.
 
     python3 ci.py --list            # every harness, its part, its quick part, its environment
     python3 ci.py --parts           # the parts that have harnesses on this machine
-    python3 ci.py --parts fast      # the fast tier's parts here (quick-1, quick-2)
+    python3 ci.py --parts fast      # the quick shards on this machine
     python3 ci.py core              # run one part here, as CI does
+    RA_JIT_BACKEND=llvm python3 ci.py test:cached-type-ids
 
 A part runs all of its harnesses even when one fails, then names the ones that failed and how
 long each took. Alongside the harnesses, CI runs `cargo fmt --all -- --check`,
@@ -306,30 +307,33 @@ For a CI failure, the last line of the harness step lists which scripts failed.
 
 ## CI
 
-`.github/workflows/ra-jit.yaml` runs in two tiers. It calls `ra-jit-platform.yaml` once for
-each platform, each on a machine of its own kind.
+`.github/workflows/ra-jit.yaml` calls `ra-jit-platform.yaml` for each selected platform.
 
-On same-repository pull requests and pushes to main, Luna reads a bounded GitHub diff and
-selects from `fmt`, `linux-x64`, `linux-arm64`, `macos`, `fork`, `nix`
-and `install`. Each selected platform runs its fast tier. A documentation change can select
-no suites. The **Resolve CI plan** job records the rationale and suite IDs in its summary and
-in the `luna-ci-plan-<attempt>` artifact. The planner runs on a fresh GitHub-hosted runner
-with the `automations` environment's `OPENAI_API_KEY` and only the diff in its workspace.
+Ordinary PRs and main pushes aim for about ten total runner-minutes. Compiler changes get
+formatting and a Linux x64 build and unit tests. Luna reads a bounded diff and picks named
+regressions by platform and backend. For a cache identity change it can run
+`test:cached-type-ids` on LLVM and Cranelift against the same compiler artifact. Each
+selection runs the checked-in harness command and fails the required `ci` check if it fails.
+The Linux borrow-check, pinned run-pass and Bun jobs are separate choices, as are `fork`,
+`nix` and `install`. Documentation can select nothing. For a change that needs
+the whole nightly matrix, Luna can select `full` and record why. The **Resolve CI plan**
+summary and `luna-ci-plan-<attempt>` artifact show the tier, selections and reasons.
+Only the comparison enters Luna's workspace. The job holding the `automations` environment
+key runs on a fresh GitHub-hosted runner.
 
-Fork and Dependabot PRs use the existing defaults. The same defaults apply if Luna is
-unavailable or returns an invalid decision. PRs get formatting and the applicable Nix and installer checks. Main also gets the fast platform and subtree checks for code changes.
-If the comparison is unavailable, every applicable default runs. Main finishes the active run
-and replaces pending pushes. Its next comparison starts at the last successful main run so it
-includes changes from any replaced or failed runs.
+Forks, Dependabot, merge groups and unavailable or invalid Luna plans use path rules.
+Compiler and harness changes get a Linux build, unit tests and the Cranelift corpus
+comparison against rustc. Subtree, Nix and installer changes select their
+corresponding checks. Without a usable comparison or model plan, CI runs the fast matrix
+and auxiliary suites. Main finishes its active run and compares from the last successful
+main run so replaced or failed pushes are covered.
 
-The upstream merge queue tests each entry merged onto main and the
-entries ahead of it. It runs the fast tier for code changes and formatting for documentation.
 Run `gh workflow run ra-jit.yaml --ref <branch> -f tier=fast` to request the entire fast tier.
 On Linux x86-64, Linux AArch64 and macOS arm64, the **fast tier**:
 
 - builds ra-jit once, with the `llvm` feature, and hands the binary to its other jobs;
 - runs `harness/unittests.py`;
-- runs the parts of `ci.py --parts fast` (`quick-1` and `quick-2`, three to six minutes each)
+- runs the parts of `ci.py --parts fast` (`quick-1`, `quick-2` and Linux's `quick-3`)
   under each backend, as a job each;
 - on Linux x86-64, runs rustc's borrow-check tests with a floor under the passes, and the
   run-pass tests of `harness/ui-pinned.txt`, against that build.
@@ -344,7 +348,7 @@ or cargo ([no-rustc.md](no-rustc.md)). A script does nothing when
 imported: its work is under `if __name__ == "__main__":`.
 
 The **full tier** runs nightly and by hand (`gh workflow run ra-jit.yaml --ref <branch> -f
-tier=full`, or `-f tier=fast`), and takes about an hour. It runs every part
+tier=full`). It runs every part
 of `ci.py --parts` (`keys.py`, `buildmodel.py`, the store and the daemon harnesses,
 `debuginfo.py`), `cargo_ra_jit.py` on its checks, on ripgrep and hyperfine and on fd (Linux
 x86-64 and macOS), and on ripgrep, fd, bat, hyperfine, just, axum and nushell with each
