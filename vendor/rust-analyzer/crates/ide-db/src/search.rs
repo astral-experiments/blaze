@@ -31,6 +31,28 @@ use crate::{
     traits::{as_trait_assoc_def, convert_to_def_in_trait},
 };
 
+/// The first segment of an unqualified import consults the extern prelude even when a
+/// same-named local item wins resolution. A path inside a prefixed use tree does not.
+fn starts_crate_import(name: &ast::NameRef) -> bool {
+    let Some(segment) = name.syntax().parent().and_then(ast::PathSegment::cast) else {
+        return false;
+    };
+    let path = segment.parent_path();
+    if path.qualifier().is_some() {
+        return false;
+    }
+    let Some(mut tree) = path.top_path().syntax().parent().and_then(ast::UseTree::cast) else {
+        return false;
+    };
+    while let Some(list) = tree.parent_use_tree_list() {
+        tree = list.parent_use_tree();
+        if tree.path().is_some() {
+            return false;
+        }
+    }
+    true
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct UsageSearchResult {
     pub references: FxHashMap<EditionedFileId, Vec<FileReference>>,
@@ -204,6 +226,43 @@ impl SearchScope {
                 .map(|id| (EditionedFileId::new(db, id, of.edition(db)), None))
                 .collect(),
         }
+    }
+
+    /// Whether active source in this scope loads the dependency under its extern-prelude name.
+    /// Imports and `extern crate` items can load a crate without referencing any emitted symbol.
+    pub fn loads_dependency(
+        &self,
+        sema: &Semantics<'_, RootDatabase>,
+        from: hir::Crate,
+        dep: &base_db::BuiltDependency,
+    ) -> bool {
+        let db = sema.db;
+        let name = dep.name.as_str();
+        let target = hir::Crate::from(dep.crate_id);
+        let root = target.root_module(db);
+        let active_reference = |name: ast::NameRef| {
+            let refers_to_crate = match NameRefClass::classify(sema, &name) {
+                Some(NameRefClass::Definition(Definition::Module(module), _)) => module == root,
+                Some(NameRefClass::Definition(Definition::Crate(krate), _))
+                | Some(NameRefClass::ExternCrateShorthand { krate, .. }) => krate == target,
+                _ => false,
+            };
+            (refers_to_crate || from.edition(db).at_least_2018() && starts_crate_import(&name))
+                && from.is_cfg_enabled(db, name.syntax())
+        };
+        let finder = Finder::new(name);
+        for (text, file_id, range) in FindUsages::scope_files(sema.db, self, false) {
+            let tree = LazyCell::new(|| sema.parse(file_id).syntax().clone());
+            for offset in FindUsages::match_indices(&text, &finder, range) {
+                if FindUsages::find_nodes(sema, name, file_id, &tree, offset)
+                    .filter_map(ast::NameRef::cast)
+                    .any(active_reference)
+                {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Build a search scope spanning the given module and all its submodules.

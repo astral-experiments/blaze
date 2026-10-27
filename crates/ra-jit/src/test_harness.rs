@@ -16,7 +16,7 @@ use syntax::{
 pub(crate) const MODULE: &str = "__ra_jit_test_harness";
 
 /// What the module starts with, after the text of the root file.
-const MARK: &str = "\n// ra-jit's test harness, which is not in the file on disk.\n";
+pub(crate) const MARK: &str = "\n// ra-jit's test harness, which is not in the file on disk.\n";
 
 /// Where the module, or a proc-macro crate's [`crate::macro_list`] written the same way,
 /// starts in `text`.

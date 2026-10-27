@@ -358,6 +358,14 @@ impl Crate {
         self.id.cfg_options(db)
     }
 
+    /// Whether this node and its ancestors are enabled by this crate's configuration.
+    pub fn is_cfg_enabled(self, db: &dyn HirDatabase, node: &SyntaxNode) -> bool {
+        let options = self.cfg(db);
+        node.ancestors()
+            .filter_map(ast::AnyHasAttrs::cast)
+            .all(|owner| AttrFlags::is_cfg_enabled_for(&owner, options).is_ok())
+    }
+
     pub fn potential_cfg<'db>(&self, db: &'db dyn HirDatabase) -> &'db CfgOptions {
         let data = self.id.extra_data(db);
         data.potential_cfg_options.as_ref().unwrap_or_else(|| self.id.cfg_options(db))

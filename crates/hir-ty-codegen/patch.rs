@@ -2564,6 +2564,12 @@ impl Base {
         stale: Vec<Stale>,
     ) -> Result<std::result::Result<Patch, &'static str>> {
         let start = stdx::time::Instant::now();
+        if self.start.is_none() && roots.start.is_some_and(|main| symbols.needs_new_start(main)) {
+            return Ok(Err("the program needs its first Rust startup wrapper"));
+        }
+        if !roots.kept_if_used.is_empty() {
+            return Ok(Err("the link must check which dependencies keep startup sections"));
+        }
         // A function added where every function is compiled whether called or not, as all of
         // a program's are when its `main` is C's, is compiled into the patch with the rest.
         let added: FxHashSet<FunctionId> = match self.rustc {
