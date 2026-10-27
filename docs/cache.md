@@ -24,11 +24,22 @@ full its name doubles with each level (helix's parser combinators made one of 66
 dependency is named by rustc's stable crate id (name, version, and the metadata cargo
 passes). A crate of your checkout is named by a hash of its source, so two checkouts with
 the same source share entries wherever they are on disk. An edit gives new names to
-everything in the edited crate and in the crates of the checkout that depend on it, so
-what the store serves across edits is the code of crates the edit does not reach:
-dependencies, their generic instances, and the untouched crates of the workspace. Within
-one running daemon, unchanged functions of an edited crate are kept by the database
-instead.
+everything in the edited crate and in the crates of the checkout that depend on it.
+Dependencies, their generic instances, and untouched workspace crates keep their names.
+Within one running daemon, the database also keeps unchanged functions of an edited crate.
+
+A fresh daemon can also reuse Cranelift code for plain workspace functions over integers
+and booleans, including direct calls to other such functions. After type checking and
+building Rust MIR, it checks the function's written source, MIR operations, resolved call
+targets and their signatures. The store keys the fragment by those facts and the codegen
+settings. A hit skips lowering to Cranelift IR and emitting machine code. Relocations,
+source locations and debug variables are rebound to the current checkout. An out-of-line
+callee's body can change without invalidating its caller. Generics, calls to inlineable
+functions and other unmodeled inputs go through ordinary lowering.
+
+`RA_JIT_TRACE_FUNCTION_CACHE=1` logs which functions this lookup restores and which it
+lowers. `harness/storerevisions.py` runs the edits and their undos in fresh daemons against
+Cargo, each starting from a store that has only the opposite revision.
 
 An entry of the checkout also holds its mark: a hash of its code and of what it calls and
 reads, by the same stable names, with the crates of the checkout named as they were when

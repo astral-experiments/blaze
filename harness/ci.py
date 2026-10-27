@@ -116,6 +116,7 @@ HARNESSES = [
     ("store", ["storeshared.py"], {}, EVERYWHERE, None),
     ("store", ["storeguards.py"], {}, on("linux"), None),
     ("store", ["storetracked.py"], {}, on("linux", "macos"), 2),
+    ("store", ["storerevisions.py"], {}, on("linux", "macos", backend="cranelift"), 2),
     ("store", ["storebuilds.py"], {}, on("linux", "macos"), 2),
     ("daemon", ["stress.py"], {}, EVERYWHERE, 2),
     ("daemon", ["selects.py"], {}, on("linux"), 2),
