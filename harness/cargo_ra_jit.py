@@ -1010,6 +1010,11 @@ macro_rules! make {
 }
 make!();
 
+pub fn shadowed<Key>() -> impl Copy {
+    #[derive(Copy, Clone)] struct Key;
+    Key
+}
+
 #[allow(non_upper_case_globals)]
 pub fn nested<const query: u8>() -> (impl Copy, impl Copy) {
     fn query() -> impl Copy { #[derive(Copy, Clone)] struct Key; Key }
@@ -1049,35 +1054,39 @@ pub extern "Rust" fn registered_consts() -> [TypeId; 2] {
     [First::registered(), Second::registered()]
 }
 #[unsafe(no_mangle)]
-pub extern "Rust" fn registered() -> TypeId {
+pub extern "Rust" fn registered() -> [TypeId; 2] {
     std::hint::black_box(1.0f128);
     fn of<T: 'static>(_: T) -> TypeId { TypeId::of::<Jar<T>>() }
-    of(Model::key())
+    [of(Model::key()), of(shadowed::<()>())]
 }
 """)
     main = os.path.join(ws, "src/main.rs")
     open(main, "w").write("""use std::any::TypeId;
 fn of<T: 'static>(_: T) -> TypeId { TypeId::of::<model::Jar<T>>() }
 fn main() {
-    extern "Rust" { fn registered() -> TypeId; }
-    println!("{}", of(0u8) == unsafe { registered() });
+    extern "Rust" { fn registered() -> [TypeId; 2]; }
+    let native = unsafe { registered() };
+    println!("{} {}", of(0u8) == native[0], of(0u16) == native[1]);
 }
 """)
     side = Side(ws, dict(base_env(os.path.join(work, "home-local-ids")), RA_JIT_RUSTC_BASE="0"), True)
     try:
         _, cold = side.cargo("run")
-        check("the original lookup has another type", cold.returncode == 0 and cold.stdout.strip() == "false", cold.stderr[-300:])
+        check("the original lookups have other types", cold.returncode == 0 and cold.stdout.strip() == "false false", cold.stderr[-300:])
         wait_warm(side, ws)
         rewrite(main, "of(0u8)", "of(model::Model::key())")
+        rewrite(main, "of(0u16)", "of(model::shadowed::<()>())")
         _, edited = side.cargo("run")
         how = how_built(edited.stderr)
-        check("the daemon hashes a type local to a macro-generated impl", edited.returncode == 0 and edited.stdout.strip() == "true" and how == "daemon", f"{how}, printed {edited.stdout.strip()!r}")
+        check("the daemon hashes keys from a macro-generated impl and a local type shadowing a type parameter",
+              edited.returncode == 0 and edited.stdout.strip() == "true true" and how == "daemon",
+              f"{how}, printed {edited.stdout.strip()!r}")
         const_lookup = """    extern "Rust" { fn registered_consts() -> [TypeId; 2]; }
     type First = <model::First as model::Query>::Key;
     type Second = <model::Second as model::Query>::Key;
     let native = unsafe { registered_consts() };
     println!("{} {}", TypeId::of::<model::Jar<First>>() == native[0], TypeId::of::<model::Jar<Second>>() == native[1]);"""
-        rewrite(main, '    println!("{}", of(model::Model::key()) == unsafe { registered() });', const_lookup)
+        rewrite(main, '    println!("{} {}", of(model::Model::key()) == native[0], of(model::shadowed::<()>()) == native[1]);', const_lookup)
         _, edited = side.cargo("run")
         how = how_built(edited.stderr)
         check("the daemon distinguishes two anonymous constants in native registrations",
