@@ -449,7 +449,7 @@ impl TheirWalk {
 struct Reached {
     node: Node,
     env: StoredParamEnvAndCrate,
-    /// The function left to rustc it was reached from.
+    /// The native root it was reached from.
     by: FunctionId,
     krate: Crate,
     files: Option<Box<[FileId]>>,
@@ -465,6 +465,7 @@ impl Reached {
     fn walk(
         db: &dyn HirDatabase,
         from_rustc: &[FunctionId],
+        native_allocator: bool,
         compiled: &[(FunctionId, String)],
         skipped: &[(FunctionId, CodegenError)],
     ) -> Vec<Reached> {
@@ -476,29 +477,45 @@ impl Reached {
             .map(|it| it.krate(db))
             .collect();
         let (mut stack, mut reached) = (Vec::new(), Vec::new());
-        for &by in from_rustc {
-            match compiled_root(db, by) {
-                Ok(compiled) => stack.push((&compiled.requests, by)),
-                Err(_) => reached.push(Reached {
+        let allocator = compiled
+            .iter()
+            .filter(|(_, name)| {
+                native_allocator
+                    && matches!(
+                        name.as_str(),
+                        "__ra_jit_global_alloc"
+                            | "__ra_jit_global_dealloc"
+                            | "__ra_jit_global_realloc"
+                            | "__ra_jit_global_alloc_zeroed"
+                    )
+            })
+            .map(|&(id, _)| (id, true));
+        // The native allocator shim can inline a whole call chain, even across a root
+        // our object also defines.
+        for (by, inlined) in from_rustc.iter().map(|&id| (id, false)).chain(allocator) {
+            let compiled = compiled_root(db, by).as_ref().ok();
+            if inlined || compiled.is_none() {
+                reached.push(Reached {
                     node: Node::Root(by),
                     env: closure_env(db, by),
                     by,
                     krate: by.krate(db),
-                    files: None,
-                    walked: false,
-                }),
+                    files: Some(Box::from([body_file(db, by.into())])),
+                    walked: compiled.is_some(),
+                });
             }
+            stack.extend(compiled.map(|it| (&it.requests, by, inlined)));
         }
         let mut seen = FxHashSet::default();
-        while let Some((requests, by)) = stack.pop() {
+        while let Some((requests, by, inlined)) = stack.pop() {
             for request in &requests.funcs {
                 let FuncTarget::Instance(instance, env) = &request.target else { continue };
-                if !seen.insert((instance.clone(), env.clone())) {
+                if !seen.insert((instance.clone(), env.clone(), inlined)) {
                     continue;
                 }
                 let (node, krate, files, requests) = match instance.def {
                     InstanceDef::Fn(func) if instance.args.as_ref().is_empty() => {
-                        if ours.contains(&func) || !crates.contains(&func.krate(db)) {
+                        if (!inlined && ours.contains(&func)) || !crates.contains(&func.krate(db)) {
                             continue;
                         }
                         let compiled = compiled_root(db, func).as_ref().ok();
@@ -517,7 +534,7 @@ impl Reached {
                         )
                     }
                 };
-                stack.extend(requests.map(|it| (it, by)));
+                stack.extend(requests.map(|it| (it, by, inlined)));
                 let walked = requests.is_some();
                 reached.push(Reached { node, env: env.clone(), by, krate, files, walked });
             }
@@ -1480,7 +1497,8 @@ impl Base {
         let from_rustc: Vec<FunctionId> = left_to_rustc(db, cg.symbols, skipped).collect();
         let (their_statics, walked) = TheirStatics::walk(db, from_rustc.iter().copied());
         let their_walk = TheirWalk::new(db, &their_statics, walked, &mut instances, &mut statics);
-        let reached = Reached::walk(db, &from_rustc, compiled, skipped);
+        let reached =
+            Reached::walk(db, &from_rustc, !cg.symbols.nothing_of_rustc(), compiled, skipped);
         let rejected = cg
             .rejected
             .iter()
