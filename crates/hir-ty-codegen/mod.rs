@@ -2892,9 +2892,10 @@ fn root_code(db: &dyn HirDatabase, func: FunctionId, tier: bool) -> Result<Produ
     }
     let signature = FunctionSignature::of(db, func);
     let (abi, variadic) = (signature.abi, signature.is_varargs());
+    let body = body_for_abi(abi, Cow::Borrowed(body))?;
     let args = GenericArgs::new_from_slice(&[]).store();
     let checked = crate_checks_overflow(db, func.krate(db)).unwrap_or(false);
-    compile_as(db, env, Some(body), track_caller(db, func), checked, tier, |fx| {
+    compile_as(db, env, Some(&body), track_caller(db, func), checked, tier, |fx| {
         fx.abi = abi;
         fx.variadic = variadic;
         fx.args = Some(args);
@@ -3353,11 +3354,19 @@ fn instance_body<'db>(
         | InstanceDef::FnPointerShim
         | InstanceDef::ReifyShim { .. } => unsupported!("the body of a shim"),
     };
-    let mut body = body.map_err(|e| CodegenError::Frontend(format!("mir: {e:?}")))?;
-    if let InstanceDef::Fn(func) = instance.def
-        && FunctionSignature::of(db, func).abi == ExternAbi::RustCall
-        && !body.to_mut().spread_rust_call_tuple()
-    {
+    let body = body.map_err(|e| CodegenError::Frontend(format!("mir: {e:?}")))?;
+    match instance.def {
+        InstanceDef::Fn(func) => body_for_abi(FunctionSignature::of(db, func).abi, body),
+        _ => Ok(body),
+    }
+}
+
+/// Adapts the MIR's tuple parameter to the arguments that arrive at a native entry point.
+fn body_for_abi<'db>(
+    abi: ExternAbi,
+    mut body: Cow<'db, MirBody<'db>>,
+) -> Result<Cow<'db, MirBody<'db>>> {
+    if abi == ExternAbi::RustCall && !body.to_mut().spread_rust_call_tuple() {
         unsupported!("the last parameter of a rust-call function is not a tuple");
     }
     Ok(body)
@@ -11094,7 +11103,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             return self.reified(fn_ty, false);
         }
         let sig = self.interner.instantiate_bound_regions_with_erased(fn_ty.fn_sig(self.interner));
-        let abi = self.fn_abi(sig.abi(), sig.output(), sig.inputs().iter().copied())?;
+        let inputs = Self::abi_inputs(sig.abi(), sig.inputs())?;
+        let abi = self.fn_abi(sig.abi(), sig.output(), inputs.iter().copied())?;
         let mut sig = self.signature(&abi.args, abi.ret);
         self.declare_variadic(callee, &mut sig)?;
         self.cg.callee(InstanceDef::Fn(callee), callee_args, self.env, &sig)
@@ -12240,14 +12250,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
             // A type with its own `Fn` impls, which take the arguments as a tuple.
             TyKind::Adt(..) | TyKind::Ref(..) => {
-                let layout = self.layout(tuple_ty)?;
-                let tuple = self.stack_slot(&layout);
-                for (i, &(src, ty)) in values.iter().enumerate() {
-                    let size = self.layout(ty)?.size;
-                    let offset = layout.fields.offset(i).bytes() as i64;
-                    let field = self.builder.ins().iadd_imm(tuple, offset);
-                    self.copy(field, src, size);
-                }
+                let tuple = self.pack_call_tuple(tuple_ty, &values)?;
                 let [by_shared, by_mut, _] = fn_trait_methods(self.interner.lang_items())
                     .into_iter()
                     .find(|family| family.contains(&Some(method)))
@@ -12711,6 +12714,21 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         self.cg.callee(closure, parent_args, self.env, &sig)
     }
 
+    /// Physical inputs of a function signature. The final tuple in a `rust-call` signature
+    /// contributes one argument per field, just as it does in the compiled body.
+    fn abi_inputs<'a>(abi: ExternAbi, inputs: &'a [Ty<'db>]) -> Result<Cow<'a, [Ty<'db>]>> {
+        if abi != ExternAbi::RustCall {
+            return Ok(Cow::Borrowed(inputs));
+        }
+        let Some((&last, prefix)) = inputs.split_last() else {
+            unsupported!("rust-call without a trailing tuple");
+        };
+        let TyKind::Tuple(fields) = last.kind() else {
+            unsupported!("rust-call argument is not a tuple: {last:?}");
+        };
+        Ok(Cow::Owned(prefix.iter().copied().chain(fields.iter()).collect()))
+    }
+
     /// The `ReifyShim` of a fn item or fn pointer type.
     fn reified(&mut self, ty: Ty<'db>, receiver: bool) -> Result<FuncId> {
         let sig = self.reify_signature(ty, receiver)?.1;
@@ -12735,7 +12753,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         // receiver is an argument like the rest: where it goes moves where they do.
         let abi = if receiver { ExternAbi::Rust } else { fn_sig.abi() };
         let pointer = receiver.then(|| Ty::new_imm_ptr(self.interner, Ty::new_unit(self.interner)));
-        let inputs = pointer.into_iter().chain(fn_sig.inputs().iter().copied());
+        let inputs = Self::abi_inputs(abi, fn_sig.inputs())?;
+        let inputs = pointer.into_iter().chain(inputs.iter().copied());
         let mut abi = self.fn_abi(abi, fn_sig.output(), inputs)?;
         let sig = self.signature(&abi.args, abi.ret);
         if receiver {
@@ -12759,8 +12778,10 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             _ => self.stack_slot(&dst_layout),
         };
         let receiver = if receiver { incoming.next() } else { None };
+        let abi = if receiver.is_some() { ExternAbi::Rust } else { fn_sig.abi() };
+        let inputs = Self::abi_inputs(abi, fn_sig.inputs())?;
         let mut values = Vec::new();
-        for (&ty, mode) in fn_sig.inputs().iter().zip(modes) {
+        for (&ty, mode) in inputs.iter().zip(modes) {
             let layout = self.layout(ty)?;
             let addr = match mode {
                 PassMode::OnStack { padded: true, .. } => {
@@ -12773,6 +12794,13 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             };
             self.receive(mode, &mut incoming, addr, &layout);
             values.push((addr, ty));
+        }
+        if abi == ExternAbi::RustCall {
+            let (&tuple, prefix) =
+                fn_sig.inputs().split_last().expect("validated rust-call inputs");
+            let addr = self.pack_call_tuple(tuple, &values[prefix.len()..])?;
+            values.truncate(prefix.len());
+            values.push((addr, tuple));
         }
         match ty.kind() {
             TyKind::FnDef(def, generic_args) => match def.0 {
@@ -13376,6 +13404,19 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         };
         self.receive(ret_mode, &mut results.into_iter(), dst, ret_layout);
         Ok(())
+    }
+
+    /// Reassembles separate arguments for a body that uses them as a tuple.
+    fn pack_call_tuple(&mut self, ty: Ty<'db>, values: &[(Value, Ty<'db>)]) -> Result<Value> {
+        let layout = self.layout(ty)?;
+        let tuple = self.stack_slot(&layout);
+        for (i, &(src, field_ty)) in values.iter().enumerate() {
+            let size = self.layout(field_ty)?.size;
+            let offset = layout.fields.offset(i).bytes() as i64;
+            let field = self.builder.ins().iadd_imm(tuple, offset);
+            self.copy(field, src, size);
+        }
+        Ok(tuple)
     }
 
     /// Passes the arguments, which live at the given addresses, the way the Rust ABI wants them
