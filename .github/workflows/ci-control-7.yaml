@@ -1,27 +1,20 @@
-name: macOS harness comparison
+name: Native macOS 15 Namespace comparison
 on:
   push:
     branches: [charlie/ci-control-pr-7]
 permissions:
   contents: read
-  actions: read
 jobs:
-  quick:
-    name: Cranelift quick-2 on ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [macos-15, nscloud-macos-tahoe-arm64-6x14]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 50
+  native:
+    runs-on: nscloud-macos-sequoia-arm64-6x14
+    timeout-minutes: 60
     env:
       CARGO_INCREMENTAL: 0
       CARGO_NET_RETRY: 10
       CARGO_TERM_COLOR: always
       RA_JIT_SANDBOX: ''
-      PYTHON: python3
       SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_GHA_RW_MODE: READ_WRITE
+      SCCACHE_GHA_RW_MODE: READ_ONLY
       RA_JIT_BACKEND: cranelift
       RA_JIT_OPT: 2
       RA_JIT_EMIT: fast
@@ -35,31 +28,18 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/toolchain
         with:
-          llvm: run
-      - uses: actions/download-artifact@v8
+          llvm: build
+      - uses: Swatinem/rust-cache@v2
         with:
-          name: ra-jit-macos-arm64
-          path: target/release
-          github-token: ${{ github.token }}
-          run-id: 40429568551
-      - name: Unpack the compiler from the main run
-        working-directory: target/release
+          shared-key: build
+          save-if: "false"
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Build on Sequoia
+        env:
+          RUSTC_WRAPPER: sccache
         run: |
-          tar -xf ra-jit.tar
-          echo "RA_JIT_BIN=$PWD/ra-jit" >> "$GITHUB_ENV"
-          shasum -a 256 ra-jit
           sw_vers
-      - name: Run the complete shard
+          nix develop --command cargo build -p ra-jit --release --features llvm --locked
+          echo "RA_JIT_BIN=$PWD/target/release/ra-jit" >> "$GITHUB_ENV"
+      - name: Run the complete shard on Sequoia
         run: python3 harness/ci.py quick-2
-      - name: Repeat the isolated test in the shard environment
-        if: always() && env.RA_JIT_BIN != ''
-        working-directory: harness
-        run: python3 storetracked.py
-      - name: Check which statics forced a full relink
-        if: failure()
-        run: |
-          find /private/tmp -path '/private/tmp/ra-jit-tracked-*/*/daemon.log' -maxdepth 3 -type f -print | while IFS= read -r log; do
-            echo "::group::$log"
-            grep -E 'not spliced|has another value|a function the executable was linked with' "$log" | head -18 || true
-            echo "::endgroup::"
-          done
