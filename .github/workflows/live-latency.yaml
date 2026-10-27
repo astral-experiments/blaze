@@ -91,12 +91,12 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           # The ruleset on main refuses a push from the workflow's own token: this one is allowed
           # past it (docs/harness.md, "CI").
           token: ${{ secrets.RA_JIT_BOT_TOKEN || github.token }}
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: latency-*
           path: ${{ runner.temp }}/latency
