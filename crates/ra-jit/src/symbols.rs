@@ -1400,14 +1400,31 @@ fn without_ids(demangled: &str, drop: impl Fn(&str) -> bool) -> String {
     path
 }
 
-/// The disambiguator rustc gave the impl defining this method.
-pub(crate) fn impl_place(symbol: &str) -> Option<u32> {
+/// The impl disambiguator of a native method, followed by its encoded parent.
+fn method_impl(symbol: &str) -> Option<(u32, V0<'_>)> {
     let mut v = V0 { rest: symbol.strip_prefix("_R")?.as_bytes() };
     v.eat(b'I');
     if !v.eat(b'N') || !v.eat(b'v') || !matches!(v.next()?, b'M' | b'X') {
         return None;
     }
-    v.disambiguator()?.try_into().ok()
+    Some((v.disambiguator()?.try_into().ok()?, v))
+}
+
+/// The disambiguator of the impl defining this method.
+pub(crate) fn impl_place(symbol: &str) -> Option<u32> {
+    Some(method_impl(symbol)?.0)
+}
+
+/// The disambiguator of the `const _` containing the impl of this method.
+pub(crate) fn impl_const_place(symbol: &str) -> Option<u32> {
+    let (_, mut v) = method_impl(symbol)?;
+    if !v.eat(b'N') || !v.eat(b'v') {
+        return None;
+    }
+    v.path()?;
+    let place = v.disambiguator()?;
+    v.rest.strip_prefix(b"1__")?;
+    place.try_into().ok()
 }
 
 /// A reader of v0 symbols, for what `rustc_demangle` reads and does not print.
