@@ -896,6 +896,7 @@ struct Jar<T>(T);
 fn lookup<T: 'static>() -> TypeId { TypeId::of::<Jar<T>>() }
 #[unsafe(no_mangle)]
 pub extern "Rust" fn register_native() -> TypeId {
+    // The f128 operation keeps registration in rustc-built code.
     std::hint::black_box(1.0f128);
     TypeId::of::<Jar<Root>>()
 }

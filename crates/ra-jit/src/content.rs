@@ -1,5 +1,4 @@
-//! What a crate of a checkout is, by what is written in it: two checkouts with the same
-//! sources have the same crate, and what was compiled for one is the code of the other.
+//! Identifies reusable code across checkouts by its sources, build inputs, and crate identity.
 
 use std::{
     path::Path,
