@@ -422,6 +422,12 @@ fn value() {
             if len(paths) != 1:
                 return f"FAILED to locate value.expr in {ws}: {paths}"
             paths[0].write_text(value)
+            # Reinstalled objects can be newer than the input whose old value they contain.
+            objects = list((ws / "target").glob("**/.ra-jit-units/*/*/*.rcgu.o"))
+            if not objects:
+                return f"FAILED to locate saved native objects in {ws}"
+            for obj in objects:
+                obj.touch()
         actual, said = test(ws, env, "all --lib")
         if value is None and "[ra-jit] target(s)" not in said:
             return f"FAILED to serve the original native test\n{said[-3000:]}"

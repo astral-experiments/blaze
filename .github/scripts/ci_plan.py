@@ -24,9 +24,9 @@ def changed_paths(base, head, event):
     return paths if event == "pull_request" or status == "ahead" else None
 
 
-def defaults(event, tier, paths):
+def defaults(event, paths):
     if event in {"schedule", "workflow_dispatch"}:
-        return FAST + (["windows"] if tier == "full" else [])
+        return FAST.copy()
     # None means the comparison is incomplete or unavailable. Cover every default in that case.
     def touches(predicate):
         return paths is None or any(predicate(path) for path in paths)
@@ -71,7 +71,7 @@ def main():
     else:
         paths = (changed_paths(env["BASE_SHA"], env["HEAD_SHA"], event)
                  if event in {"push", "pull_request", "merge_group"} else None)
-        suites = defaults(event, tier, paths)
+        suites = defaults(event, paths)
         source = "fallback" if event in {"push", "pull_request"} else "event"
         reason = env.get("LUNA_REASON") or "Using the default suites for this event"
         if env.get("LUNA_PLAN"):
