@@ -385,6 +385,11 @@ pub trait SymbolResolver {
         false
     }
     /// The function a type is declared in the body of, when nothing else is around it there
+    /// The rustc disambiguator of the anonymous constant defining a local type.
+    fn anon_const_place(&self, _adt: hir_def::AdtId) -> Option<u32> {
+        None
+    }
+
     /// and no other type of the body has its name.
     fn declared_in(&self, adt: hir_def::AdtId) -> Option<FunctionId> {
         _ = adt;

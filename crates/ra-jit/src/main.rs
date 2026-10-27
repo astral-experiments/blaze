@@ -1508,6 +1508,24 @@ impl SymbolResolver for Resolver<'_> {
         self.contents.names_place((&*self.root, self.base.as_deref()), bytes)
     }
 
+    fn anon_const_place(&self, adt: hir_def::AdtId) -> Option<u32> {
+        let db = self.db;
+        let adt = hir::Adt::from(adt);
+        let mut places = adt
+            .module(db)
+            .impl_defs(db)
+            .into_iter()
+            .filter(|it| it.self_ty(db).as_adt() == Some(adt))
+            .flat_map(|it| it.items(db))
+            .filter_map(|item| {
+                let hir::AssocItem::Function(func) = item else { return None };
+                let symbol = self.function(FunctionId::try_from(func).ok()?)?;
+                symbols::impl_const_place(&symbol)
+            });
+        let place = places.next()?;
+        places.all(|p| p == place).then_some(place)
+    }
+
     fn declared_in(&self, adt: hir_def::AdtId) -> Option<FunctionId> {
         let adt = hir::Adt::from(adt);
         let sema = self.sema();

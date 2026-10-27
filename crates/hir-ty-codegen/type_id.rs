@@ -256,11 +256,84 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
         };
         let module = adt.module(db);
         let parent = if module.is_block_module(db) && !self.ours {
-            self.body_path(self.symbols.declared_in(adt)?)?
+            match self.symbols.declared_in(adt) {
+                Some(func) => self.body_path(func)?,
+                None => self.local_adt_parent(adt, module.block(db)?, name)?,
+            }
         } else {
             self.module(module)?
         };
         Some(parent.child(DefPathData::TypeNs(name.as_str())))
+    }
+
+    /// The function or anonymous constant containing an ADT whose name is unique in that body.
+    fn local_adt_parent(
+        &mut self,
+        adt: AdtId,
+        block: hir_def::BlockIdLt<'db>,
+        name: &hir_expand::name::Name,
+    ) -> Option<Fingerprint> {
+        use hir_def::{expr_store::Body, signatures::ConstSignature};
+        use hir_ty::mir::type_name::{block_owner, is_outside_closures};
+
+        let db = self.db;
+        let (owner, _) = block_owner(db, block)?;
+        if !is_outside_closures(db, owner, block) {
+            return None;
+        }
+        let named = |owner| {
+            Body::of(db, owner)
+                .blocks(db)
+                .flat_map(|(_, map)| map.modules(db))
+                .flat_map(|(_, module)| module.scope(db).entries())
+                .filter(|(candidate, ns)| candidate.as_str() == name.as_str() && ns.types.is_some())
+                .count()
+        };
+        if named(owner) != 1 {
+            return None;
+        }
+        let id = match owner {
+            DefWithBodyId::FunctionId(func) if !FunctionSignature::of(db, func).is_async() => {
+                return self.body_path(func);
+            }
+            DefWithBodyId::ConstId(id) if ConstSignature::of(db, id).name.is_none() => id,
+            _ => return None,
+        };
+        let ItemContainerId::ModuleId(module) = id.lookup(db).container else { return None };
+        let (parent, siblings): (_, Vec<_>) = if let Some(block) = module.block(db) {
+            let (around, _) = block_owner(db, block)?;
+            let DefWithBodyId::FunctionId(func) = around else { return None };
+            if FunctionSignature::of(db, func).is_async() || !is_outside_closures(db, around, block)
+            {
+                return None;
+            }
+            let siblings = Body::of(db, around)
+                .blocks(db)
+                .flat_map(|(_, map)| map.modules(db))
+                .flat_map(|(_, module)| module.scope(db).unnamed_consts())
+                .collect();
+            (self.body_path(func)?, siblings)
+        } else {
+            let siblings =
+                module.def_map(db).module(db, module).scope(db).unnamed_consts().collect();
+            (self.module(module)?, siblings)
+        };
+        let place = if siblings.as_slice() == [id] {
+            0
+        } else {
+            // The printed path of a method does not distinguish identically named local types.
+            if !siblings.contains(&id)
+                || siblings.iter().any(|&other| other != id && named(other.into()) != 0)
+            {
+                return None;
+            }
+            let place = self.symbols.anon_const_place(adt)?;
+            if place as usize >= siblings.len() {
+                return None;
+            }
+            place
+        };
+        Some(parent.child_at(DefPathData::ValueNs("_"), place))
     }
 
     /// An `impl`, which rustc tells from the others of its module by how many come before it.
@@ -275,6 +348,9 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
         let parent = match func.lookup(db).container {
             ItemContainerId::ImplId(id) if self.ours => self.own_impl(id)?,
             ItemContainerId::ImplId(id) => self.impl_path(id)?,
+            ItemContainerId::ModuleId(module) if module.is_block_module(db) && !self.ours => {
+                self.around_local(module.block(db)?, &FunctionSignature::of(db, func).name)?
+            }
             ItemContainerId::ModuleId(module) => self.module(module)?,
             ItemContainerId::TraitId(trait_) => self.trait_path(trait_)?,
             ItemContainerId::ExternBlockId(_) => return None,
@@ -326,6 +402,9 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
         let db = self.db;
         let (owner, _) = hir_ty::mir::type_name::block_owner(db, block)?;
         let DefWithBodyId::FunctionId(around) = owner else { return None };
+        if FunctionSignature::of(db, around).is_async() {
+            return None;
+        }
         // One written in a closure is a child of the closure.
         if !hir_ty::mir::type_name::is_outside_closures(db, owner, block) {
             return None;
@@ -333,13 +412,8 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
         let named_so = hir_def::expr_store::Body::of(db, owner)
             .blocks(db)
             .flat_map(|(_, def_map)| def_map.modules(db))
-            .flat_map(|(_, module)| module.scope(db).declarations())
-            .filter(|def| match def {
-                hir_def::ModuleDefId::FunctionId(it) => {
-                    FunctionSignature::of(db, *it).name == *name
-                }
-                _ => false,
-            });
+            .flat_map(|(_, module)| module.scope(db).entries())
+            .filter(|(candidate, ns)| candidate.as_str() == name.as_str() && ns.values.is_some());
         if named_so.count() != 1 {
             return None;
         }

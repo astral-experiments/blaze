@@ -867,7 +867,7 @@ def daemon(work):
     in_place(work, check)
     through_link(work, check)
     cached_type_ids(work, check)
-    macro_impl_type_id(work, check)
+    local_type_ids(work, check)
     pinned(work, check)
     own_toolchain(work, check)
     return checks
@@ -923,9 +923,9 @@ fn main() {
             side.cargo("stop")
 
 
-def macro_impl_type_id(work, check):
+def local_type_ids(work, check):
     """A lookup introduced by an edit must agree with the native registration."""
-    ws = os.path.join(work, "macro-impl-type-id")
+    ws = os.path.join(work, "local-type-ids")
     os.makedirs(os.path.join(ws, "model", "src"))
     os.makedirs(os.path.join(ws, "src"))
     open(os.path.join(ws, "Cargo.toml"), "w").write("""[package]
@@ -953,6 +953,32 @@ macro_rules! make {
     } }
 }
 make!();
+
+pub trait Query { type Key; fn registered() -> TypeId; }
+pub trait Witness { fn id() -> TypeId; }
+pub struct First;
+pub struct Second;
+macro_rules! query {
+    ($query:ident, $key:ident) => { const _: () = {
+        pub struct $key;
+        impl Witness for $key {
+            #[inline(never)]
+            fn id() -> TypeId { std::hint::black_box(TypeId::of::<Jar<Self>>()) }
+        }
+        impl Query for $query {
+            type Key = $key;
+            fn registered() -> TypeId { <$key as Witness>::id() }
+        }
+    }; }
+}
+query!(First, FirstKey);
+query!(Second, SecondKey);
+
+#[unsafe(no_mangle)]
+pub extern "Rust" fn registered_consts() -> [TypeId; 2] {
+    std::hint::black_box(1.0f128);
+    [First::registered(), Second::registered()]
+}
 #[unsafe(no_mangle)]
 pub extern "Rust" fn registered() -> TypeId {
     std::hint::black_box(1.0f128);
@@ -968,7 +994,7 @@ fn main() {
     println!("{}", of(0u8) == unsafe { registered() });
 }
 """)
-    side = Side(ws, dict(base_env(os.path.join(work, "home-macro-impl")), RA_JIT_RUSTC_BASE="0"), True)
+    side = Side(ws, dict(base_env(os.path.join(work, "home-local-ids")), RA_JIT_RUSTC_BASE="0"), True)
     try:
         _, cold = side.cargo("run")
         check("the original lookup has another type", cold.returncode == 0 and cold.stdout.strip() == "false", cold.stderr[-300:])
@@ -977,6 +1003,15 @@ fn main() {
         _, edited = side.cargo("run")
         how = how_built(edited.stderr)
         check("the daemon hashes a type local to a macro-generated impl", edited.returncode == 0 and edited.stdout.strip() == "true" and how == "daemon", f"{how}, printed {edited.stdout.strip()!r}")
+        rewrite(main, '    println!("{}", of(model::Model::key()) == unsafe { registered() });', """    extern "Rust" { fn registered_consts() -> [TypeId; 2]; }
+    type First = <model::First as model::Query>::Key;
+    type Second = <model::Second as model::Query>::Key;
+    let native = unsafe { registered_consts() };
+    println!("{} {}", TypeId::of::<model::Jar<First>>() == native[0], TypeId::of::<model::Jar<Second>>() == native[1]);""")
+        _, edited = side.cargo("run")
+        how = how_built(edited.stderr)
+        check("the daemon distinguishes two anonymous constants in native registrations",
+              edited.returncode == 0 and edited.stdout.strip() == "true true" and how == "daemon", f"{how}, printed {edited.stdout.strip()!r}")
     finally:
         side.cargo("stop")
 
@@ -1855,7 +1890,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix="rj-ids-", dir="/tmp" if sys.platform == "darwin" else None) as work:
             work = os.path.realpath(work)
             cached_type_ids(work, check)
-            macro_impl_type_id(work, check)
+            local_type_ids(work, check)
         return
     names = [a for a in argv if not a.startswith("--")] or (SMALL if "--small" in argv else list(PROJECTS))
     modes = [m for m in MODES if f"--{m}" in argv] or list(MODES)
