@@ -7183,7 +7183,14 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
     /// instance we cannot compile is still one we can call.
     fn forward_to_rustc(&mut self, instance: &Instance, id: FuncId) -> Option<()> {
         let InstanceDef::Fn(func) = instance.def else { return None };
-        let symbol = self.symbols.path(&self.instance_path(func, instance.args.as_ref())?)?;
+        let args = instance.args.as_ref();
+        let path = self.instance_path(func, args)?;
+        let symbol = if args.iter().all(|arg| arg.region().is_some()) {
+            // A test's path also names its descriptor. Resolve the function as an item.
+            self.symbols.function(func)?
+        } else {
+            self.symbols.path(&path)?
+        };
         let symbol = self.rustc_copy(symbol, instance.checked)?;
         let sig = self.module.declarations().get_function_decl(id).signature.clone();
         let target = self.import(&symbol, &sig).ok()?;
