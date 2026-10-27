@@ -56,9 +56,10 @@ impl GeneratedInputs {
         if !crate::cargo::script::in_out_dir(&path) {
             return Source { path, generated: None };
         }
-        let generated = content(&path);
-        let snapshot =
-            generated.filter(|_| written(&path).zip(started).is_some_and(|(at, start)| at < start));
+        let generated = content(&path).zip(written(&path));
+        let snapshot = generated
+            .filter(|(_, at)| started.is_some_and(|start| *at < start))
+            .map(|(hash, _)| hash);
         let previous = self.0.entry(path.clone()).or_insert(snapshot);
         if *previous != snapshot {
             *previous = None;
@@ -165,17 +166,20 @@ struct Symbol {
 #[derive(Debug)]
 struct Source {
     path: PathBuf,
-    /// What a file that a build script wrote came to when the symbols were read. cargo runs
-    /// a script again without building the crate again when the script says the same, so
-    /// when such a file was written says nothing.
-    generated: Option<u64>,
+    /// The contents and mtime of a generated file when the native symbols were read.
+    /// A build script can rewrite the same bytes, so later checks also compare the contents.
+    generated: Option<(u64, SystemTime)>,
 }
 
 impl Source {
     /// Whether the file is another than the one rustc read when it finished at `built`.
-    fn written_since(&self, built: SystemTime) -> bool {
+    fn written_since(&self, built: SystemTime, started: Option<SystemTime>) -> bool {
         match self.generated {
-            Some(generated) => content(&self.path) != Some(generated),
+            Some((hash, at)) => {
+                // Reinstalling a saved object can change its mtime. Its recorded invocation
+                // still bounds the read. For an original artifact, use the unit's finish time.
+                started.map_or(at > built, |start| at >= start) || content(&self.path) != Some(hash)
+            }
             None => written(&self.path).is_none_or(|it| it > built),
         }
     }
@@ -1165,15 +1169,14 @@ impl SymbolTable {
     /// Each source written after rustc built its crate, paired with the crate's root.
     pub(crate) fn all_written_since_built(&self) -> impl Iterator<Item = (&Path, &Path)> {
         let finished = self.finished();
-        self.built_from.iter().flat_map(move |(_, sources)| {
+        self.built_from.iter().flat_map(move |(artifact, sources)| {
+            let started = crate::cargo::Record::started_for(artifact);
             let unit = sources
                 .first()
                 .and_then(|root| Some((root.path.as_path(), *finished.get(&root.path)?)));
             sources.iter().filter_map(move |source| {
                 let (root, built) = unit?;
-                // A fresh table can read the generated file after the saved invocation.
-                let unverified = self.generated_inputs.0.get(&source.path) == Some(&None);
-                (unverified || source.written_since(built)).then_some((root, source.path.as_path()))
+                source.written_since(built, started).then_some((root, source.path.as_path()))
             })
         })
     }
