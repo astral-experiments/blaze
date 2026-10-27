@@ -6725,6 +6725,14 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         // address rustc took with one we take, even when neither side writes to the static.
         let linked_static = !self.symbols.nothing_of_rustc()
             && symbol.as_ref().is_some_and(|it| self.symbols.linked(it));
+        // An extern declaration has no initializer here. For a Rust definition, a failed
+        // evaluation can only borrow rustc's value while its inputs are still pristine.
+        if linked_static
+            && self.rustc_values.touched(db, id)
+            && !StaticSignature::of(db, id).flags.contains(StaticFlags::EXTERN)
+        {
+            compiled_static(db, id).as_ref().map_err(Clone::clone)?;
+        }
         let uses_native = linked_static && (stateful() || self.own_statics.native_may_read(db, id));
         let shared = in_base.map_or_else(
             || uses_native && self.rustc_values.kept(db, id),

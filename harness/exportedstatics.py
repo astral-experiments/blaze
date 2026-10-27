@@ -6,13 +6,13 @@ import subprocess
 import tempfile
 
 
-def check(root, attribute):
+def check(root, attribute, initializer="input::TAG"):
     (root / "src").mkdir(parents=True)
     (root / "Cargo.toml").write_text('[package]\nname="read-export"\nversion="0.1.0"\nedition="2021"\n[profile.dev]\nopt-level=1\n')
     (root / "src/main.rs").write_text(f"""
 mod input;
 #[unsafe({attribute})]
-pub static META: &str = input::TAG;
+pub static META: &str = {initializer};
 fn main() {{
     println!("{{}} {{}}", std::hint::black_box(&META), input::TAG);
 }}
@@ -35,3 +35,5 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="bz-exports-", dir="/tmp") as tmp:
         for i, attr in enumerate(("no_mangle", 'export_name="blaze_metadata"')):
             check(Path(tmp) / str(i), attr)
+        check(Path(tmp) / "round", "no_mangle",
+              'if 1.5_f32.round_ties_even() == 2.0 { input::TAG } else { "other" }')
