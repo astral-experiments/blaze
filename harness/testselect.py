@@ -353,7 +353,8 @@ fn library() { assert_eq!(half(8_u32), 4.0); }
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as out:
             out.write(text)
-    env = dict(env, CARGO_HOME=os.path.join(ws, "cargo-home"), RUSTC_BOOTSTRAP="1")
+    # With incremental compilation off rustc can keep only the descriptor for the test.
+    env = dict(env, CARGO_HOME=os.path.join(ws, "cargo-home"), RUSTC_BOOTSTRAP="1", CARGO_INCREMENTAL="0")
     code, said = test(ws, env, "all --tests")
     if code or "[ra-jit]" not in said or set(RAN.findall(said)) != {
         ("library", "ok"), ("first", "ok"), ("second", "ok")
