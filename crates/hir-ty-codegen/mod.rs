@@ -118,6 +118,7 @@ mod places;
 mod units;
 use self::places::{row_location, source_location};
 mod promote;
+mod revision;
 mod settled;
 mod stable;
 mod startup;
@@ -2956,12 +2957,19 @@ fn root_code(db: &dyn HirDatabase, func: FunctionId, tier: bool) -> Result<Produ
     let body = body_for_abi(abi, Cow::Borrowed(body))?;
     let args = GenericArgs::new_from_slice(&[]).store();
     let checked = crate_checks_overflow(db, func.krate(db)).unwrap_or(false);
-    compile_as(db, env, Some(&body), track_caller(db, func), checked, tier, |fx| {
-        fx.abi = abi;
-        fx.variadic = variadic;
-        fx.args = Some(args);
-        fx.codegen()
-    })
+    let tracked = track_caller(db, func);
+    let lower = || {
+        compile_as(db, env, Some(&body), tracked, checked, tier, |fx| {
+            fx.abi = abi;
+            fx.variadic = variadic;
+            fx.args = Some(args);
+            fx.codegen()
+        })
+    };
+    if tier || tracked || variadic || abi != ExternAbi::Rust {
+        return lower();
+    }
+    revision::compile(db, func, &body, env, checked, lower)
 }
 
 /// The crates of a program of `crates`: what they depend on, but not through a proc macro,
@@ -3102,12 +3110,22 @@ fn instance_code(
         }
         _ => None,
     };
-    let compiled = compile_as(db, env, Some(body), tracked, instance.checked, tier, |fx| {
-        fx.abi = abi;
-        fx.variadic = variadic;
-        fx.args = Some(args);
-        fx.codegen()
-    })?;
+    let plain =
+        args.as_ref().is_empty() && !tier && !tracked && !variadic && abi == ExternAbi::Rust;
+    let lower = || {
+        compile_as(db, env, Some(body), tracked, instance.checked, tier, |fx| {
+            fx.abi = abi;
+            fx.variadic = variadic;
+            fx.args = Some(args);
+            fx.codegen()
+        })
+    };
+    let compiled = match instance.def {
+        InstanceDef::Fn(func) if plain => {
+            revision::compile(db, func, body, env, instance.checked, lower)
+        }
+        _ => lower(),
+    }?;
     Ok(match compiled {
         Produced::Code(compiled) => Produced::Code(CompiledFunction { closure, ..compiled }),
         Produced::Pending(pending) => Produced::Pending(Pending { closure, ..pending }),
@@ -4501,6 +4519,10 @@ fn compile<'db>(
     compile_as(db, env, body, tracked, checked, false, fill).map(Produced::code)
 }
 
+/// Whether locals that can be promoted are taken out of their stack slots.
+static PROMOTE: LazyLock<bool> =
+    LazyLock::new(|| std::env::var_os("RA_JIT_PROMOTE").is_none_or(|it| it != "0"));
+
 /// Builds the IR of one function and compiles it with Cranelift, or, for a compile at a level
 /// above 1 (`tier`), leaves it to LLVM to compile once the database is let go of.
 fn compile_as<'db>(
@@ -4515,9 +4537,6 @@ fn compile_as<'db>(
     let isa = &**target()?;
     let mut cg = Recorder::new(db, isa, selected_target()?, checked);
     let tally = backend::Tally::global();
-    /// `RA_JIT_PROMOTE=0` leaves every local in its slot of the frame.
-    static PROMOTE: LazyLock<bool> =
-        LazyLock::new(|| std::env::var_os("RA_JIT_PROMOTE").is_none_or(|it| it != "0"));
     let mut ctx = tally.step(Step::Translate, || {
         let mut ctx = build(&mut cg, env, body, tracked, fill)?;
         inline(&mut ctx, &cg.inlined)?;
