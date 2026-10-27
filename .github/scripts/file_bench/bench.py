@@ -144,9 +144,12 @@ def main():
                 if engine == "blaze":
                     subprocess.run(["blaze", "stop"], env=env, timeout=90)
                     if probe:
-                        for log in Path(daemon).rglob("*.log"):
-                            if log.is_file():
-                                shutil.copyfile(log, out / ("compiler-" + "-".join(log.relative_to(daemon).parts)))
+                        with (out / "compiler-refusals.txt").open("w") as trace:
+                            for log in Path(daemon).rglob("log"):
+                                if log.is_file():
+                                    for line in log.open(errors="replace"):
+                                        if "file-bench-forward:" in line or "file-bench-stale:" in line:
+                                            trace.write(f"{log.relative_to(daemon)} {line}")
                 for path, original in zip(changed, originals):
                     Path(path).write_bytes(original)
                 if target.exists():
