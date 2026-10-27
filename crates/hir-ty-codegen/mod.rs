@@ -5693,6 +5693,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
                 let defined = self.define_instance(&instance, &env, id);
                 if let Err(e) = defined {
                     if self.forward_to_rustc(&instance, id).is_some() {
+                        eprintln!("file-bench-forward: {}: {e}", backtrace_name(self.db, &instance));
                         self.forwarded.insert(instance);
                     } else {
                         failed.push((instance, Rejected { env, why: e.to_string() }));
