@@ -76,7 +76,7 @@ jobs:
           if-no-files-found: error
       - uses: oven-sh/setup-bun@v2
       # The .flecs content mapper runs under node (type stripping, node:wasi).
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
       - run: bun install --frozen-lockfile

@@ -1149,7 +1149,9 @@ impl SymbolTable {
                 .and_then(|root| Some((root.path.as_path(), *finished.get(&root.path)?)));
             sources.iter().filter_map(move |source| {
                 let (root, built) = unit?;
-                source.written_since(built).then_some((root, source.path.as_path()))
+                // A fresh table can read the generated file after the saved invocation.
+                let unverified = self.generated_inputs.0.get(&source.path) == Some(&None);
+                (unverified || source.written_since(built)).then_some((root, source.path.as_path()))
             })
         })
     }
