@@ -833,6 +833,9 @@ def main():
             # Cargo disables incremental compilation under CI. Blaze needs its symbols
             # to patch rustc's executable, so use the same incremental build for both.
             env["CARGO_INCREMENTAL"] = cargo_env["CARGO_INCREMENTAL"] = "1"
+            # In overlay mode an idle worker keeps rustc's base while the test checks
+            # the executable and prepares the first edit.
+            env["RA_JIT_OVERLAY"] = "1"
         began = time.monotonic()
         r = run(["cargo", "ra-jit", "build"], ws, env)
         if r.returncode:
