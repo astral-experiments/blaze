@@ -371,20 +371,22 @@ pub(super) fn for_build<T>(work: impl FnOnce() -> T) -> T {
 /// Whether a build's compiles build in what they call across crates: in a build of a whole
 /// program unless `RA_JIT_INLINE=crate` (or `0`, which builds nothing in), and in any build
 /// with `RA_JIT_INLINE=all`.
-/// The builds of a process that builds edits of them do not, whatever it says: an entry of
-/// the store, and a function an edit's patch compares with the build before, is keyed by its
-/// own function alone, so a body built into a function of another crate would outlive an
-/// edit of it.
+/// Edit workers use the bounded inline dependencies checked by [`super::revision`].
 pub(super) fn across() -> bool {
+    !super::backend::edits_follow()
+        && super::backend::optimizing()
+        && requested_across().unwrap_or_else(super::backend::whole_program)
+}
+
+/// An explicit cross-crate inlining setting, shared by whole builds and edit workers.
+pub(super) fn requested_across() -> Option<bool> {
     static ASKED: std::sync::LazyLock<Option<bool>> =
         std::sync::LazyLock::new(|| match std::env::var("RA_JIT_INLINE").as_deref() {
             Ok("all") => Some(true),
             Ok("crate" | "0") => Some(false),
             _ => None,
         });
-    !super::backend::edits_follow()
-        && super::backend::optimizing()
-        && ASKED.unwrap_or_else(super::backend::whole_program)
+    *ASKED
 }
 
 /// How large a body of `instance` the compile under way may build into its caller, if it may
@@ -874,7 +876,7 @@ pub fn prepare(db: &dyn HirDatabase, asked: &Asked) -> std::result::Result<Prepa
     let inlining = INLINING.with(|it| std::mem::replace(&mut *it.borrow_mut(), held));
     let pending = match compiled {
         Ok(Ok(super::Produced::Pending(pending))) => pending,
-        Ok(Ok(super::Produced::Code(_))) => return Err("its code is its assembly".to_owned()),
+        Ok(Ok(super::Produced::Code(..))) => return Err("its code is its assembly".to_owned()),
         Ok(Err(e)) => return Err(e.to_string()),
         Err(panic) => std::panic::resume_unwind(panic),
     };

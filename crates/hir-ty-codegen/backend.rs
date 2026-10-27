@@ -45,9 +45,8 @@ const LLVM_LIMIT: usize = 10_000;
 static WHOLE_PROGRAM: AtomicBool = AtomicBool::new(false);
 
 /// Whether the process goes on to build edits of what it builds: a daemon's worker, or one
-/// that watches its files. What it compiles is kept by each function's own code alone (the
-/// store, and the build an edit is a patch of), so none of its functions may have what it
-/// calls in another crate built into it (see `tier::across`).
+/// that watches its files. LLVM can build verified workspace callees into a caller when
+/// its cache record and the edit's patch both track their bodies (see `revision`).
 static BUILDS_EDITS: AtomicBool = AtomicBool::new(false);
 
 /// Says the process goes on to build edits of what it builds. Before its first build.
@@ -177,14 +176,15 @@ impl Backend {
     pub(super) fn emit(
         recorder: &mut Recorder<'_>,
         context: &mut cranelift_codegen::Context,
-    ) -> Result<Code> {
-        pad(Self::produce(recorder, context)?)
+    ) -> Result<(Code, Backend)> {
+        let (code, producer) = Self::produce(recorder, context)?;
+        Ok((pad(code)?, producer))
     }
 
     fn produce(
         recorder: &mut Recorder<'_>,
         context: &mut cranelift_codegen::Context,
-    ) -> Result<Code> {
+    ) -> Result<(Code, Backend)> {
         let tally = Tally::global();
         match Self::from_env().map_err(CodegenError::Backend)? {
             Backend::Cranelift => {}
@@ -206,7 +206,7 @@ impl Backend {
                 match Self::emit_with_llvm(recorder, &context.func, optimization) {
                     Ok(code) => {
                         tally.llvm.add(start.elapsed(), code.bytes.len());
-                        return Ok(code);
+                        return Ok((code, Backend::Llvm(optimization)));
                     }
                     Err(unhandled) => tally.fell_back(start.elapsed(), &unhandled.to_string()),
                 }
@@ -225,7 +225,7 @@ impl Backend {
             pairs.hold(context, &mut code)?;
         }
         tally.cranelift.add(start.elapsed(), code.bytes.len());
-        Ok(code)
+        Ok((code, Backend::Cranelift))
     }
 }
 
@@ -263,7 +263,7 @@ impl Backend {
             false => Vec::new(),
         };
         // Not stored: the code is of the bodies imported too.
-        if !imports.is_empty() {
+        if !imports.is_empty() || !recorder.edit_inlines.is_empty() && !recorder.seen.is_empty() {
             let mut code =
                 super::llvm::emit(&mut recorder.wants, &named, func, optimization, None, &imports)?;
             recorder.keep_referenced(&mut code);

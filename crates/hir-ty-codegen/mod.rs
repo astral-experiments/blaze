@@ -385,6 +385,11 @@ pub trait SymbolResolver {
         false
     }
     /// The function a type is declared in the body of, when nothing else is around it there
+    /// The rustc disambiguator of the anonymous constant defining a local type.
+    fn anon_const_place(&self, _adt: hir_def::AdtId) -> Option<u32> {
+        None
+    }
+
     /// and no other type of the body has its name.
     fn declared_in(&self, adt: hir_def::AdtId) -> Option<FunctionId> {
         _ = adt;
@@ -2958,8 +2963,9 @@ fn root_code(db: &dyn HirDatabase, func: FunctionId, tier: bool) -> Result<Produ
     let args = GenericArgs::new_from_slice(&[]).store();
     let checked = crate_checks_overflow(db, func.krate(db)).unwrap_or(false);
     let tracked = track_caller(db, func);
-    let lower = || {
+    let lower = |shown| {
         compile_as(db, env, Some(&body), tracked, checked, tier, |fx| {
+            fx.cg.edit_inlines = shown;
             fx.abi = abi;
             fx.variadic = variadic;
             fx.args = Some(args);
@@ -2967,7 +2973,7 @@ fn root_code(db: &dyn HirDatabase, func: FunctionId, tier: bool) -> Result<Produ
         })
     };
     if tier || tracked || variadic || abi != ExternAbi::Rust {
-        return lower();
+        return lower(Vec::new());
     }
     revision::compile(db, func, &body, env, checked, lower)
 }
@@ -3112,8 +3118,9 @@ fn instance_code(
     };
     let plain =
         args.as_ref().is_empty() && !tier && !tracked && !variadic && abi == ExternAbi::Rust;
-    let lower = || {
+    let lower = |shown| {
         compile_as(db, env, Some(body), tracked, instance.checked, tier, |fx| {
+            fx.cg.edit_inlines = shown;
             fx.abi = abi;
             fx.variadic = variadic;
             fx.args = Some(args);
@@ -3124,10 +3131,12 @@ fn instance_code(
         InstanceDef::Fn(func) if plain => {
             revision::compile(db, func, body, env, instance.checked, lower)
         }
-        _ => lower(),
+        _ => lower(Vec::new()),
     }?;
     Ok(match compiled {
-        Produced::Code(compiled) => Produced::Code(CompiledFunction { closure, ..compiled }),
+        Produced::Code(compiled, by) => {
+            Produced::Code(CompiledFunction { closure, ..compiled }, by)
+        }
         Produced::Pending(pending) => Produced::Pending(Pending { closure, ..pending }),
     })
 }
@@ -4545,7 +4554,7 @@ fn compile_as<'db>(
         }
         Result::Ok(ctx)
     })?;
-    let code = match cg.naked.take() {
+    let (code, producer) = match cg.naked.take() {
         // The function is its assembly: what was built of it is only its signature.
         Some((text, syms)) => {
             let assembled = asm::assemble(&isa.triple().to_string(), &text)
@@ -4562,7 +4571,7 @@ fn compile_as<'db>(
             let Some(relocs) = relocs.collect() else {
                 unsupported!("inline assembly that names a symbol");
             };
-            Code {
+            let code = Code {
                 signature: ctx.func.signature.clone(),
                 bytes: assembled.code.clone(),
                 align: 16,
@@ -4575,7 +4584,8 @@ fn compile_as<'db>(
                 unwind: None,
                 lines: Vec::new(),
                 slots: SlotPlaces::default(),
-            }
+            };
+            (code, None)
         }
         None if tier => {
             let named = cg.named_slots().collect();
@@ -4591,7 +4601,10 @@ fn compile_as<'db>(
                 closure: None,
             }));
         }
-        None => Backend::emit(&mut cg, &mut ctx)?,
+        None => {
+            let (code, by) = Backend::emit(&mut cg, &mut ctx)?;
+            (code, Some(by))
+        }
     };
     let (source, variables) = described(&mut cg, env, body);
     let (requests, layouts) = cg.finish();
@@ -4599,20 +4612,17 @@ fn compile_as<'db>(
     if !tier {
         COMPILED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
-    Ok(Produced::Code(CompiledFunction {
-        requests,
-        code,
-        source,
-        closure: None,
-        variables,
-        layouts,
-    }))
+    Ok(Produced::Code(
+        CompiledFunction { requests, code, source, closure: None, variables, layouts },
+        producer,
+    ))
 }
 
 /// What `compile_as` gives: the code, or, for a compile at a level above 1, what LLVM makes
 /// it of once the database is let go of.
 pub(crate) enum Produced {
-    Code(CompiledFunction),
+    /// The actual producer, including when the requested backend declined. Assembly has none.
+    Code(CompiledFunction, Option<Backend>),
     Pending(Pending),
 }
 
@@ -4620,7 +4630,7 @@ impl Produced {
     /// The code of a compile at level 1, which leaves nothing for later.
     fn code(self) -> CompiledFunction {
         match self {
-            Produced::Code(code) => code,
+            Produced::Code(code, _) => code,
             Produced::Pending(_) => unreachable!("only a compile at a level above 1 is pending"),
         }
     }
@@ -4794,6 +4804,8 @@ fn small_body(
     }
     let body = instance_body(db, &instance, env.clone()).ok()?;
     let mut cg = Recorder::new(db, &**target().ok()?, selected_target().ok()?, instance.checked);
+    cg.edit_inlines =
+        revision::nested_edit_bodies(db, func, &body, env.as_ref(db), instance.checked);
     cg.unlocated = true;
     let args = instance.args.clone();
     let mut ctx = build(&mut cg, env.as_ref(db), Some(&*body), false, |fx| {
@@ -4809,7 +4821,8 @@ fn small_body(
         return None;
     }
     let pointees = std::mem::take(&mut cg.pointees);
-    fragment::Inlinable::of(ctx.func, cg.finish().0, pointees, Vec::new())
+    let seen = std::mem::take(&mut cg.seen);
+    fragment::Inlinable::of(ctx.func, cg.finish().0, pointees, seen)
 }
 
 fn inlinable_cycle(
@@ -13486,6 +13499,27 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         };
         let args = erase_regions(DbInterner::new_with(db, self.env.krate), args);
         let instance = Instance { def, args: args.store(), checked: self.cg.checked };
+        if let InstanceDef::Fn(func) = def
+            && self.cg.edit_inlines.contains(&func)
+            && let Some(body) = inlinable(db, instance.clone(), self.env.store()).as_ref()
+            && body.func.signature == *sig
+        {
+            let hint = if AttrFlags::query(db, func.into()).contains(AttrFlags::INLINE_ALWAYS) {
+                fragment::Hint::Always
+            } else {
+                fragment::Hint::Inline
+            };
+            self.cg.declare_seen(id, body, hint);
+            if !self.cg.requests.inlined.contains(&instance) {
+                self.cg.requests.inlined.push(instance);
+                for callee in &body.requests.inlined {
+                    if !self.cg.requests.inlined.contains(callee) {
+                        self.cg.requests.inlined.push(callee.clone());
+                    }
+                }
+            }
+            return;
+        }
         if let Some((body, hint)) = tier::seen_body(db, &instance, &self.env.store(), tracked) {
             if body.func.signature == *sig {
                 self.cg.declare_seen(id, &body, hint);

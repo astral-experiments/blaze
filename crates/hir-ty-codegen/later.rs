@@ -375,6 +375,11 @@ impl<'db> Keeper<'_, 'db> {
         }
         let mark = patch::stable_mark(self.db, self.names, compiled, described)
             .ok_or("what it refers to has no stable name")?;
+        // A body edit can change what was inlined without changing the instructions yet.
+        // Keep rechecking the caller until another full build establishes its dependencies.
+        if patch::embeds_workspace_body(self.db, compiled) && super::revision::edit_inlining() {
+            return Ok(cached::Tracked { mark, home: None, files: None, items: None });
+        }
         let files = home::body_files(self.db, instance).and_then(|files| {
             files.iter().map(|&file| self.names.file_path(file)).collect::<Option<Vec<_>>>()
         });

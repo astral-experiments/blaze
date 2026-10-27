@@ -1508,6 +1508,24 @@ impl SymbolResolver for Resolver<'_> {
         self.contents.names_place((&*self.root, self.base.as_deref()), bytes)
     }
 
+    fn anon_const_place(&self, adt: hir_def::AdtId) -> Option<u32> {
+        let db = self.db;
+        let adt = hir::Adt::from(adt);
+        let mut places = adt
+            .module(db)
+            .impl_defs(db)
+            .into_iter()
+            .filter(|it| it.self_ty(db).as_adt() == Some(adt))
+            .flat_map(|it| it.items(db))
+            .filter_map(|item| {
+                let hir::AssocItem::Function(func) = item else { return None };
+                let symbol = self.function(FunctionId::try_from(func).ok()?)?;
+                symbols::impl_const_place(&symbol)
+            });
+        let place = places.next()?;
+        places.all(|p| p == place).then_some(place)
+    }
+
     fn declared_in(&self, adt: hir_def::AdtId) -> Option<FunctionId> {
         let adt = hir::Adt::from(adt);
         let sema = self.sema();
@@ -1518,20 +1536,15 @@ impl SymbolResolver for Resolver<'_> {
         if func.async_token().is_some() {
             return None;
         }
+        let id = self.function_at(&sema, adt.module(self.db), &func)?.try_into().ok()?;
         let name = adt.name(self.db);
-        let named_so = func.syntax().descendants().filter_map(ast::Name::cast).filter(|it| {
-            it.text() == name.as_str()
-                && it.syntax().parent().is_some_and(|it| {
-                    ast::Adt::can_cast(it.kind())
-                        || ast::Trait::can_cast(it.kind())
-                        || ast::TypeAlias::can_cast(it.kind())
-                        || ast::Module::can_cast(it.kind())
-                })
-        });
-        if named_so.count() != 1 {
-            return None;
-        }
-        self.function_at(&sema, adt.module(self.db), &func)?.try_into().ok()
+        // The source of the function can omit a same-named type that a macro expands to.
+        let named = hir_def::expr_store::Body::of(self.db, hir_def::DefWithBodyId::FunctionId(id))
+            .blocks(self.db)
+            .flat_map(|(_, map)| map.modules(self.db))
+            .flat_map(|(_, module)| module.scope(self.db).entries())
+            .filter(|(candidate, ns)| candidate.as_str() == name.as_str() && ns.types.is_some());
+        (named.count() == 1).then_some(id)
     }
 
     fn impl_place(&self, id: hir_def::ImplId) -> Option<u32> {
@@ -1539,9 +1552,14 @@ impl SymbolResolver for Resolver<'_> {
         let db = self.db;
         let it = hir::Impl::from(id);
         let source = it.source(db)?;
-        // FIXME: where rustc puts the `impl`s a macro makes among the ones written out.
         if source.file_id.is_macro() {
-            return None;
+            let mut places = it.items(db).into_iter().filter_map(|item| {
+                let hir::AssocItem::Function(func) = item else { return None };
+                let symbol = self.function(FunctionId::try_from(func).ok()?)?;
+                symbols::impl_place(&symbol)
+            });
+            let place = places.next()?;
+            return places.all(|p| p == place).then_some(place);
         }
         let start = |it: &hir::InFile<ast::Impl>| it.value.syntax().text_range().start();
         let mut earlier = 0;
@@ -1594,8 +1612,17 @@ impl SymbolResolver for Resolver<'_> {
         let mut closures = Vec::new();
         let mut around = Vec::new();
         let mut owner = None;
-        for node in sema.ancestors_with_macros(source.value.syntax().clone()).skip(1) {
+        let mut child = source.value.syntax().clone();
+        for node in sema.ancestors_with_macros(child.clone()).skip(1) {
+            let inner = std::mem::replace(&mut child, node.clone());
             if is_closure(&node) {
+                if let Some(closure) = ast::ClosureExpr::cast(node.clone())
+                    && closure.async_token().is_some()
+                    && closure.body().is_some_and(|body| body.syntax() == &inner)
+                {
+                    // Rustc puts the async closure's body in a coroutine of its own.
+                    closures.push(0);
+                }
                 closures.push(closure_number(&sema, &self.places, &node)?);
                 continue;
             }
@@ -8096,7 +8123,8 @@ fn run_holding(
         eprintln!("backend: {backend}");
     }
     process_wide();
-    if args.socket.is_some() || args.watch {
+    // A spare starts lowering before cargo supplies its socket in the final arguments.
+    if ahead || args.socket.is_some() || args.watch {
         hir_ty_codegen::builds_edits();
     }
     if args.exe.is_some() {
@@ -8301,6 +8329,9 @@ fn run_holding(
             selection: args.selection,
             ..whole
         };
+        if args.exe.is_some() {
+            hir_ty_codegen::links_own();
+        }
         let links = |file: &PathBuf| args.symbol_files.contains(file);
         anyhow::ensure!(
             library.is_some_and(|it| !it.is_empty() && it.iter().all(links)),
