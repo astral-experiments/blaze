@@ -1364,7 +1364,6 @@ impl ScopeNames {
         // accounts, but, alas, scoping rules are a hoax. `str` type and `str`
         // module can be both available in the same scope.
         if set.iter().any(|it| matches!(it, &ScopeDef::Local(_))) {
-            cov_mark::hit!(shadowing_shows_single_completion);
             return;
         }
         set.push(ScopeDef::Local(binding))

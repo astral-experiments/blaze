@@ -13,7 +13,7 @@ use anyhow::Result;
 use itertools::Itertools as _;
 
 use crate::{
-    codegen::{CommentBlock, ensure_file_contents, reformat},
+    codegen::{ensure_file_contents, reformat},
     project_root,
     util::list_rust_files,
 };
@@ -142,10 +142,28 @@ struct Tests {
     err: HashMap<String, Test>,
 }
 
+/// Collects contiguous ordinary and module comments that may contain inline parser tests.
+fn comment_blocks(text: &str) -> Vec<Vec<String>> {
+    let mut blocks = Vec::new();
+    let mut block = Vec::new();
+    for line in text.lines().map(str::trim_start) {
+        if let Some(content) = line.strip_prefix("//").filter(|content| !content.starts_with('/')) {
+            let content = content.strip_prefix('!').unwrap_or(content);
+            block.push(content.strip_prefix(' ').unwrap_or(content).to_owned());
+        } else if !block.is_empty() {
+            blocks.push(std::mem::take(&mut block));
+        }
+    }
+    if !block.is_empty() {
+        blocks.push(block);
+    }
+    blocks
+}
+
 fn collect_tests(s: &str) -> Vec<Test> {
     let mut res = Vec::new();
-    for comment_block in CommentBlock::extract_untagged(s) {
-        let first_line = &comment_block.contents[0];
+    for comment_block in comment_blocks(s) {
+        let first_line = &comment_block[0];
         let (name, kind) = if let Some(name) = first_line.strip_prefix("test ") {
             (name.to_owned(), TestKind::Ok)
         } else if let Some(name) = first_line.strip_prefix("test_err ") {
@@ -165,7 +183,7 @@ fn collect_tests(s: &str) -> Vec<Test> {
             .as_ref()
             .map(|edition| format!("// {edition}"))
             .into_iter()
-            .chain(comment_block.contents[1..].iter().cloned())
+            .chain(comment_block[1..].iter().cloned())
             .chain(iter::once(String::new()))
             .collect::<Vec<_>>()
             .join("\n");

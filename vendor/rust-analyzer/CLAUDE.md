@@ -10,13 +10,7 @@ Follow `AI_POLICY.md`. In particular:
 
 ## Repository Guides
 
-- Architecture and crate ownership: `docs/book/src/contributing/architecture.md`
-- Rust style: `docs/book/src/contributing/style.md`
-- Testing conventions and fixture syntax: `docs/book/src/contributing/testing.md`
-- Contributor workflows: `docs/book/src/contributing/README.md`
-- AI restrictions: `AI_POLICY.md`
-
-Read the relevant sections before making architectural, generated-code, protocol, or test-harness changes.
+The [upstream contributor guide](https://rust-analyzer.github.io/book/contributing/) covers the workspace architecture, style, and testing conventions. Read the relevant sections before changing generated code or test harnesses.
 
 ## Change Workflow
 
@@ -39,7 +33,7 @@ Read the relevant sections before making architectural, generated-code, protocol
 ## Testing
 
 - Many feature tests use Rust-code fixtures and `expect-test` snapshots. Follow the nearest existing test helper and fixture convention rather than introducing a new test harness.
-- Before planning or writing fixture-based tests, review `docs/book/src/contributing/testing.md` for fixture annotations, `minicore`, and multi-file/multi-crate syntax.
+- Before planning or writing fixture-based tests, review the upstream testing guide for fixture annotations, `minicore`, and multi-file/multi-crate syntax. [Testing guide](https://rust-analyzer.github.io/book/contributing/testing.html)
 - Keep Rust fixtures minimal; remove syntax unrelated to the behavior under test.
 - Use unindented multiline raw strings, matching nearby tests.
 - For regressions, first reproduce the failure with a focused test, then implement the fix.

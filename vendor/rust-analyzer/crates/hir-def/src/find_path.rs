@@ -214,10 +214,7 @@ fn find_path_for_module<'db>(
                         .filter(|&(id, _)| id != ModuleDefId::ModuleId(def_id))
                 })
                 .is_some();
-            let kind = if name_already_occupied_in_type_ns {
-                cov_mark::hit!(ambiguous_crate_start);
-                PathKind::Abs
-            } else if ctx.cfg.prefer_absolute {
+            let kind = if name_already_occupied_in_type_ns || ctx.cfg.prefer_absolute {
                 PathKind::Abs
             } else {
                 PathKind::Plain

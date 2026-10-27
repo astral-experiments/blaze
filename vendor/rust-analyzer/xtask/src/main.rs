@@ -1,12 +1,6 @@
 //! See <https://github.com/matklad/cargo-xtask/>.
 //!
-//! This binary defines various auxiliary build commands, which are not
-//! expressible with just `cargo`. Notably, it provides tests via `cargo test -p xtask`
-//! for code generation and `cargo xtask install` for installation of
-//! rust-analyzer server and client.
-//!
-//! This binary is integrated into the `cargo` command line by using an alias in
-//! `.cargo/config`.
+//! Generates compiler sources and checks the vendored workspace.
 
 #![warn(rust_2018_idioms, unused_lifetimes)]
 #![allow(
@@ -21,12 +15,6 @@
 mod flags;
 
 mod codegen;
-mod dist;
-mod install;
-mod metrics;
-mod pgo;
-mod publish;
-mod release;
 mod tidy;
 mod util;
 
@@ -41,24 +29,8 @@ fn main() -> anyhow::Result<()> {
     sh.change_dir(project_root());
 
     match flags.subcommand {
-        flags::XtaskCmd::Install(cmd) => cmd.run(sh),
         flags::XtaskCmd::FuzzTests(_) => run_fuzzer(sh),
-        flags::XtaskCmd::Release(cmd) => cmd.run(sh),
-        flags::XtaskCmd::Dist(cmd) => cmd.run(sh),
-        flags::XtaskCmd::PublishReleaseNotes(cmd) => cmd.run(sh),
-        flags::XtaskCmd::Metrics(cmd) => cmd.run(sh),
         flags::XtaskCmd::Codegen(cmd) => cmd.run(sh),
-        flags::XtaskCmd::Bb(cmd) => {
-            {
-                let _d = sh.push_dir("./crates/rust-analyzer");
-                cmd!(sh, "cargo build --release --features jemalloc").run()?;
-            }
-            sh.copy_file(
-                "./target/release/rust-analyzer",
-                format!("./target/rust-analyzer-{}", cmd.suffix),
-            )?;
-            Ok(())
-        }
         flags::XtaskCmd::Tidy(cmd) => cmd.run(sh),
     }
 }
@@ -85,16 +57,4 @@ fn run_fuzzer(sh: &Shell) -> anyhow::Result<()> {
 
     cmd!(sh, "cargo fuzz run parser").run()?;
     Ok(())
-}
-
-fn date_iso(sh: &Shell) -> anyhow::Result<String> {
-    let res = cmd!(sh, "date -u +%Y-%m-%d").read()?;
-    Ok(res)
-}
-
-fn is_release_tag(tag: &str) -> bool {
-    tag.len() >= 10
-        && tag.starts_with(|c: char| c.is_ascii_digit())
-        && tag.as_bytes()[4] == b'-'
-        && tag.as_bytes()[7] == b'-'
 }

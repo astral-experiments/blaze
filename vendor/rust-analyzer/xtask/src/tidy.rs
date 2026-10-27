@@ -13,43 +13,9 @@ use crate::{flags::Tidy, project_root, util::list_files};
 
 impl Tidy {
     pub(crate) fn run(&self, sh: &Shell) -> anyhow::Result<()> {
-        check_lsp_extensions_docs(sh);
         files_are_tidy(sh);
         check_licenses(sh);
         Ok(())
-    }
-}
-
-fn check_lsp_extensions_docs(sh: &Shell) {
-    let actual_hash = {
-        let lsp_ext_rs =
-            sh.read_file(project_root().join("crates/rust-analyzer/src/lsp/ext.rs")).unwrap();
-        stable_hash(lsp_ext_rs.as_str())
-    };
-
-    let expected_hash = {
-        let lsp_extensions_md = sh
-            .read_file(project_root().join("docs/book/src/contributing/lsp-extensions.md"))
-            .unwrap();
-        let text = lsp_extensions_md
-            .lines()
-            .find_map(|line| line.strip_prefix("lsp/ext.rs hash:"))
-            .unwrap()
-            .trim();
-        u64::from_str_radix(text, 16).unwrap()
-    };
-
-    if actual_hash != expected_hash {
-        panic!(
-            "
-lsp/ext.rs was changed without touching lsp-extensions.md.
-
-Expected hash: {expected_hash:x}
-Actual hash:   {actual_hash:x}
-
-Please adjust docs/book/src/contributing/lsp-extensions.md.
-"
-        )
     }
 }
 
@@ -133,34 +99,23 @@ fn check_cargo_toml(path: &Path, text: String) {
 fn check_licenses(sh: &Shell) {
     const EXPECTED: &[&str] = &[
         "(MIT OR Apache-2.0) AND Unicode-3.0",
-        "0BSD OR MIT OR Apache-2.0",
         "Apache-2.0 / MIT",
         "Apache-2.0 OR MIT",
         "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
         "Apache-2.0 WITH LLVM-exception",
         "Apache-2.0",
-        "Apache-2.0 AND ISC",
-        "Apache-2.0 OR ISC OR MIT",
         "Apache-2.0/MIT",
-        "BSD-2-Clause",
-        "BSD-3-Clause",
-        "CDLA-Permissive-2.0",
         "BSD-2-Clause OR Apache-2.0 OR MIT",
         "CC0-1.0",
-        "CC0-1.0 OR MIT-0 OR Apache-2.0",
         "ISC",
         "MIT / Apache-2.0",
         "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
         "MIT OR Apache-2.0",
-        "MIT OR Zlib OR Apache-2.0",
         "MIT",
         "MIT/Apache-2.0",
-        "MPL-2.0",
-        "Unicode-3.0",
         "Unlicense OR MIT",
         "Unlicense/MIT",
         "Zlib",
-        "Zlib OR Apache-2.0 OR MIT",
     ];
 
     let meta = cmd!(sh, "cargo metadata --format-version 1").read().unwrap();
@@ -338,16 +293,6 @@ impl TidyMarks {
             panic!("unpaired marks: {diff:?}")
         }
     }
-}
-
-#[allow(deprecated)]
-fn stable_hash(text: &str) -> u64 {
-    use std::hash::{Hash, Hasher, SipHasher};
-
-    let text = text.replace('\r', "");
-    let mut hasher = SipHasher::default();
-    text.hash(&mut hasher);
-    hasher.finish()
 }
 
 fn find_marks(set: &mut HashSet<String>, text: &str, mark: &str) {
