@@ -24,7 +24,7 @@ NAME is `kernels` (harness/corpus/kernels, a benchmark per kernel) or an entry o
 apps/apps.json with a `bench` (checked out as apps.py does, under APPS_DIR). Default: kernels,
 numeric, jsonrt, ripgrep, fd, tokei, eza, bat.
 
-Memory is kept beside the times (memory.py, docs/benchmarks.md "Memory and disk"): each run's
+Memory is kept beside the times (memory.py): each run's
 peak resident memory as the kernel kept it (`wait4`), the size of each program, and what each
 build held: `build_largest_mb`, the largest one process (rustc, ra-jit, the linker), exact, and
 `build_peak_mb`, the most the build's processes held at once, sampled.

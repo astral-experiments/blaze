@@ -4,7 +4,7 @@
  * platform-independent build outputs (`uv run --script renderer/build.py`, or fetched with renderer/fetch.py).
  *
  * 1. Runs content/*.flecs under Flecs (flecs/flecs-doc.wasm, gen/tree.ts) to bake what the renderer leaves to TS:
- *    highlighted code (highlight.js) and the bench widget, by entity path.
+ *    highlighted code (highlight.js), by entity path.
  * 2. site-snapshot.wasm runs the same scripts with the baked HTML set and returns the snapshot.
  * 3. site.wasm loads it and renders every page without comments, anonymous, into dist/; it also lists the pages and
  *    the discussable blocks.
@@ -30,7 +30,6 @@ import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, watch, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { Site, snapshot, type Page, type SnapshotInput, type SpokenLine } from '../worker/site-wasm';
-import { benchHistory } from './bench';
 import { highlight } from './highlight';
 import { dedent, load, prose, type Node } from './tree';
 
@@ -108,10 +107,7 @@ const STYLES = ['fonts.css', 'tokens.css', 'doc-code.css', 'base.css', 'site.css
 
 type Baked = SnapshotInput['bakes'];
 
-/**
- * What the renderer leaves to TS: highlighting (Code and Command, set as `Highlighted {html}`) and widgets that read
- * the build's files (BenchHistory, set as `Baked {html}`). By entity path.
- */
+/** Highlight Code and Command blocks by entity path for the snapshot. */
 function bake(all: Map<string, Node>): Baked {
 	const baked: Baked = {};
 	for (const n of all.values()) {
@@ -123,7 +119,6 @@ function bake(all: Map<string, Node>): Baked {
 		}
 		const cmd = n.values.get('Command');
 		if (cmd) (baked[n.path] ??= {}).highlighted = highlight(prose(String(cmd.text ?? '')), 'bash');
-		if (n.tags.has('BenchHistory')) (baked[n.path] ??= {}).baked = benchHistory();
 	}
 	return baked;
 }

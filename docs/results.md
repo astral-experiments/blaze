@@ -347,12 +347,6 @@ quoted.
 
 ## 11. Real projects
 
-The newest measurement is in [benchmarks.md](benchmarks.md): `harness/bench.py` on ten
-projects (ripgrep to bevy, and zed), cold builds with an empty and a warm store, six kinds of
-edit, the test suites, the fastest cargo setups (mold, wild, `-Zthreads=8`, cg_clif, `cargo
-check`) and subsecond's hot-patching, every sample kept, and the history the site charts at
-/bench. What follows is the first run, with `harness/realbench.py`.
-
 `cargo ra-jit build` against `cargo build` on three real projects, each at a pinned tag
 (issue #7). Harness: `harness/realbench.py`. ra-jit at 6a7d245e47 (main), Cranelift backend,
 release build. Measured on 2026-10-20. Seconds, wall clock of the command; median of 5

@@ -240,8 +240,7 @@ Measured on 2026-10-20 on a MacBook Pro (Mac17,6, Apple M5 Max, 18 cores, 128 Gi
 passes at `140f90a582`, which changes only the harness). Two passes per program in opposite
 orders, each with a daemon, home and store of its own; other agents' builds held the load
 average at 11 to 56 throughout, so these are a busy laptop's numbers. All times in ms; every
-sample is in [benchmarks/live](benchmarks/live), and each run is a line in
-`benchmarks/history/macos-arm64-live.jsonl` (`harness/benchhistory.py live`).
+sample is in [benchmarks/live](https://github.com/indexable-inc/blaze/tree/4d632738b6aacd5bcb936fa968f18712e33797f4/docs/benchmarks/live).
 
 | program, mode | n | p50 | p90 | p95 | p99 | max |
 |---|---|---|---|---|---|---|
@@ -330,5 +329,4 @@ ms to its first answer (it reserves its patch room and reads its executable firs
   changes what the rest of the program sees") for texts that never build (9 to 11 times a pass). Keys queue
   behind those answers.
 
-Not measured yet: keystroke to changed pixels, and these modes on the CI runner
-(`.github/workflows/live-latency.yaml` runs `socket burst replay` on all four programs).
+Not measured yet: keystroke to changed pixels, and these modes on the CI runner.

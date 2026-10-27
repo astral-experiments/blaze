@@ -7,7 +7,7 @@
 //! - a Section's title becomes a transition ("Next: Prior art."), an H3 its title, an Issue "Open question: ...";
 //! - a Table is read row by row against its header ("Function in the main crate: cargo 1.76 seconds, ...");
 //! - an Img is its alt text ("On screen: ...");
-//! - Code and Command blocks are skipped, citations are never read, References, the signup form and the bench widget
+//! - Code and Command blocks are skipped, citations are never read, References and the signup form
 //!   are skipped, and the RFC index reads each RFC's number and title.
 //!
 //! An author overrides any block's line with `Say: {"..."}` (Drama 3 directions such as `[warm]` allowed). On a
@@ -173,7 +173,7 @@ fn derive(n: Id, ctx: &mut Ctx) -> Result<Option<String>, String> {
         }
         return Ok(Some(items.join(" ")));
     }
-    if ["References", "SignupForm", "BenchHistory"].iter().any(|t| e.has_tag(t)) {
+    if ["References", "SignupForm"].iter().any(|t| e.has_tag(t)) {
         return Ok(None);
     }
     for comp in ["Lede", "P", "Dim", "Li"] {

@@ -501,7 +501,7 @@ stops.
 - **bun** (the bun-e lane, 2026-10-22) is measured here and not worked on there: its cold
   start and the daemon's memory are this lane's. `bench.py bun` on Linux x86-64 (16 cores of an
   AWS c8a.24xlarge, Cranelift, memory by `harness/memory.py`,
-  [docs/benchmarks/bun-linux-x86-64.json](benchmarks/bun-linux-x86-64.json)): cold to ready in
+  [docs/benchmarks/bun-linux-x86-64.json](https://github.com/indexable-inc/blaze/blob/4d632738b6aacd5bcb936fa968f18712e33797f4/docs/benchmarks/bun-linux-x86-64.json)): cold to ready in
   70.9 s + 2.4 s against cargo's 73.1 s, the cold build at most 15.5 GB at once against
   cargo's 4.5 GB. The daemon holds 12.5 GB once ready and 25.7 GB after the first edit, and the
   edit that adds a function peaks at 33.5 GB against cargo's 3.3 GB. On macOS arm64

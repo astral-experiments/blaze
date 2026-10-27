@@ -24,7 +24,7 @@ gen/build.ts: manifest matches the page's lines? ──▶ Audio {manifest} bake
 | Table | row by row against the header |
 | Img | "On screen: alt." |
 | Code, Command | nothing, unless it has a `Say` |
-| References, SignupForm, BenchHistory | nothing |
+| References, SignupForm | nothing |
 | RfcIndex | "RFC n, title." for each |
 
 Authored lines (in the `.flecs` files, schema in `content/schema.flecs`):

@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 FAST = ["fmt", "linux-x64", "linux-arm64", "macos", "fork"]
-SUITES = FAST + ["bench", "nix", "install"]
+SUITES = FAST + ["nix", "install"]
 
 
 def changed_paths(base, head, event):
@@ -38,8 +38,6 @@ def defaults(event, paths):
 
     suites = FAST.copy() if event != "pull_request" and touches(code) else ["fmt"]
     if event != "merge_group":
-        if touches(lambda p: not p.endswith(".md") and not p.startswith(("site/", "harness/"))):
-            suites.append("bench")
         if touches(lambda p: p in {"Cargo.lock", "Cargo.toml", "flake.nix", "flake.lock", ".github/workflows/nix-live.yaml"}
                    or p.startswith("nix/") or p.endswith("/Cargo.toml")):
             suites.append("nix")

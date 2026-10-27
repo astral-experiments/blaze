@@ -105,7 +105,6 @@ jobs:
             - linux-arm64: native AArch64 compiler tests, code generation and fast harnesses.
             - macos: Apple Silicon compiler tests, Darwin linking, live edits and pinned run-pass tests.
             - fork: build and test the rust-analyzer subtree outside Blaze on Linux x86-64.
-            - bench: paired store microbenchmarks against the PR base, or timings on main.
             - nix: Nix unit graphs, flake builds, demo and live edits on Linux and macOS.
             - install: run install.sh against release artifacts and install this commit without Rust.
             Site deployment, publishing and scheduled maintenance have separate workflows.
@@ -113,7 +112,7 @@ jobs:
             {"type":"object","additionalProperties":false,"required":["rationale","suites"],"properties":{
               "rationale":{"type":"string"},"suites":{"type":"array","items":{"type":"object",
               "additionalProperties":false,"required":["id","reason"],"properties":{
-              "id":{"type":"string","enum":["fmt","linux-x64","linux-arm64","macos","fork","bench","nix","install"]},
+              "id":{"type":"string","enum":["fmt","linux-x64","linux-arm64","macos","fork","nix","install"]},
               "reason":{"type":"string"}}}}}}
 
   changes:
@@ -192,7 +191,6 @@ jobs:
       borrowck: true
       pinned-ui: true
       cargo-ra-jit: ${{ needs.changes.outputs.tier == 'full' }}
-      bench: ${{ needs.changes.outputs.tier == 'full' }}
       bun-e2e: true
 
   linux-arm64:
@@ -240,13 +238,6 @@ jobs:
       - working-directory: ${{ runner.temp }}/rust-analyzer
         run: cargo test -p hir-ty -p hir-ty-borrowck -p hir-ty-wfcheck -p ide-diagnostics && cargo check -p hir
 
-  bench:
-    needs: changes
-    if: ${{ !cancelled() && contains(fromJSON(needs.changes.outputs.suites || '[]'), 'bench') }}
-    uses: ./.github/workflows/bench.yaml
-    with:
-      linux-runner: ${{ needs.changes.outputs.linux_runner }}
-
   nix:
     needs: changes
     if: ${{ !cancelled() && contains(fromJSON(needs.changes.outputs.suites || '[]'), 'nix') }}
@@ -266,7 +257,7 @@ jobs:
 
   ci:
     name: ci
-    needs: [changes, fmt, linux-x64, linux-arm64, macos, fork, bench, nix, install]
+    needs: [changes, fmt, linux-x64, linux-arm64, macos, fork, nix, install]
     if: always()
     runs-on: ubuntu-24.04
     timeout-minutes: 5

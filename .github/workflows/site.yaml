@@ -11,14 +11,12 @@ on:
       - "site/**"
       - "README.md"
       - "docs/demo*"
-      - "docs/benchmarks/**"
       - ".github/workflows/site.yaml"
   pull_request:
     paths:
       - "site/**"
       - "README.md"
       - "docs/demo*"
-      - "docs/benchmarks/**"
       - ".github/workflows/site.yaml"
   workflow_dispatch:
 

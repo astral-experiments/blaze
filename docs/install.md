@@ -25,7 +25,7 @@ Change a function and run `blaze run` again: the `Finished` line now says `[ra-j
 - **A C compiler for linking**: `gcc` (or `cc`) on Linux, Apple's command line tools on macOS
   (`xcode-select --install`). The installer says so when it is missing.
 - **Memory to spare.** blaze's background process holds a few GB for a small project and tens of
-  GB for the largest ([numbers](benchmarks.md#how-much-memory-and-disk-it-takes)).
+  GB for the largest.
 
 You do not need Rust or rustup. blaze builds with one Rust, a dated nightly, and only that one:
 `nightly-2026-10-25` today (`rustc 1.101.0-nightly (12433c307 2026-10-24)`), moved to a newer

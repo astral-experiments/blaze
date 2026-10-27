@@ -324,7 +324,7 @@ All notable changes to ra-jit are written here. The format follows
   ripgrep, fd, bat, hyperfine, just, axum and nushell at pinned commits (cold build, no-op,
   four kinds of edit, and how fast ripgrep's program runs) against incremental cargo, on both
   tiers, keeping every sample; `harness/benchreport.py` writes the README table and
-  [docs/benchmarks.md](docs/benchmarks.md) from the result; the `bench-readme` workflow runs
+  [docs/benchmarks.md](https://github.com/indexable-inc/blaze/blob/4d632738b6aacd5bcb936fa968f18712e33797f4/docs/benchmarks.md) from the result; the `bench-readme` workflow runs
   them on a dedicated Linux x86-64 machine after pushes to main and nightly, and commits the
   numbers to main when they moved beyond noise.
 - `harness/bench.py` measures what [#7](https://github.com/indexable-inc/ra-jit/issues/7)

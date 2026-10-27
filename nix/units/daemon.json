@@ -1,7 +1,7 @@
 {
  "dir": ".",
  "inputs": {
-  "Cargo.lock": "491322965dec0de029be4675cec097edcf967bd6f36f7649fd9b71c8a3033f13",
+  "Cargo.lock": "edebade44818c38368e0cdd82ccbb1961f5ae2a8817b6f56d9b68714dea619f1",
   "Cargo.toml": "517a76652960b154b4d3bc21b5f5863a6dd6a5dd9dc9fd075821c57cde1e826e"
  },
  "packages": {
@@ -55,74 +55,6 @@
     "kind": "registry"
    },
    "version": "0.12.16"
-  },
-  "anstream@1.0.0": {
-   "authors": "",
-   "description": "IO stream adapters for writing colored text that will gracefully degrade according to your terminal's capabilities.",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "anstream",
-   "readme": "README.md",
-   "repository": "https://github.com/rust-cli/anstyle.git",
-   "rust_version": "1.66.0",
-   "source": {
-    "checksum": "824a212faf96e9acacdbd09febd34438f8f711fb84e09a8916013cd7815ca28d",
-    "kind": "registry"
-   },
-   "version": "1.0.0"
-  },
-  "anstyle-parse@1.0.0": {
-   "authors": "",
-   "description": "Parse ANSI Style Escapes",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "anstyle-parse",
-   "readme": "README.md",
-   "repository": "https://github.com/rust-cli/anstyle.git",
-   "rust_version": "1.66.0",
-   "source": {
-    "checksum": "52ce7f38b242319f7cabaa6813055467063ecdc9d355bbb4ce0c68908cd8130e",
-    "kind": "registry"
-   },
-   "version": "1.0.0"
-  },
-  "anstyle-query@1.1.5": {
-   "authors": "",
-   "description": "Look up colored console capabilities",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "anstyle-query",
-   "readme": "README.md",
-   "repository": "https://github.com/rust-cli/anstyle.git",
-   "rust_version": "1.66.0",
-   "source": {
-    "checksum": "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc",
-    "kind": "registry"
-   },
-   "version": "1.1.5"
-  },
-  "anstyle-wincon@3.0.11": {
-   "authors": "",
-   "description": "Styling legacy Windows terminals",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "anstyle-wincon",
-   "readme": "README.md",
-   "repository": "https://github.com/rust-cli/anstyle.git",
-   "rust_version": "1.66.0",
-   "source": {
-    "checksum": "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d",
-    "kind": "registry"
-   },
-   "version": "3.0.11"
   },
   "anstyle@1.0.14": {
    "authors": "",
@@ -1110,74 +1042,6 @@
    },
    "version": "0.2.1"
   },
-  "clap@4.6.7": {
-   "authors": "",
-   "description": "A simple to use, efficient, and full-featured Command Line Argument Parser",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "clap",
-   "readme": "README.md",
-   "repository": "https://github.com/clap-rs/clap",
-   "rust_version": "1.85",
-   "source": {
-    "checksum": "aa8876b300ab35ba921adea3dfd70157a46249b33f95c9084ae5709785478946",
-    "kind": "registry"
-   },
-   "version": "4.6.7"
-  },
-  "clap_builder@4.6.7": {
-   "authors": "",
-   "description": "A simple to use, efficient, and full-featured Command Line Argument Parser",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "clap_builder",
-   "readme": "README.md",
-   "repository": "https://github.com/clap-rs/clap",
-   "rust_version": "1.85",
-   "source": {
-    "checksum": "ec0797fb7aeb1406c84efac526901f7ec3ead2124f946b494e72879d4b54704d",
-    "kind": "registry"
-   },
-   "version": "4.6.7"
-  },
-  "clap_derive@4.6.7": {
-   "authors": "",
-   "description": "Parse command line argument by defining a struct, derive crate.",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "clap_derive",
-   "readme": "README.md",
-   "repository": "https://github.com/clap-rs/clap",
-   "rust_version": "1.85",
-   "source": {
-    "checksum": "f9c751b79415d4e559e3d1fcf128e09e720eb673a06d26cf6f392d37d75b66e0",
-    "kind": "registry"
-   },
-   "version": "4.6.7"
-  },
-  "clap_lex@1.1.1": {
-   "authors": "",
-   "description": "Minimal, flexible command line parser",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "clap_lex",
-   "readme": "README.md",
-   "repository": "https://github.com/clap-rs/clap",
-   "rust_version": "1.85",
-   "source": {
-    "checksum": "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486",
-    "kind": "registry"
-   },
-   "version": "1.1.1"
-  },
   "cmov@0.5.4": {
    "authors": "RustCrypto Developers",
    "description": "Conditional move CPU intrinsics which are guaranteed on major platforms (ARM32/ARM64, x86/x86_64,\nRISC-V) to execute in constant-time and not be rewritten as branches by the compiler. Provides\nwrappers for the CMOV family of instructions on x86/x86_64 and CSEL on AArch64, along with a\nportable \"best-effort\" pure Rust fallback implementation.\n",
@@ -1211,40 +1075,6 @@
     "kind": "registry"
    },
    "version": "0.3.0"
-  },
-  "colorchoice@1.0.5": {
-   "authors": "",
-   "description": "Global override of color control",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "colorchoice",
-   "readme": "README.md",
-   "repository": "https://github.com/rust-cli/anstyle.git",
-   "rust_version": "1.66.0",
-   "source": {
-    "checksum": "1d07550c9036bf2ae0c684c4297d503f838287c83c53686d05370d0e139ae570",
-    "kind": "registry"
-   },
-   "version": "1.0.5"
-  },
-  "colored@2.2.0": {
-   "authors": "Thomas Wickham <mackwic@gmail.com>",
-   "description": "The most simple way to add colors in your terminal",
-   "homepage": "https://github.com/mackwic/colored",
-   "license": "MPL-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "colored",
-   "readme": "README.md",
-   "repository": "https://github.com/mackwic/colored",
-   "rust_version": "1.70",
-   "source": {
-    "checksum": "117725a109d387c937a1533ce01b450cbde6b88abceea8473c4d7a85853cda3c",
-    "kind": "registry"
-   },
-   "version": "2.2.0"
   },
   "const-oid@0.10.2": {
    "authors": "RustCrypto Developers",
@@ -2606,23 +2436,6 @@
    },
    "version": "0.33.0"
   },
-  "glob-match@0.2.1": {
-   "authors": "Devon Govett <devongovett@gmail.com>",
-   "description": "An extremely fast glob matcher",
-   "homepage": "",
-   "license": "MIT",
-   "license_file": "",
-   "links": null,
-   "name": "glob-match",
-   "readme": "README.md",
-   "repository": "",
-   "rust_version": "",
-   "source": {
-    "checksum": "9985c9503b412198aa4197559e9a318524ebc4519c229bfa05a535828c950b9d",
-    "kind": "registry"
-   },
-   "version": "0.2.1"
-  },
   "glob@0.3.4": {
    "authors": "The Rust Project Developers",
    "description": "Support for matching file paths against Unix shell style patterns.\n",
@@ -3405,23 +3218,6 @@
    },
    "version": "2.12.2"
   },
-  "is_terminal_polyfill@1.70.2": {
-   "authors": "",
-   "description": "Polyfill for `is_terminal` stdlib feature for use with older MSRVs",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "is_terminal_polyfill",
-   "readme": "README.md",
-   "repository": "https://github.com/polyfill-rs/is_terminal_polyfill",
-   "rust_version": "1.70.0",
-   "source": {
-    "checksum": "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695",
-    "kind": "registry"
-   },
-   "version": "1.70.2"
-  },
   "itertools@0.15.0": {
    "authors": "bluss",
    "description": "Extra iterator adaptors, iterator methods, free functions, and macros.",
@@ -3557,23 +3353,6 @@
     "kind": "registry"
    },
    "version": "0.3.99"
-  },
-  "jsonrpc-types@0.3.3": {
-   "authors": "koushiro <koushiro.cqx@gmail.com>",
-   "description": "A set of types for representing JSON-RPC requests and responses.",
-   "homepage": "",
-   "license": "MIT/Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "jsonrpc-types",
-   "readme": "README.md",
-   "repository": "https://github.com/koushiro/async-jsonrpc",
-   "rust_version": "",
-   "source": {
-    "checksum": "8d203b1b00d03d1cee9ddcaf970d2ccdd40d8036d8fafef34a0b1b841486b232",
-    "kind": "registry"
-   },
-   "version": "0.3.3"
   },
   "kqueue-sys@1.1.2": {
    "authors": "William Orr <will@worrbase.com>:Daniel (dmilith) Dettlaff <dmilith@me.com>",
@@ -3932,23 +3711,6 @@
    },
    "version": "0.9.11"
   },
-  "memoffset@0.6.5": {
-   "authors": "Gilad Naaman <gilad.naaman@gmail.com>",
-   "description": "offset_of functionality for Rust structs.",
-   "homepage": "",
-   "license": "MIT",
-   "license_file": "",
-   "links": null,
-   "name": "memoffset",
-   "readme": "README.md",
-   "repository": "https://github.com/Gilnaa/memoffset",
-   "rust_version": "",
-   "source": {
-    "checksum": "5aa361d4faea93603064a027415f07bd8e1d5c88c9fbf68bf56a285428fd79ce",
-    "kind": "registry"
-   },
-   "version": "0.6.5"
-  },
   "memoffset@0.9.1": {
    "authors": "Gilad Naaman <gilad.naaman@gmail.com>",
    "description": "offset_of functionality for Rust structs.",
@@ -4033,23 +3795,6 @@
     "kind": "registry"
    },
    "version": "0.6.1"
-  },
-  "nix@0.23.2": {
-   "authors": "The nix-rust Project Developers",
-   "description": "Rust friendly bindings to *nix APIs",
-   "homepage": "",
-   "license": "MIT",
-   "license_file": "",
-   "links": null,
-   "name": "nix",
-   "readme": "README.md",
-   "repository": "https://github.com/nix-rust/nix",
-   "rust_version": "1.46",
-   "source": {
-    "checksum": "8f3790c00a0150112de0f4cd161e3d7fc4b2d8a5542ffc35f099a2562aecb35c",
-    "kind": "registry"
-   },
-   "version": "0.23.2"
   },
   "nohash-hasher@0.2.0": {
    "authors": "Parity Technologies <admin@parity.io>",
@@ -4271,23 +4016,6 @@
     "kind": "registry"
    },
    "version": "1.21.4"
-  },
-  "once_cell_polyfill@1.70.2": {
-   "authors": "",
-   "description": "Polyfill for `OnceCell` stdlib feature for use with older MSRVs",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "once_cell_polyfill",
-   "readme": "README.md",
-   "repository": "https://github.com/polyfill-rs/once_cell_polyfill",
-   "rust_version": "1.70.0",
-   "source": {
-    "checksum": "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe",
-    "kind": "registry"
-   },
-   "version": "1.70.2"
   },
   "oorandom@11.1.5": {
    "authors": "Simon Heath <icefox@dreamquest.io>",
@@ -4697,23 +4425,6 @@
    },
    "version": "0.2.0"
   },
-  "ppv-lite86@0.2.21": {
-   "authors": "The CryptoCorrosion Contributors",
-   "description": "Cross-platform cryptography-oriented low-level SIMD library.",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "ppv-lite86",
-   "readme": "",
-   "repository": "https://github.com/cryptocorrosion/cryptocorrosion",
-   "rust_version": "1.61",
-   "source": {
-    "checksum": "85eae3c4ed2f50dcfe72643da4befc30deadb458a9b590d720cde2f2b1e97da9",
-    "kind": "registry"
-   },
-   "version": "0.2.21"
-  },
   "prettyplease@0.2.37": {
    "authors": "David Tolnay <dtolnay@gmail.com>",
    "description": "A minimal `syn` syntax tree pretty-printer",
@@ -5071,23 +4782,6 @@
    },
    "version": "0.166.0"
   },
-  "ra-jit-bench@0.1.0": {
-   "authors": "blaze contributors",
-   "description": "Microbenchmarks of ra-jit's hot paths, run by tango in pairs: a change against its base",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "ra-jit-bench",
-   "readme": "",
-   "repository": "",
-   "rust_version": "1.101",
-   "source": {
-    "dir": "crates/ra-jit-bench",
-    "kind": "path"
-   },
-   "version": "0.1.0"
-  },
   "ra-jit-cache-macros@0.1.0": {
    "authors": "Indexable, Inc.",
    "description": "The #[cache] attribute of ra-jit-cache",
@@ -5206,40 +4900,6 @@
     "kind": "path"
    },
    "version": "0.1.0"
-  },
-  "rand@0.8.8": {
-   "authors": "The Rand Project Developers:The Rust Project Developers",
-   "description": "Random number generators and other randomness functionality.\n",
-   "homepage": "https://rust-random.github.io/book",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "rand",
-   "readme": "README.md",
-   "repository": "https://github.com/rust-random/rand",
-   "rust_version": "",
-   "source": {
-    "checksum": "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c",
-    "kind": "registry"
-   },
-   "version": "0.8.8"
-  },
-  "rand_chacha@0.3.1": {
-   "authors": "The Rand Project Developers:The Rust Project Developers:The CryptoCorrosion Contributors",
-   "description": "ChaCha random number generator\n",
-   "homepage": "https://rust-random.github.io/book",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "rand_chacha",
-   "readme": "README.md",
-   "repository": "https://github.com/rust-random/rand",
-   "rust_version": "",
-   "source": {
-    "checksum": "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88",
-    "kind": "registry"
-   },
-   "version": "0.3.1"
   },
   "rand_core@0.6.4": {
    "authors": "The Rand Project Developers:The Rust Project Developers",
@@ -6023,23 +5683,6 @@
    },
    "version": "0.1.7"
   },
-  "shared_memory@0.12.4": {
-   "authors": "ElasT0ny <elast0ny00@gmail.com>",
-   "description": "A user friendly crate that allows you to share memory between processes",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "shared_memory",
-   "readme": "README.md",
-   "repository": "https://github.com/elast0ny/shared_memory-rs",
-   "rust_version": "",
-   "source": {
-    "checksum": "ba8593196da75d9dc4f69349682bd4c2099f8cde114257d1ef7ef1b33d1aba54",
-    "kind": "registry"
-   },
-   "version": "0.12.4"
-  },
   "shell-escape@0.1.5": {
    "authors": "Steven Fackler <sfackler@gmail.com>",
    "description": "Escape characters that may have a special meaning in a shell",
@@ -6312,23 +5955,6 @@
    },
    "version": "0.0.0"
   },
-  "strsim@0.11.1": {
-   "authors": "Danny Guo <danny@dannyguo.com>:maxbachmann <oss@maxbachmann.de>",
-   "description": "Implementations of string similarity metrics. Includes Hamming, Levenshtein,\nOSA, Damerau-Levenshtein, Jaro, Jaro-Winkler, and S\u00f8rensen-Dice.\n",
-   "homepage": "https://github.com/rapidfuzz/strsim-rs",
-   "license": "MIT",
-   "license_file": "",
-   "links": null,
-   "name": "strsim",
-   "readme": "README.md",
-   "repository": "https://github.com/rapidfuzz/strsim-rs",
-   "rust_version": "1.56",
-   "source": {
-    "checksum": "7da8b5736845d9f2fcb837ea5d9e2628564b3b043a70948a3f0b778838c5fb4f",
-    "kind": "registry"
-   },
-   "version": "0.11.1"
-  },
   "subtle@2.6.1": {
    "authors": "Isis Lovecruft <isis@patternsinthevoid.net>:Henry de Valence <hdevalence@hdevalence.ca>",
    "description": "Pure-Rust traits and utilities for constant-time cryptographic implementations.",
@@ -6430,23 +6056,6 @@
     "kind": "path"
    },
    "version": "0.0.0"
-  },
-  "tango-bench@0.9.0": {
-   "authors": "",
-   "description": "Tango benchmarking harness",
-   "homepage": "https://github.com/bazhenov/tango",
-   "license": "MIT",
-   "license_file": "",
-   "links": null,
-   "name": "tango-bench",
-   "readme": "README.md",
-   "repository": "https://github.com/bazhenov/tango",
-   "rust_version": "",
-   "source": {
-    "checksum": "9b0ba05a1f5afd669746c89634423b3423020050b81405bb3e9a4364f56f64d9",
-    "kind": "registry"
-   },
-   "version": "0.9.0"
   },
   "tar@0.4.46": {
    "authors": "Alex Crichton <alex@alexcrichton.com>",
@@ -6567,23 +6176,6 @@
    },
    "version": "0.2.18"
   },
-  "thiserror-impl@1.0.69": {
-   "authors": "David Tolnay <dtolnay@gmail.com>",
-   "description": "Implementation detail of the `thiserror` crate",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "thiserror-impl",
-   "readme": "",
-   "repository": "https://github.com/dtolnay/thiserror",
-   "rust_version": "1.61",
-   "source": {
-    "checksum": "4fee6c4efc90059e10f81e6d42c60a18f76588c3d74cb83a0b242a2b6c7504c1",
-    "kind": "registry"
-   },
-   "version": "1.0.69"
-  },
   "thiserror-impl@2.0.18": {
    "authors": "David Tolnay <dtolnay@gmail.com>",
    "description": "Implementation detail of the `thiserror` crate",
@@ -6600,23 +6192,6 @@
     "kind": "registry"
    },
    "version": "2.0.18"
-  },
-  "thiserror@1.0.69": {
-   "authors": "David Tolnay <dtolnay@gmail.com>",
-   "description": "derive(Error)",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "thiserror",
-   "readme": "README.md",
-   "repository": "https://github.com/dtolnay/thiserror",
-   "rust_version": "1.61",
-   "source": {
-    "checksum": "b6aaf5339b578ea85b50e080feb250a3e8ae8cfcdff9a461c9ec2904bc923f52",
-    "kind": "registry"
-   },
-   "version": "1.0.69"
   },
   "thiserror@2.0.18": {
    "authors": "David Tolnay <dtolnay@gmail.com>",
@@ -7383,23 +6958,6 @@
    },
    "version": "1.0.4"
   },
-  "utf8parse@0.2.2": {
-   "authors": "Joe Wilm <joe@jwilm.com>:Christian Duerr <contact@christianduerr.com>",
-   "description": "Table-driven UTF-8 parser",
-   "homepage": "",
-   "license": "Apache-2.0 OR MIT",
-   "license_file": "",
-   "links": null,
-   "name": "utf8parse",
-   "readme": "",
-   "repository": "https://github.com/alacritty/vte",
-   "rust_version": "",
-   "source": {
-    "checksum": "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821",
-    "kind": "registry"
-   },
-   "version": "0.2.2"
-  },
   "uuid@1.28.0": {
    "authors": "Ashley Mannix<ashleymannix@live.com.au>:Dylan DPC<dylan.dpc@gmail.com>:Hunar Roop Kahlon<hunar.roop@gmail.com>",
    "description": "A library to generate and parse UUIDs.",
@@ -7740,23 +7298,6 @@
    },
    "version": "49.0.2"
   },
-  "win-sys@0.3.1": {
-   "authors": "ElasT0ny <elast0ny00@gmail.com>",
-   "description": "Thin Rust wrapper around some Windows native apis",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "win-sys",
-   "readme": "README.md",
-   "repository": "https://github.com/elast0ny/win-sys",
-   "rust_version": "",
-   "source": {
-    "checksum": "5b7b128a98c1cfa201b09eb49ba285887deb3cbe7466a98850eb1adabb452be5",
-    "kind": "registry"
-   },
-   "version": "0.3.1"
-  },
   "winapi-util@0.1.11": {
    "authors": "Andrew Gallant <jamslam@gmail.com>",
    "description": "A dumping ground for high level safe wrappers over windows-sys.",
@@ -7774,91 +7315,6 @@
    },
    "version": "0.1.11"
   },
-  "windows-collections@0.3.2": {
-   "authors": "",
-   "description": "Windows collection types",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows-collections",
-   "readme": "readme.md",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "1.82",
-   "source": {
-    "checksum": "23b2d95af1a8a14a3c7367e1ed4fc9c20e0a26e79551b1454d72583c97cc6610",
-    "kind": "registry"
-   },
-   "version": "0.3.2"
-  },
-  "windows-core@0.62.2": {
-   "authors": "",
-   "description": "Core type support for COM and Windows",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows-core",
-   "readme": "readme.md",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "1.82",
-   "source": {
-    "checksum": "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb",
-    "kind": "registry"
-   },
-   "version": "0.62.2"
-  },
-  "windows-future@0.3.2": {
-   "authors": "",
-   "description": "Windows async types",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows-future",
-   "readme": "readme.md",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "1.82",
-   "source": {
-    "checksum": "e1d6f90251fe18a279739e78025bd6ddc52a7e22f921070ccdc67dde84c605cb",
-    "kind": "registry"
-   },
-   "version": "0.3.2"
-  },
-  "windows-implement@0.60.2": {
-   "authors": "",
-   "description": "The implement macro for the Windows crates",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows-implement",
-   "readme": "readme.md",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "1.74",
-   "source": {
-    "checksum": "053e2e040ab57b9dc951b72c264860db7eb3b0200ba345b4e4c3b14f67855ddf",
-    "kind": "registry"
-   },
-   "version": "0.60.2"
-  },
-  "windows-interface@0.59.3": {
-   "authors": "",
-   "description": "The interface macro for the Windows crates",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows-interface",
-   "readme": "readme.md",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "1.74",
-   "source": {
-    "checksum": "3f316c4a2570ba26bbec722032c4099d8c8bc095efccdc15688708623367e358",
-    "kind": "registry"
-   },
-   "version": "0.59.3"
-  },
   "windows-link@0.2.1": {
    "authors": "",
    "description": "Linking for Windows",
@@ -7875,57 +7331,6 @@
     "kind": "registry"
    },
    "version": "0.2.1"
-  },
-  "windows-numerics@0.3.1": {
-   "authors": "",
-   "description": "Windows numeric types",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows-numerics",
-   "readme": "readme.md",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "1.82",
-   "source": {
-    "checksum": "6e2e40844ac143cdb44aead537bbf727de9b044e107a0f1220392177d15b0f26",
-    "kind": "registry"
-   },
-   "version": "0.3.1"
-  },
-  "windows-result@0.4.1": {
-   "authors": "",
-   "description": "Windows error handling",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows-result",
-   "readme": "readme.md",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "1.82",
-   "source": {
-    "checksum": "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5",
-    "kind": "registry"
-   },
-   "version": "0.4.1"
-  },
-  "windows-strings@0.5.1": {
-   "authors": "",
-   "description": "Windows string types",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows-strings",
-   "readme": "readme.md",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "1.82",
-   "source": {
-    "checksum": "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091",
-    "kind": "registry"
-   },
-   "version": "0.5.1"
   },
   "windows-sys@0.52.0": {
    "authors": "Microsoft",
@@ -8012,57 +7417,6 @@
    },
    "version": "0.53.5"
   },
-  "windows-threading@0.2.1": {
-   "authors": "",
-   "description": "Windows threading",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows-threading",
-   "readme": "readme.md",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "1.82",
-   "source": {
-    "checksum": "3949bd5b99cafdf1c7ca86b43ca564028dfe27d66958f2470940f73d86d75b37",
-    "kind": "registry"
-   },
-   "version": "0.2.1"
-  },
-  "windows@0.34.0": {
-   "authors": "Microsoft",
-   "description": "Rust for Windows",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows",
-   "readme": "../../../.github/readme.md",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "",
-   "source": {
-    "checksum": "45296b64204227616fdbf2614cefa4c236b98ee64dfaaaa435207ed99fe7829f",
-    "kind": "registry"
-   },
-   "version": "0.34.0"
-  },
-  "windows@0.62.2": {
-   "authors": "",
-   "description": "Rust for Windows",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows",
-   "readme": "readme.md",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "1.82",
-   "source": {
-    "checksum": "527fadee13e0c05939a6a05d5bd6eec6cd2e3dbd648b9f8e447c6518133d8580",
-    "kind": "registry"
-   },
-   "version": "0.62.2"
-  },
   "windows_aarch64_gnullvm@0.52.6": {
    "authors": "Microsoft",
    "description": "Import lib for Windows",
@@ -8097,23 +7451,6 @@
    },
    "version": "0.53.1"
   },
-  "windows_aarch64_msvc@0.34.0": {
-   "authors": "Microsoft",
-   "description": "Code gen support for the windows crate",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows_aarch64_msvc",
-   "readme": "",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "",
-   "source": {
-    "checksum": "17cffbe740121affb56fad0fc0e421804adf0ae00891205213b5cecd30db881d",
-    "kind": "registry"
-   },
-   "version": "0.34.0"
-  },
   "windows_aarch64_msvc@0.52.6": {
    "authors": "Microsoft",
    "description": "Import lib for Windows",
@@ -8147,23 +7484,6 @@
     "kind": "registry"
    },
    "version": "0.53.1"
-  },
-  "windows_i686_gnu@0.34.0": {
-   "authors": "Microsoft",
-   "description": "Code gen support for the windows crate",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows_i686_gnu",
-   "readme": "",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "",
-   "source": {
-    "checksum": "2564fde759adb79129d9b4f54be42b32c89970c18ebf93124ca8870a498688ed",
-    "kind": "registry"
-   },
-   "version": "0.34.0"
   },
   "windows_i686_gnu@0.52.6": {
    "authors": "Microsoft",
@@ -8233,23 +7553,6 @@
    },
    "version": "0.53.1"
   },
-  "windows_i686_msvc@0.34.0": {
-   "authors": "Microsoft",
-   "description": "Code gen support for the windows crate",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows_i686_msvc",
-   "readme": "",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "",
-   "source": {
-    "checksum": "9cd9d32ba70453522332c14d38814bceeb747d80b3958676007acadd7e166956",
-    "kind": "registry"
-   },
-   "version": "0.34.0"
-  },
   "windows_i686_msvc@0.52.6": {
    "authors": "Microsoft",
    "description": "Import lib for Windows",
@@ -8283,23 +7586,6 @@
     "kind": "registry"
    },
    "version": "0.53.1"
-  },
-  "windows_x86_64_gnu@0.34.0": {
-   "authors": "Microsoft",
-   "description": "Code gen support for the windows crate",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows_x86_64_gnu",
-   "readme": "",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "",
-   "source": {
-    "checksum": "cfce6deae227ee8d356d19effc141a509cc503dfd1f850622ec4b0f84428e1f4",
-    "kind": "registry"
-   },
-   "version": "0.34.0"
   },
   "windows_x86_64_gnu@0.52.6": {
    "authors": "Microsoft",
@@ -8368,23 +7654,6 @@
     "kind": "registry"
    },
    "version": "0.53.1"
-  },
-  "windows_x86_64_msvc@0.34.0": {
-   "authors": "Microsoft",
-   "description": "Code gen support for the windows crate",
-   "homepage": "",
-   "license": "MIT OR Apache-2.0",
-   "license_file": "",
-   "links": null,
-   "name": "windows_x86_64_msvc",
-   "readme": "",
-   "repository": "https://github.com/microsoft/windows-rs",
-   "rust_version": "",
-   "source": {
-    "checksum": "d19538ccc21819d01deaf88d6a17eae6596a12e9aafdbb97916fb49896d89de9",
-    "kind": "registry"
-   },
-   "version": "0.34.0"
   },
   "windows_x86_64_msvc@0.52.6": {
    "authors": "Microsoft",
@@ -8657,40 +7926,6 @@
     "kind": "registry"
    },
    "version": "0.8.3"
-  },
-  "zerocopy-derive@0.8.63": {
-   "authors": "",
-   "description": "Custom derive for traits from the zerocopy crate",
-   "homepage": "",
-   "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
-   "license_file": "",
-   "links": null,
-   "name": "zerocopy-derive",
-   "readme": "",
-   "repository": "https://github.com/google/zerocopy",
-   "rust_version": "",
-   "source": {
-    "checksum": "863ad3ac83293fb4d740aedbfdc9240dd8d1a50c1099acd76ce80ce7c7230c7f",
-    "kind": "registry"
-   },
-   "version": "0.8.63"
-  },
-  "zerocopy@0.8.63": {
-   "authors": "",
-   "description": "Zerocopy makes zero-cost memory manipulation effortless. We write \"unsafe\" so you don't have to.",
-   "homepage": "",
-   "license": "BSD-2-Clause OR Apache-2.0 OR MIT",
-   "license_file": "",
-   "links": null,
-   "name": "zerocopy",
-   "readme": "README.md",
-   "repository": "https://github.com/google/zerocopy",
-   "rust_version": "1.56.0",
-   "source": {
-    "checksum": "e5fe1f8f1b06191a00962174c61aa5005e0bb391a6d80d07e24d115c01a92ed8",
-    "kind": "registry"
-   },
-   "version": "0.8.63"
   },
   "zerofrom-derive@0.1.7": {
    "authors": "Manish Goregaokar <manishsmail@gmail.com>",
