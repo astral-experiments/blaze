@@ -1615,6 +1615,12 @@ impl Rejections {
             }
             None => self.frozen.edit(base_db::all_crates(db).iter().copied()),
         }
+        self.touch_bases(db, crates);
+    }
+
+    /// Invalidates the linked bases without recording a disk edit. Installing a generated test
+    /// harness changes the daemon's source while rustc's functions and statics remain current.
+    pub fn touch_bases(&mut self, db: &dyn HirDatabase, crates: Option<&[Crate]>) {
         for base in [&mut self.base, &mut self.rustc].into_iter().flatten() {
             base.touch(db, crates);
         }
