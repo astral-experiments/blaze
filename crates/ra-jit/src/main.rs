@@ -1536,20 +1536,15 @@ impl SymbolResolver for Resolver<'_> {
         if func.async_token().is_some() {
             return None;
         }
+        let id = self.function_at(&sema, adt.module(self.db), &func)?.try_into().ok()?;
         let name = adt.name(self.db);
-        let named_so = func.syntax().descendants().filter_map(ast::Name::cast).filter(|it| {
-            it.text() == name.as_str()
-                && it.syntax().parent().is_some_and(|it| {
-                    ast::Adt::can_cast(it.kind())
-                        || ast::Trait::can_cast(it.kind())
-                        || ast::TypeAlias::can_cast(it.kind())
-                        || ast::Module::can_cast(it.kind())
-                })
-        });
-        if named_so.count() != 1 {
-            return None;
-        }
-        self.function_at(&sema, adt.module(self.db), &func)?.try_into().ok()
+        // The source of the function can omit a same-named type that a macro expands to.
+        let named = hir_def::expr_store::Body::of(self.db, hir_def::DefWithBodyId::FunctionId(id))
+            .blocks(self.db)
+            .flat_map(|(_, map)| map.modules(self.db))
+            .flat_map(|(_, module)| module.scope(self.db).entries())
+            .filter(|(candidate, ns)| candidate.as_str() == name.as_str() && ns.types.is_some());
+        (named.count() == 1).then_some(id)
     }
 
     fn impl_place(&self, id: hir_def::ImplId) -> Option<u32> {
