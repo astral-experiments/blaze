@@ -1,0 +1,55 @@
+name: CI migration comparison
+on:
+  push:
+    branches: [charlie/ci-control-pr-7]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  windows:
+    uses: ./.github/workflows/ra-jit-platform.yaml
+    with:
+      platform: windows-x64
+      os: windows-2025
+      tier: fast
+
+  macos:
+    name: storetracked on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, nscloud-macos-tahoe-arm64-6x14]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    env:
+      RA_JIT_BACKEND: cranelift
+      RA_JIT_OPT: 2
+      RA_JIT_EMIT: fast
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: e8f3c023aa6916191bb73427155bdecfa47e6e46
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+        with:
+          llvm: run
+      - uses: actions/download-artifact@v8
+        with:
+          name: ra-jit-macos-arm64
+          path: target/release
+          github-token: ${{ github.token }}
+          run-id: 40419108200
+      - name: Repeat the Cranelift store test with the same binary
+        run: |
+          tar -xf target/release/ra-jit.tar -C target/release
+          export RA_JIT_BIN="$PWD/target/release/ra-jit"
+          failed=0
+          for i in 1 2 3 4 5; do
+            echo "::group::Trial $i"
+            python3 harness/storetracked.py || failed=$((failed + 1))
+            echo "::endgroup::"
+          done
+          echo "$failed of 5 trials failed"
+          test "$failed" = 0
