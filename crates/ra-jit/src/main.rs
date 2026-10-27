@@ -5841,9 +5841,9 @@ fn refusal(
             Some(it) => format!("calls rustc's copy of `{}`, which is", named(it)),
             None => "may call code of rustc's that is".to_owned(),
         };
+        let detail = if why.is_empty() { String::new() } else { format!(": {why}") };
         return Some(Refused::Cargos(format!(
-            "{name} is not compiled by ra-jit, and rustc's copy of it {calls} from before the \
-             edit: {why} (no-rustc E, #85)"
+            "rustc's copy of {name} {calls} from before the edit{detail} (no-rustc E, #85)"
         )));
     }
     // What the frontend turns down as code that does not compile, rustc would too, unless

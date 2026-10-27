@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read the same atomic that rustc's allocator shim writes after restarting the worker."""
+"""Read the same atomic that rustc's allocator shim writes before and after restarting the worker."""
 import os
 from pathlib import Path
 import subprocess
@@ -40,7 +40,8 @@ if __name__ == "__main__":
         env = dict(os.environ, RA_JIT_HOME=str(root / "h"), RA_JIT_CACHE=str(root / "store"),
                    RA_JIT_SPARE="0", RA_JIT_RUSTC_BASE="0", CARGO_TARGET_DIR=str(root / "target"),
                    PATH=str(Path(os.environ["RA_JIT_BIN"]).resolve().parent) + os.pathsep + os.environ["PATH"])
-        for seen, tag in [(10, 30), (10, 20), (11, 20)]:
+        for seen, tag, restart in [(10, 30, False), (10, 20, False), (11, 20, True),
+                                   (11, 30, True), (12, 30, True)]:
             (root / "src/input.rs").write_text(f'#[inline(always)] pub fn seen() -> usize {{ {seen} }}\n#[inline(never)] pub fn tag() -> usize {{ {tag} }}\n')
             try:
                 subprocess.run(["cargo", "ra-jit", "build"], cwd=root, env=env, check=True, timeout=900)
@@ -48,4 +49,5 @@ if __name__ == "__main__":
                 if actual != f"{seen} {tag} 1":
                     raise SystemExit(f"seen={seen}, tag={tag}: got {actual!r}")
             finally:
-                subprocess.run(["cargo", "ra-jit", "stop"], cwd=root, env=env, check=True, capture_output=True)
+                if restart:
+                    subprocess.run(["cargo", "ra-jit", "stop"], cwd=root, env=env, check=True, capture_output=True)
