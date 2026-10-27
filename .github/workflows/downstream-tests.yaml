@@ -7,7 +7,7 @@ on:
         description: Upstream test suite
         type: choice
         required: true
-        options: [ruff-and-ty, uv, uv-archive-fixtures]
+        options: [ruff-and-ty, uv, uv-archive-fixtures, uv-lock-edit, ty-semantic-edit]
 
 permissions:
   contents: read
@@ -41,8 +41,8 @@ jobs:
       - name: Check out the upstream workspace
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ inputs.suite == 'ruff-and-ty' && 'astral-sh/ruff' || 'astral-sh/uv' }}
-          ref: ${{ inputs.suite == 'ruff-and-ty' && '07872adbafa7c00f42f1174d8aa3c3e324033009' || '5b5a53e1803d426ba04f4af8ff7d6ff747548218' }}
+          repository: ${{ startsWith(inputs.suite, 'uv') && 'astral-sh/uv' || 'astral-sh/ruff' }}
+          ref: ${{ startsWith(inputs.suite, 'uv') && '5b5a53e1803d426ba04f4af8ff7d6ff747548218' || '07872adbafa7c00f42f1174d8aa3c3e324033009' }}
           path: downstream
           persist-credentials: false
       - if: inputs.suite != 'uv-archive-fixtures'
@@ -51,8 +51,8 @@ jobs:
           version: '0.13.5'
           checksum: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
           enable-cache: false
-      - name: Install uv's Linux test dependencies
-        if: inputs.suite == 'uv'
+      - name: Install uv's test dependencies
+        if: inputs.suite == 'uv' || inputs.suite == 'uv-lock-edit'
         working-directory: downstream
         env:
           UV_PYTHON_DOWNLOADS_JSON_URL: crates/uv-python-managed/download-metadata.json
@@ -60,6 +60,7 @@ jobs:
           export UV_PYTHON_CACHE_DIR="$RUNNER_TEMP/uv-python-cache"
           echo "UV_PYTHON_CACHE_DIR=$UV_PYTHON_CACHE_DIR" >> "$GITHUB_ENV"
           uv python install
+          if [[ "$SUITE" == uv-lock-edit ]]; then exit 0; fi
           uv python install 3.12d 3.13d 3.13t 3.13td
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends --allow-downgrades \
@@ -88,6 +89,9 @@ jobs:
               cmd=(uv run --locked --only-group test blaze test --workspace --locked --no-fail-fast
                    --features test-python-patch,test-universal,native-auth,secret-service
                    -- --skip test::malformed_option::)
+              ;;
+            uv-lock-edit|ty-semantic-edit)
+              exec python3 ../blaze/.github/scripts/downstream_test_edit.py "$SUITE"
               ;;
             uv-archive-fixtures)
               cmd=(blaze test --locked -p uv --test build -- extract::)
