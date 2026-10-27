@@ -427,27 +427,36 @@ fn library() { assert_eq!(half(8_u32), 4.0); }
     return "\n".join(failures) or "ok"
 
 
-def generated_after_restart(root, env):
-    """A new worker must reject a native test built before its generated assertion changed."""
-    ws = Path(root, "generated")
+def generated_after_restart(root, env, dependency=False):
+    """A new worker must reject native code built before its generated input changed."""
+    ws = Path(root, "uses-archive" if dependency else "generated")
     (ws / "src").mkdir(parents=True)
-    (ws / "Cargo.toml").write_text(
-        '[package]\nname = "generated"\nversion = "0.1.0"\nedition = "2021"\n'
-        '[profile.dev]\nopt-level = 1\n'
-    )
-    (ws / "build.rs").write_text("""fn main() {
+    package = '[package]\nname = "{}"\nversion = "0.1.0"\nedition = "2021"\n'
+    manifest = package.format("generated")
+    native = ws
+    if dependency:
+        native = Path(root, "generated-native")
+        (native / "src").mkdir(parents=True)
+        (native / "Cargo.toml").write_text(package.format("generated-native"))
+        manifest += '[dependencies]\ngenerated-native = { path = "../generated-native" }\n'
+    (ws / "Cargo.toml").write_text(manifest + '[profile.dev]\nopt-level = 1\n')
+    (native / "build.rs").write_text("""fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     let dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     std::fs::write(dir.join("value.expr"), "8_u32").unwrap();
 }
 """)
-    (ws / "src/lib.rs").write_text("""#![feature(f128)]
-#[test]
-fn value() {
+    source = """#![feature(f128)]
+#[inline(never)]
+pub fn half() -> f64 {
     let x = include!(concat!(env!("OUT_DIR"), "/value.expr"));
-    assert_eq!((std::hint::black_box(x as f128) / 2.0) as f64, 4.0);
+    (std::hint::black_box(x as f128) / 2.0) as f64
 }
-""")
+"""
+    if dependency:
+        (native / "src/lib.rs").write_text(source)
+        source = "use generated_native::half;\n"
+    (ws / "src/lib.rs").write_text(source + "#[test]\nfn value() { assert_eq!(half(), 4.0); }\n")
     env = dict(env, RUSTC_BOOTSTRAP="1", CARGO_INCREMENTAL="0")
     for value, code, status in [(None, 0, "ok"), ("10_u32", 101, "FAILED"), ("8_u32", 0, "ok")]:
         if value is not None:
@@ -458,7 +467,11 @@ fn value() {
                 return f"FAILED to locate value.expr in {ws}: {paths}"
             paths[0].write_text(value)
             # Reinstalled objects can be newer than the input whose old value they contain.
-            objects = list((ws / "target").glob("**/.ra-jit-units/*/*/*.rcgu.o"))
+            if dependency:
+                objects = [p for p in (ws / "target").rglob("libgenerated_native-*.rlib")
+                           if ".ra-jit-units" not in p.parts]
+            else:
+                objects = list((ws / "target").glob("**/.ra-jit-units/*/*/*.rcgu.o"))
             if not objects:
                 return f"FAILED to locate saved native objects in {ws}"
             for obj in objects:
@@ -579,16 +592,17 @@ def main():
         verdict = unchanged_instances(root, env)
         wrong += verdict != "ok"
         print(f"{'unchanged native instance across harnesses':34} {verdict}", flush=True)
-        verdict = generated_after_restart(root, env)
-        wrong += verdict != "ok"
-        print(f"{'generated test after worker restart':34} {verdict}", flush=True)
+        for dependency, label in [(False, "generated test"), (True, "generated dependency")]:
+            verdict = generated_after_restart(root, env, dependency)
+            wrong += verdict != "ok"
+            print(f"{label + ' after worker restart':34} {verdict}", flush=True)
         verdict = benched(root, env)
         wrong += verdict != "ok"
         print(f"{'a test added beside a bench':34} {verdict}", flush=True)
     finally:
         subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, capture_output=True, timeout=120)
         shutil.rmtree(OUTSIDE, ignore_errors=True)
-    print(f"{len(STEPS) + 4 - wrong} of {len(STEPS) + 4} right; under {root}, the daemon's home {home}")
+    print(f"{len(STEPS) + 5 - wrong} of {len(STEPS) + 5} right; under {root}, the daemon's home {home}")
     if wrong:
         sys.exit(1)
     shutil.rmtree(root, ignore_errors=True)

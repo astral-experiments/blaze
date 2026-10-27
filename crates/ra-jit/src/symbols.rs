@@ -21,7 +21,7 @@ impl GeneratedInputs {
     /// Captures the generated inputs read by a host proc macro. Its dylib is loaded by the
     /// compiler and has no symbols in the target's native link.
     pub(crate) fn record_proc_macro(&mut self, dylib: &Path) {
-        if let Some(inputs) = crate::cargo::ProcMacroInputs::of(dylib) {
+        if let Some(inputs) = crate::cargo::NativeInputs::of(dylib) {
             for path in inputs.generated {
                 self.record_source(path, inputs.started);
             }

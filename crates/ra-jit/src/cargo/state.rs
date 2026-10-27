@@ -44,10 +44,9 @@ pub(crate) struct State {
     pub(crate) profile: String,
     pub(crate) programs: Vec<Program>,
     guards: Vec<Guard>,
-    /// Generated inputs compiled into the loaded host proc macros. A change requires
-    /// rebuilding the dylib before a worker can expand the target with it.
-    #[serde(default)]
-    proc_macro_inputs: BTreeMap<PathBuf, Option<u128>>,
+    /// Generated inputs compiled into host macros and libraries outside the workspace.
+    /// Cargo must rebuild those artifacts before the worker can reuse them.
+    native_inputs: BTreeMap<PathBuf, Option<u128>>,
     /// What the daemon is asked for: the programs that are not unit tests, and the ones
     /// that are.
     pub(crate) checkouts: Vec<Checkout>,
@@ -701,11 +700,10 @@ impl State {
         keys.filter_map(|it| State::read(&it).ok()).collect()
     }
 
-    /// Returns a reusable build. A changed host macro input needs the cold build path to
-    /// rebuild the dylib before its expansions can be compiled by the worker.
+    /// Returns a build whose native dependencies still reflect their generated inputs.
     pub(crate) fn read_for_build(key: &str) -> Result<State, Option<&'static str>> {
         let state = Self::read(key)?;
-        if state.proc_macro_inputs.iter().any(|(path, saved)| written_at(path) != *saved) {
+        if state.native_inputs.iter().any(|(path, saved)| written_at(path) != *saved) {
             return Err(None);
         }
         Ok(state)
@@ -938,7 +936,7 @@ impl State {
             profile: asked.profile().to_owned(),
             programs: Vec::new(),
             guards: Vec::new(),
-            proc_macro_inputs: BTreeMap::new(),
+            native_inputs: BTreeMap::new(),
             checkouts: Vec::new(),
             refusal: None,
             doc_tests: false,
@@ -1083,12 +1081,16 @@ impl State {
         let documented = |it: &&Package| it.targets.iter().any(|it| library(it) && it.doctest);
         state.doc_tests =
             metadata.packages.iter().filter(|it| tested.contains(&it.id)).any(|it| documented(&it));
-        for artifact in built.artifacts.iter().filter(|it| it.target.is_proc_macro()) {
+        for artifact in built
+            .artifacts
+            .iter()
+            .filter(|it| it.target.is_proc_macro() || !members.contains(&it.package_id))
+        {
             for library in &artifact.filenames {
-                if let Some(inputs) = super::ProcMacroInputs::of(library.as_std_path()) {
+                if let Some(inputs) = super::NativeInputs::of(library.as_std_path()) {
                     for path in inputs.generated {
                         let written = written_at(&path);
-                        state.proc_macro_inputs.insert(path, written);
+                        state.native_inputs.insert(path, written);
                     }
                 }
             }

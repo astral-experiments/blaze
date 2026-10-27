@@ -33,7 +33,7 @@ use cli::{Asked, Invocation, Subcommand};
 use client::Start;
 use daemon::{Checkout, NotBuilt, Reply, Request};
 use state::{Built, Counts, Held, Staged, State};
-pub(crate) use units::{ProcMacroInputs, Record};
+pub(crate) use units::{NativeInputs, Record};
 
 /// `ra-jit cargo ...`: runs the command and ends with the status cargo would end with.
 pub(crate) fn command(args: impl Iterator<Item = String>) -> anyhow::Result<()> {
