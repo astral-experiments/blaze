@@ -6133,12 +6133,12 @@ impl WatchPaths {
 
     /// Puts the files an `include!` named that were not loaded in their source roots, and
     /// watches them: whether there were any, and whether each was what rustc read.
-    fn include_sources(
+    fn include_sources<'a>(
         &self,
         files: &mut Vec<WatchedFile>,
         tree: &mut tree::Tree,
         db: &mut RootDatabase,
-        built_at: impl Fn(&Path) -> Option<SystemTime>,
+        tables: impl Iterator<Item = &'a SymbolTable> + Clone,
     ) -> Loaded {
         let added = tree.included(db);
         if added.is_empty() {
@@ -6158,11 +6158,12 @@ impl WatchPaths {
         for (file, path) in &added {
             let now = self.file(Watched::Source(*file), path, &db.on_disk(path));
             let as_rustc_read = match &now {
-                Some(file) => match was.get(path) {
-                    Some(old) => *old == file.mtime,
-                    // A target joining the worker can be the first to name a generated input.
-                    None => file.mtime.zip(built_at(path)).is_some_and(|(at, built)| at <= built),
-                },
+                Some(watched) => SymbolTable::generated_as_read(
+                    tables.clone(),
+                    path,
+                    db.file_text(*file).text(db),
+                )
+                .unwrap_or_else(|| was.get(path) == Some(&watched.mtime)),
                 None => self.immutable(path),
             };
             if !as_rustc_read {
@@ -8229,7 +8230,8 @@ fn run_holding(
     let mut served = frozen::serve(&mut db, &built);
     // What is frozen names the files its `include!`s read: those not loaded yet are, and
     // what named them is read again.
-    if checkouts.watch.include_sources(&mut files, &mut tree, &mut db, |_| None) != Loaded::Nothing
+    if checkouts.watch.include_sources(&mut files, &mut tree, &mut db, std::iter::empty())
+        != Loaded::Nothing
     {
         listed.touch(&db, None);
         served = frozen::serve(&mut db, &built);
@@ -8237,7 +8239,7 @@ fn run_holding(
     let mut resolved = resolve_crates(&db, &args, cores())?;
     // Resolving the names finds the files `include!` names that were not loaded. With those
     // in, there may be more.
-    while checkouts.watch.include_sources(&mut files, &mut tree, &mut db, |_| None)
+    while checkouts.watch.include_sources(&mut files, &mut tree, &mut db, std::iter::empty())
         != Loaded::Nothing
     {
         // A crate listed beside cargo's build was listed without what they declare.
@@ -8385,9 +8387,12 @@ fn run_holding(
             }
             let mut cold = build_unheld(&db, &table, &args, &mut known, &listed)?;
             // An `include!` in a body is first seen when the body is compiled.
-            let loaded = checkouts.watch.include_sources(&mut files, &mut tree, &mut db, |path| {
-                table.builds_reading(path).min().flatten()
-            });
+            let loaded = checkouts.watch.include_sources(
+                &mut files,
+                &mut tree,
+                &mut db,
+                std::iter::once(&table),
+            );
             if loaded != Loaded::Nothing {
                 loaded.invalidate(&db, &mut known);
                 listed.touch(&db, None);
@@ -8581,9 +8586,12 @@ fn run_holding(
             builds.settle(&mut db, &mut programs)?;
         }
         let included = checkouts.watch.watch_included(&mut files, &mut db);
-        let loaded = checkouts.watch.include_sources(&mut files, &mut tree, &mut db, |path| {
-            programs.iter().flat_map(|p| p.table.builds_reading(path)).min().flatten()
-        });
+        let loaded = checkouts.watch.include_sources(
+            &mut files,
+            &mut tree,
+            &mut db,
+            programs.iter().map(|p| &*p.table),
+        );
         if included {
             programs.iter_mut().for_each(|it| it.known.touch(&db, None));
         } else {
@@ -9836,13 +9844,15 @@ impl Program {
                 None => file.mtime.zip(built).is_some_and(|(written, built)| written <= built),
             })
         };
-        let unread: Vec<vfs::FileId> = files
+        let mut unread: Vec<vfs::FileId> = files
             .iter()
             .filter_map(|it| {
                 let Watched::Source(id) = it.file else { return None };
                 (!compiled_from(it, id)?).then_some(id)
             })
             .collect();
+        // A newly registered harness can link rustc's code before its body includes are loaded.
+        unread.extend(written_sources(files, self.table.stale_generated_roots()).into_keys());
         let other: Vec<_> = unread
             .iter()
             .flat_map(|&id| ide_db::base_db::relevant_crates(db, id).to_vec())

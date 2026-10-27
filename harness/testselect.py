@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ.setdefault("RUSTUP_TOOLCHAIN", open(os.path.join(HERE, "toolchain")).read().strip())
@@ -144,6 +145,7 @@ FILES = {
                   '[dependencies]\ntbase = { path = "tbase" }\n\n[workspace]\nmembers = ["tbase"]\n',
     "src/lib.rs": LIB,
     "data.txt": "tsel\n",
+    "overwrite.txt": "original\n",
     # A library of the workspace the unit tests are linked with as rustc built it, without
     # `cfg(test)`, as ripgrep's crates are each other's.
     "tbase/Cargo.toml": '[package]\nname = "tbase"\nversion = "0.1.0"\nedition = "2021"\n',
@@ -228,12 +230,13 @@ if SANDBOXED:
         ("outside the sandbox", [], "affected -v RA_JIT_SANDBOX=off", {FILE}, True),
         ("the file a test reads edited", [("data.txt", "tsel", "tsel tsel")], "affected -v", {FILE}, True),
         ("nothing edited after the file", [], "affected", set(), True),
+        # The manifest edit below can run the writer beside the data.txt reader under Cargo.
         ("a test that writes into the package", [
             ("src/lib.rs", "    #[test]\n    fn added()",
              "    #[test]\n    fn writes_a_file() {\n"
-             "        std::fs::write(\"data.txt\", \"written\").unwrap();\n"
+             "        std::fs::write(\"overwrite.txt\", \"written\").unwrap();\n"
              "        std::fs::write(\"written.txt\", \"written\").unwrap();\n"
-             "        assert_eq!(std::fs::read_to_string(\"data.txt\").unwrap(), \"written\");\n"
+             "        assert_eq!(std::fs::read_to_string(\"overwrite.txt\").unwrap(), \"written\");\n"
              "    }\n\n    #[test]\n    fn added()")], "affected", {WRITES}, True),
         ("nothing edited after it wrote", [], "affected", set(), True),
         ("a test that writes outside", [
@@ -273,7 +276,7 @@ if SANDBOXED:
 # What has to be so of the package after a step, beside what it says.
 AFTER = {
     "a test that writes into the package": lambda ws: (
-        open(os.path.join(ws, "data.txt")).read() == "tsel tsel\n"
+        open(os.path.join(ws, "overwrite.txt")).read() == "original\n"
         and not os.path.exists(os.path.join(ws, "written.txt"))) or "IT WROTE INTO THE PACKAGE",
     "a test that writes outside": lambda ws: (
         not os.path.exists(os.path.join(OUTSIDE, "written.txt"))) or "IT WROTE OUTSIDE THE SANDBOX",
@@ -312,7 +315,7 @@ BENCHED_ADDED = ("src/lib.rs", "    #[test]\n    fn adds()",
 
 
 def unchanged_instances(root, env):
-    """A second integration test installs another harness while both use the same native instance."""
+    """Both harnesses use the same native instance. Only the second reads the edited expression."""
     ws = os.path.join(root, "unchanged")
     files = {
         "Cargo.toml": '[package]\nname = "unchanged"\nversion = "0.1.0"\nedition = "2021"\n'
@@ -338,8 +341,11 @@ pub fn half<T: Into<f64>>(value: T) -> f64 {
 fn library() { assert_eq!(half(8_u32), 4.0); }
 """,
     }
+    # Cargo may create cache tags under its home; they are not inputs to this build script.
+    cargo_home = Path(root, "cargo-home")
+    (cargo_home / "registry").mkdir(parents=True, exist_ok=True)
     for name in ("first", "second"):
-        files[f"cargo-home/registry/{name}.data"] = "const VALUE: u32 = 8;\n"
+        (cargo_home / "registry" / f"{name}.data").write_text("const VALUE: u32 = 8;\n")
         files[f"tests/{name}.rs"] = (
             f'include!(concat!(env!("CARGO_HOME"), "/registry/{name}.data"));\n'
             f'#[test]\nfn {name}() {{\n'
@@ -354,13 +360,36 @@ fn library() { assert_eq!(half(8_u32), 4.0); }
         with open(path, "w") as out:
             out.write(text)
     # With incremental compilation off rustc can keep only the descriptor for the test.
-    env = dict(env, CARGO_HOME=os.path.join(ws, "cargo-home"), RUSTC_BOOTSTRAP="1", CARGO_INCREMENTAL="0")
+    env = dict(env, CARGO_HOME=str(cargo_home), RUSTC_BOOTSTRAP="1",
+               CARGO_INCREMENTAL="0", CARGO_TERM_COLOR="never")
     code, said = test(ws, env, "all --tests")
     if code or "[ra-jit]" not in said or set(RAN.findall(said)) != {
         ("library", "ok"), ("first", "ok"), ("second", "ok")
     }:
         return f"FAILED\n{said[-3000:]}"
-    return "ok"
+    # A warm build must see an edit to the generated file itself, including when Cargo
+    # builds the unsupported native instance again. Only the second executable reads it.
+    generated = list(Path(ws, "target").rglob("second.expr"))
+    if len(generated) != 1:
+        return f"FAILED to locate second.expr: {generated}"
+    expression = generated[0]
+    failures = []
+    for value, status, expected_code in (("2_u32", "FAILED", 101), ("0_u32", "ok", 0)):
+        expression.write_text(value)
+        code, said = test(ws, env, "all --tests --no-fail-fast")
+        expected = {("library", "ok"), ("first", "ok"), ("second", status)}
+        actual = expression.read_text() if expression.exists() else None
+        if code != expected_code or set(RAN.findall(said)) != expected or actual != value:
+            failures.append(f"second.expr = {value}: command exited {code}, file now {actual!r}\n{said[-3000:]}")
+        image = re.search(r"^\s*Running tests[/\\]second\.rs \((.+)\)$", said, re.M)
+        if image is None:
+            failures.append(f"second.expr = {value}: no executable reported for tests/second.rs")
+            continue
+        ran = subprocess.run([Path(ws, image[1])], cwd=ws, env=env, capture_output=True, text=True, timeout=TIMEOUT)
+        if (ran.returncode != expected_code or RAN.findall(ran.stdout) != [("second", status)]
+                or status == "FAILED" and not ("left: 5.0" in ran.stdout and "right: 4.0" in ran.stdout)):
+            failures.append(f"second.expr = {value}: executable exited {ran.returncode}\n{ran.stdout}{ran.stderr}")
+    return "\n".join(failures) or "ok"
 
 
 def benched(root, env):
