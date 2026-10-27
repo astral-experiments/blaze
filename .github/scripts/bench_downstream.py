@@ -36,6 +36,13 @@ EDITS = {
         1,
         '"micro".parse::<VersionBump>(), Ok(VersionBump::Patch)',
     ),
+    "uvx": (
+        "crates/uv/src/bin/uvx.rs",
+        'file_name_str.strip_prefix("uvx")',
+        'file_name_str.strip_prefix("uvx").or_else(|| file_name_str.strip_prefix("UVX"))',
+        1,
+        'get_uvx_suffix(Path::new("UVX@1.2.3")), Some("@1.2.3")',
+    ),
 }
 COW = (
     "cache_clean::clean_all_cloned_file",
@@ -168,9 +175,11 @@ def main():
     results = Path(directory).resolve()
     results.mkdir(parents=True, exist_ok=True)
     package_args = selection(suite)
-    path = Path(EDITS[suite][0])
+    edit_kind = "uvx" if os.environ.get("BENCH_SCOPE") == "uvx-edit" else suite
+    assert edit_kind != "uvx" or suite == "uv"
+    path = Path(EDITS[edit_kind][0])
     original = path.read_text()
-    edit = change(suite, original)
+    edit = change(edit_kind, original)
     target = Path("target").resolve()
     assert not target.exists()
     order = ("cargo", "blaze") if trial % 2 else ("blaze", "cargo")
@@ -203,7 +212,7 @@ def main():
                     row = timed_run(suite, engine, phase, package_args, env, results)
                     details["measurements"].append(row)
                     save()
-                    if suite == "uv" and trial == 1 and not row["issues"]:
+                    if suite == "uv" and trial in (1, 7) and row["exit"] == 0 and row["passed"]:
                         archive = Path(os.environ["RUNNER_TEMP"]) / "bench-cow" / f"{engine}-{phase}.tar.gz"
                         save_cow(results / f"{engine}-{phase}.log", archive)
             finally:
