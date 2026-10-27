@@ -634,6 +634,11 @@ pub(crate) struct RustcValues {
 }
 
 impl RustcValues {
+    /// Whether an edit may have reached a static's initializer.
+    pub(super) fn touched(&self, db: &dyn HirDatabase, id: StaticId) -> bool {
+        self.touched.contains(&id.krate(db))
+    }
+
     /// Whether rustc's copy of `id` still starts from the value the source gives it now. One
     /// that does not compile has nothing of ours to tell by, and is rustc's.
     ///
@@ -642,7 +647,7 @@ impl RustcValues {
     pub(crate) fn kept(&self, db: &dyn HirDatabase, id: StaticId) -> bool {
         let Ok(compiled) = compiled_static(db, id).as_ref() else { return true };
         let now = Mark::new(db, static_serial(db, id), &compiled.requests);
-        let touched = self.touched.contains(&id.krate(db));
+        let touched = self.touched(db, id);
         let mut known = self.known.lock().unwrap_or_else(|e| e.into_inner());
         let was = *known.entry(id).or_insert((!touched).then_some(now));
         was == Some(now)
