@@ -19,7 +19,7 @@ use crate::{
     unit::Unit,
 };
 
-/// What runs: the script, where, and with what environment. A sandbox runs the same.
+/// The script to run, its working directory, and its environment.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Invocation {
     pub program: PathBuf,
@@ -91,7 +91,7 @@ pub fn is_second_layout(out_dir: &Path) -> bool {
         && build.is_some_and(|it| it == "build")
 }
 
-/// Runs `command`, made from `unit`'s [`Invocation`] (directly or in a sandbox).
+/// Runs `command`, made from `unit`'s [`Invocation`].
 pub fn run(unit: &Unit, mut command: Command) -> Result<Ran, Error> {
     fs::create_dir_all(&unit.out_dir).map_err(|err| {
         Error(format!("failed to create script output directory for build command: {err}"))

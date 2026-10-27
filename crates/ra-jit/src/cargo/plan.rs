@@ -241,9 +241,7 @@ pub(crate) const REACH_WANTED: &str = "tests-reach-wanted";
 /// What the daemon wrote of each test of the program at its last build, one a line: a hash of
 /// what decides how the test ends, a tab and libtest's name of it; or `-`, the name, a tab,
 /// why the test is run every time and, when calls lead to that, a tab and the calls from the
-/// test, joined by ` -> `; or `*`, a tab and why every test is. A test that reaches the world
-/// outside the program has `~` before its hash, then why and the calls as `-` has them: what
-/// it read there, which a sandbox records, decides the rest. Written whole, or not there.
+/// test, joined by ` -> `; or `*`, a tab and why every test is. Written whole, or not there.
 pub(crate) const REACH: &str = "tests-reach";
 
 /// Why the tests of `unit` are only right as rustc built them under rustc's harness, if they

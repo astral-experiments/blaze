@@ -212,7 +212,6 @@ fn text(tests: &[Test], test_type: &str, tested: bool) -> String {
         _ = write!(text, "&T{at}, ");
     }
     text.push_str("];\n        test::test_main_env_args(TESTS)\n    }\n");
-    text.push_str(MARKED);
     for (at, test) in tests.iter().enumerate() {
         let name = test.path.join("::");
         let ignore_message = match &test.ignore_message {
@@ -225,7 +224,11 @@ fn text(tests: &[Test], test_type: &str, tested: bool) -> String {
             ShouldPanic::WithMessage(it) => format!("YesWithMessage({it:?})"),
         };
         let ((start_line, start_col), (end_line, end_col)) = (test.start, test.end);
-        let mark = nul_ended(&format!("{}{name}", crate::sandbox::MARK));
+        let testfn = if test.bench {
+            format!("test::StaticBenchFn(|b| test::assert_test_result(crate::{name}(b)))")
+        } else {
+            format!("test::StaticTestFn(|| test::assert_test_result(crate::{name}()))")
+        };
         _ = write!(
             text,
             "\n    const T{at}: test::TestDescAndFn = test::TestDescAndFn {{\n        \
@@ -247,69 +250,10 @@ fn text(tests: &[Test], test_type: &str, tested: bool) -> String {
              }};\n",
             ignore = test.ignore,
             file = test.file,
-            testfn = match test.bench {
-                true => format!(
-                    "test::StaticBenchFn(|b| {{ let _marked = marked::Marked::on({mark}); \
-                     test::assert_test_result(crate::{name}(b)) }})"
-                ),
-                false => format!(
-                    "test::StaticTestFn(|| {{ let _marked = marked::Marked::on({mark}); \
-                     test::assert_test_result(crate::{name}()) }})"
-                ),
-            },
         );
     }
     text.push_str("}\n");
     text
-}
-
-/// What gives the sandbox the test a thread runs ([`crate::sandbox::MARK`]): each test is
-/// called between `Marked::on` with its marker and the end of what that returns, on its
-/// thread, which look up the marker and the marker with no name (an unwinding test's too).
-/// Outside a sandbox each is one `access` that finds nothing.
-const MARKED: &str = r#"
-    mod marked {
-        pub struct Marked;
-
-        impl Marked {
-            pub fn on(mark: &'static [u8]) -> Marked {
-                look(mark);
-                Marked
-            }
-        }
-
-        impl ::core::ops::Drop for Marked {
-            fn drop(&mut self) {
-                look(b"/.ra-jit-test/\0")
-            }
-        }
-
-        #[cfg(unix)]
-        fn look(path: &[u8]) {
-            unsafe extern "C" {
-                fn access(path: *const ::core::ffi::c_char, mode: ::core::ffi::c_int) -> ::core::ffi::c_int;
-            }
-            // SAFETY: `path` ends with a nul.
-            unsafe { access(path.as_ptr().cast(), 0) };
-        }
-
-        #[cfg(not(unix))]
-        fn look(_: &[u8]) {}
-    }
-"#;
-
-/// `text` as a byte string literal with a nul at its end, which every edition reads.
-fn nul_ended(text: &str) -> String {
-    let mut out = String::from("b\"");
-    for &byte in text.as_bytes() {
-        match byte {
-            b'"' | b'\\' => out.extend(['\\', byte as char]),
-            0x20..=0x7e => out.push(byte as char),
-            _ => out.push_str(&format!("\\x{byte:02x}")),
-        }
-    }
-    out.push_str("\\0\"");
-    out
 }
 
 /// The value of a string literal.

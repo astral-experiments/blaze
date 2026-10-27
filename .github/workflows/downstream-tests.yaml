@@ -21,7 +21,6 @@ jobs:
         shell: bash
     env:
       SUITE: ${{ inputs.suite }}
-      BLAZE_SANDBOX: 'off'
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       RUST_MIN_STACK: 33554432
       RUST_TEST_THREADS: 1

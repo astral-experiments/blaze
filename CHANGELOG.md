@@ -150,19 +150,6 @@ All notable changes to ra-jit are written here. The format follows
   every unit's profile with cargo's `--unit-graph`: 86 of 89 trees and repositories equal over
   546 runs and 235,924 units, none with a different profile, the other three refused by
   cargo or nightly-only ([resolve.md](docs/resolve.md)).
-- `cargo ra-jit test` with `RA_JIT_TESTS=affected` runs, on Linux, each test that reaches a
-  file, the environment, a process or the network in a sandbox of its own (#257): a process
-  in new user, mount, network, IPC and PID namespaces, the machine's files read-only, the
-  workspace and target directory overlaid so its writes vanish, an empty `/tmp`, loopback
-  only, and a fixed environment. A seccomp supervisor records every path it touches; once it
-  passes, what was there is kept, and it runs again only when its code, its environment or one
-  of those changed, where it ran every time. `-v` names the file. Its output, panics,
-  `#[should_panic]` and exit status stay libtest's, as ra-jit writes the harness. On ripgrep
-  the tests run with no edit go from 493 to 24 of 1,168 (the 469 that ran every time are
-  sandboxed and skipped); the first run, which runs those 469 sandboxed, takes 85.5 s where it
-  took 83.6 s. `ra-jit sandbox` is the command, for build scripts and proc macros next (#147).
-  `RA_JIT_SANDBOX=off` runs them every time as before; where no sandbox can be made (macOS and
-  Windows for now, Ubuntu's AppArmor userns restriction) the command says why once.
 - `vendor/proc-macro-srv`, the 1.99.0 release's proc-macro server with a loader that reads
   the list of macros ra-jit writes into a proc-macro library, built by ra-jit with nothing of
   rustc's. `RA_JIT_PROC_MACRO_COMPARE` and `RA_JIT_PROC_MACRO_LIBS` expand each call again
@@ -451,6 +438,9 @@ All notable changes to ra-jit are written here. The format follows
   without (from 292 and 362), the rest projects cargo itself does not resolve there.
 
 ### Changed
+
+- Blaze runs test executables directly. In `RA_JIT_TESTS=affected` mode, tests that access
+  files, environment variables, subprocesses, or the network run on each invocation.
 
 - A whole build's cold compile no longer waits on itself where a hundred threads meet. What
   the store is given of a function names each function and static it reaches by a name its

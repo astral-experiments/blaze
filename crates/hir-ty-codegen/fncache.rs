@@ -177,10 +177,9 @@ pub(super) fn cache_code(
 /// For each of `roots`, the functions a test harness runs, a hash of the code of the function
 /// and of everything it reaches, as [`cache_code`] hashes a cached body, for a test to be run
 /// again only once that changed. `Err` says why what the test does is not all in its code, and
-/// by what calls: it reaches what ra-jit can't compile, and is run every time. A test that
-/// reaches the world outside the program (files, the environment, processes, the network) has
-/// its hash and [`Reach::outside`] says how: what it read there is the rest of what it is,
-/// which a sandbox that records it can tell.
+/// by what calls: it
+/// reaches what ra-jit can't compile, or the world outside the program (files, the
+/// environment, processes, the network), and is run every time.
 ///
 /// The nodes are hashed once for all the roots; each root then hashes, in the order it finds
 /// them, every node it reaches with where the node's edges go in that order, so that a hash
@@ -188,7 +187,7 @@ pub(super) fn cache_code(
 pub fn tests_reach(
     db: &dyn HirDatabase,
     roots: &[FunctionId],
-) -> Vec<std::result::Result<Reach, AlwaysRun>> {
+) -> Vec<std::result::Result<u128, AlwaysRun>> {
     let mut walk = Walk::new(db, false);
     walk.tests = true;
     let starts: Vec<u32> = roots.iter().map(|&it| walk.reach(Node::Root(it))).collect();
@@ -212,20 +211,28 @@ pub fn tests_reach(
             local.insert(start, 0);
             order.push(start);
             from.push(0);
-            let mut outside_at = None;
             let mut at = 0;
             while let Some(&node) = order.get(at) {
-                let seen = &walk.nodes[node as usize].node;
-                if walk.uncompiled.contains(&node) {
-                    let why =
-                        format!("it reaches {}, which ra-jit can't compile", describe(db, seen));
-                    return Err(AlwaysRun { why, path: path_to(db, &walk, &order, &from, at) });
-                }
-                if outside_at.is_none()
-                    && let Node::Leaf(name, _) = seen
+                let why = if walk.uncompiled.contains(&node) {
+                    let what = describe(db, &walk.nodes[node as usize].node);
+                    Some(format!("it reaches {what}, which ra-jit can't compile"))
+                } else if let Node::Leaf(name, _) = &walk.nodes[node as usize].node
                     && let Some(what) = outside(name)
                 {
-                    outside_at = Some((format!("it reaches `{name}`, which {what}"), at));
+                    Some(format!("it reaches `{name}`, which {what}"))
+                } else {
+                    None
+                };
+                if let Some(why) = why {
+                    let mut path = vec![at];
+                    while path.last().is_some_and(|&it| it != 0) {
+                        path.push(from[path[path.len() - 1]] as usize);
+                    }
+                    let path = path.iter().rev().map(|&it| {
+                        let what = describe(db, &walk.nodes[order[it] as usize].node);
+                        without_arguments(what.trim_matches('`'))
+                    });
+                    return Err(AlwaysRun { why, path: path.collect() });
                 }
                 for edge in &walk.nodes[node as usize].edges {
                     if let std::collections::hash_map::Entry::Vacant(it) = local.entry(edge.to) {
@@ -247,39 +254,9 @@ pub fn tests_reach(
                 }
             }
             let type_id::Fingerprint(low, high) = hasher.finish();
-            let outside = outside_at
-                .map(|(why, at)| AlwaysRun { why, path: path_to(db, &walk, &order, &from, at) });
-            Ok(Reach { hash: u128::from(low) | u128::from(high) << 64, outside })
+            Ok(u128::from(low) | u128::from(high) << 64)
         })
         .collect()
-}
-
-/// The fewest calls from the root of `order` to its node at `at`, each by its name without
-/// the types it is instantiated with.
-fn path_to(
-    db: &dyn HirDatabase,
-    walk: &Walk<'_>,
-    order: &[u32],
-    from: &[u32],
-    at: usize,
-) -> Vec<String> {
-    let mut path = vec![at];
-    while path.last().is_some_and(|&it| it != 0) {
-        path.push(from[path[path.len() - 1]] as usize);
-    }
-    path.iter()
-        .rev()
-        .map(|&it| {
-            without_arguments(describe(db, &walk.nodes[order[it] as usize].node).trim_matches('`'))
-        })
-        .collect()
-}
-
-/// What [`tests_reach`] says of a test whose code it could hash.
-pub struct Reach {
-    pub hash: u128,
-    /// How the test reaches the world outside the program, the first way found, when it does.
-    pub outside: Option<AlwaysRun>,
 }
 
 /// Why a test [`tests_reach`] hashes is run every time.

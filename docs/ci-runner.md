@@ -1,5 +1,7 @@
 # A CI runner of our own: a warm ra-jit VM per repository, a fork per branch
 
+This is the upstream runner design. The Astral fork runs test executables directly.
+
 2026-10-24. Status: design, nothing built. Written against ra-jit main `d4f6027e82` and ix
 `4a647c63ef`. Each claim is marked **read** (in a source we read, or measured by us),
 **reported** (a document or someone says so, not re-checked here) or **unverified** (our
@@ -41,7 +43,7 @@ fork VM".
 - **Sandbox: `ra-jit sandbox` per test executable** ([#257](https://github.com/indexable-inc/ra-jit/issues/257)):
   every test, by default; user, mount, network, IPC and PID namespaces, read-only mounts,
   overlays, seccomp-notify recording of every path each test touches, by test; about 8 ms per
-  executable on Linux x86-64 (**measured**, [cargo.md](cargo.md#every-test-runs-in-a-sandbox)). The fork is the boundary around
+  executable on Linux x86-64 (**measured**, [cargo.md](https://github.com/indexable-inc/blaze/blob/148baef9fdbee648c6bab2107635b5570ab3e544/docs/cargo.md#every-test-runs-in-a-sandbox)). The fork is the boundary around
   the whole job. A VM fork per test is 100 times dearer and capped by account quotas; the cheap
   copy-on-write fork per test is a process fork from a loaded test program (**unverified**,
   estimated 1 to 5 ms).
@@ -390,7 +392,7 @@ path under that test. Every test runs sandboxed, by default, one sandbox per tes
 with libtest's threads inside: a launch costs about 8 ms on Linux x86-64 (9 ms recording reads),
 and a 600-test library's test phase 37 ms sandboxed against 18 ms bare, where a sandbox per
 test cost ten times as much (**measured**, `harness/sandboxbench.py`;
-[cargo.md](cargo.md#every-test-runs-in-a-sandbox)). macOS has the same sandbox from Seatbelt
+[cargo.md](https://github.com/indexable-inc/blaze/blob/148baef9fdbee648c6bab2107635b5570ab3e544/docs/cargo.md#every-test-runs-in-a-sandbox)). macOS has the same sandbox from Seatbelt
 and an interposer.
 
 Build scripts and proc macros go through the same `ra-jit sandbox`
