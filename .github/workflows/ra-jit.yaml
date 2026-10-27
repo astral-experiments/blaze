@@ -96,13 +96,15 @@ jobs:
             this change. Consider behavior across file boundaries. An empty selection is valid
             for documentation-only changes. Err toward coverage on incomplete patches. For CI
             routing changes, exercise a representative of each affected dispatch mechanism.
+            For a runner-label change, choose its native compiler suite (linux-x64 or macos)
+            and any auxiliary workflow edited to use that runner.
             Give an overall rationale and a concrete failure mode for each selected suite.
             - fmt: rustfmt, Python harness imports, and the guard against new rustc invocations.
             - linux-x64: native compiler tests, both JIT backends, fast harnesses, borrow-check,
               pinned rustc run-pass tests and reduced Bun repros.
             - linux-arm64: native AArch64 compiler tests, code generation and fast harnesses.
             - macos: Apple Silicon compiler tests, Darwin linking, live edits and pinned run-pass tests.
-            - fork: build and test the rust-analyzer subtree outside Blaze.
+            - fork: build and test the rust-analyzer subtree outside Blaze on Linux x86-64.
             - bench: paired store microbenchmarks against the PR base, or timings on main.
             - nix: Nix unit graphs, flake builds, demo and live edits on Linux and macOS.
             - install: run install.sh against release artifacts and install this commit without Rust.
@@ -135,7 +137,7 @@ jobs:
            github.event.pull_request.user.login != 'dependabot[bot]' && github.actor != 'dependabot[bot]'))
         run: |
           echo 'linux=namespace-profile-ubuntu-24-04-16' >> "$GITHUB_OUTPUT"
-          echo 'macos=nscloud-macos-tahoe-arm64-6x14' >> "$GITHUB_OUTPUT"
+          echo 'macos=nscloud-macos-sequoia-arm64-6x14' >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
