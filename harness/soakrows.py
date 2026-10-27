@@ -983,6 +983,48 @@ pub fn located<T: Default + Into<u64>>() -> u64 {
         raise Wrong(f"the edit was neither the daemon's nor cargo's: {how}")
 
 
+def forwarded_callee(row):
+    """A call inside a generic instance left to rustc reaches a body in another file."""
+    with open(row.path("core/src/lib.rs"), "a") as lib:
+        lib.write("""
+mod delegated;
+pub fn located<T>(_: T) -> u64 {
+    const AT: &std::panic::Location<'static> = std::panic::Location::caller();
+    std::hint::black_box(AT.line());
+    delegated::value()
+}
+// Keep the instance available in the library for the daemon to forward to.
+pub fn anchor() -> u64 { located(1u32) }
+""")
+    callee = row.path("core/src/delegated.rs")
+    in_place(callee, "pub fn value() -> u64 { 10 }\n")
+    show_in_main(row, '    println!("located {}", soak_core::located(1u32));\n')
+    row.both("cold", want="located 10")
+    row.warm()
+    how, _ = row.both("warm", want="located 10")
+    if how != "daemon":
+        raise Wrong(f"the workspace could not be built by the daemon: {how}")
+    in_place(callee, "pub fn value() -> u64 { 20 }\n")
+    row.both("edit the forwarded instance's callee", want="located 20")
+    row.stop()
+    in_place(callee, "pub fn value() -> u64 { 30 }\n")
+    row.both("edit before the next worker loads", want="located 30")
+    data = row.path("core/src/value byte.txt")
+    in_place(data, "A")
+    in_place(callee, 'pub fn value() -> u64 { u64::from(include_bytes!("value byte.txt")[0]) }\n')
+    row.both("read an included byte", want="located 65")
+    row.stop()
+    in_place(data, "B")
+    row.both("edit the included byte before loading", want="located 66")
+    row.stop()
+    os.unlink(data)
+    _, missing = Side(row.ws, row.env, True).cargo("build")
+    if missing.returncode == 0 or "value byte.txt" not in missing.stderr:
+        raise Wrong("the build did not diagnose the deleted input")
+    in_place(data, "C")
+    row.both("restore the deleted input", want="located 67")
+
+
 def statics_one_unit_uses(row):
     """Statics written by a function left to rustc (`left`, for the constant `breakers.py
     caller_in_constant` is about) that only the functions of one codegen unit use, as bun's
@@ -1096,6 +1138,7 @@ ROWS = {
     "functions rustc keeps to an object": (kept_to_an_object, {"CARGO_INCREMENTAL": "0"}),
     "an item added beside a function left to rustc": (beside_one_left, {}),
     "an instance rustc's copy stands in for, edited": (forwarded_edited, {}),
+    "a callee of a forwarded instance edited": (forwarded_callee, {"RA_JIT_RUSTC_BASE": "0"}),
     "statics one codegen unit uses": (statics_one_unit_uses, {}),
     "a module file outside its package": (outside_its_package, {}),
     "an edit reached through a blanket impl": (through_a_blanket_impl, {}),

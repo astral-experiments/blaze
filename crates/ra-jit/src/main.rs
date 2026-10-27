@@ -4668,6 +4668,7 @@ fn build(
     let start_main = main.filter(|&it| {
         resolver.own_crate_id(hir_def::HasModule::krate(&it, db)).is_some()
             || in_harness(db, it)
+            || known.owns_start()
             || !hir::Function::from(it).ret_type(db).is_unit()
     });
     let roots = Roots {
@@ -4848,7 +4849,10 @@ fn with_failed_macro(
     let frontend = match &error {
         CodegenError::Frontend(_) => true,
         CodegenError::Unsupported(why) => why.contains("frontend:"),
-        CodegenError::Backend(_) | CodegenError::NoSymbol | CodegenError::Private => false,
+        CodegenError::Backend(_)
+        | CodegenError::Startup(_)
+        | CodegenError::NoSymbol
+        | CodegenError::Private => false,
     };
     if !frontend {
         return error;
@@ -5690,6 +5694,17 @@ fn refusal(
         "{name} is not compiled by ra-jit and rustc's copy is from before the edit: {why} \
          (no-rustc E, #85)"
     )))
+}
+
+/// Reports a refused first build before publishing its executable.
+fn refuse_start(args: &Args, why: Option<Refused>) -> anyhow::Result<()> {
+    if let Some(why) = why {
+        if let Refused::Error(said) = &why {
+            errors_for_the_daemon(args, said)?;
+        }
+        bail!("{why}");
+    }
+    Ok(())
 }
 
 /// What the frontend says of a function that does not compile, of its reasons: the rest are
@@ -8198,21 +8213,28 @@ fn run_holding(
     }
     // What rustc built stands in for a function that is not compiled, and it is not of a
     // source written since: an error there fails the build rather than run the old code.
-    let written: FxHashSet<&Path> = table.all_written_since_built().collect();
+    let (units, written): (FxHashSet<_>, FxHashSet<_>) = table.all_written_since_built().unzip();
+    let sources = Sources { paths: written_sources(&files, written.iter().copied()) };
     if !written.is_empty() {
-        let paths = written_sources(&files, written.iter().copied());
-        let mut edited: Vec<_> = paths.keys().copied().collect();
+        let mut edited: Vec<_> = sources.paths.keys().copied().collect();
         edited.sort_unstable();
-        let sources = Sources { paths };
         let broken = broken_in(&db, &edited, &sources, &args.checkout, None, !args.lints_capped);
         let why =
             hir::attach_db(&db, || refusal(&db, &edited, &sources, &args.checkout, broken, None));
-        if let Some(why) = why {
-            if let Refused::Error(said) = &why {
-                errors_for_the_daemon(&args, said)?;
-            }
-            bail!("{why}");
-        }
+        refuse_start(&args, why)?;
+
+        // The first build can read newer sources than the native code it calls. A data
+        // input like include_bytes! belongs to the unit that listed it, too.
+        let mut crates = Vec::new();
+        let placed = units.into_iter().all(|unit| {
+            let Some((id, _)) = abs(unit).ok().and_then(|path| tree.vfs().file_id(&path)) else {
+                return false;
+            };
+            let owners = ide_db::base_db::relevant_crates(&db, id);
+            crates.extend(owners.iter().copied());
+            !owners.is_empty()
+        });
+        known.touch(&db, placed.then_some(&crates));
     }
     let sysroot = checkouts.loaded.workspaces().first().and_then(|it| it.sysroot.root());
     let _ = SYSROOT.set(sysroot.map(|it| AsRef::<Path>::as_ref(it).to_owned()));
@@ -8220,17 +8242,22 @@ fn run_holding(
         Some(rustcs) => {
             let start = Instant::now();
             start_from_rustc(&args, &rustcs, &table, &mut files, &checkouts.watch)?;
-            known.start_from_rustc(args.debug.level != plan::Level::Nothing);
             // An edit is to bodies alone by the functions listed of its crate, which a build
             // lists of each crate it compiles: none is compiled here.
-            for krate in args.crates() {
+            let mut main = None;
+            for (at, krate) in args.crates().enumerate() {
                 for krate in crates_to_build(&db, &table, krate, &args)? {
                     let root = crate_root_file(&db, krate);
                     if root.is_some_and(|it| args.owns(&db, krate.root_file(&db), &it)) {
-                        listed.of(&db, krate);
+                        let functions = listed.of(&db, krate);
+                        if at == 0 && !of_tests(&args) {
+                            main = main.or(functions.main);
+                        }
                     }
                 }
             }
+            let non_unit = main.is_some_and(|it| !hir::Function::from(it).ret_type(&db).is_unit());
+            known.start_from_rustc(args.debug.level != plan::Level::Nothing, non_unit);
             eprintln!(
                 "cold: none, the first edits patch what rustc linked ({:.1?})",
                 start.elapsed()
@@ -8256,6 +8283,11 @@ fn run_holding(
                 errors_for_the_daemon(&args, &errors::Said::one(errors::of_none(unset)))?;
                 bail!("{unset}");
             }
+            let why = hir::attach_db(&db, || {
+                let stale = known.out_of_date(&db);
+                refusal(&db, &[], &sources, &args.checkout, None, stale)
+            });
+            refuse_start(&args, why)?;
             eprint!("cold: ");
             report(&cold);
             if let Some(said) = ra_jit_expand::report() {
@@ -8297,7 +8329,6 @@ fn run_holding(
         Some(shared) => shared.keep(),
         None => {}
     }
-    hir::attach_db(&db, || known.out_of_date(&db));
     // What rustc compiled, by where in the checkout it is: the files as this build read them.
     let as_compiled: FxHashMap<PathBuf, triomphe::Arc<str>> = files
         .iter()
@@ -10163,7 +10194,6 @@ fn worker_spans(
     spans
 }
 
-#[allow(dead_code)]
 fn abs(path: &Path) -> anyhow::Result<VfsPath> {
     Ok(VfsPath::from(AbsPathBuf::assert_utf8(dunce::canonicalize(path)?)))
 }

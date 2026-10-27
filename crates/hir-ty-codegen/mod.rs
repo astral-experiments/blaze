@@ -120,6 +120,7 @@ use self::places::{row_location, source_location};
 mod promote;
 mod settled;
 mod stable;
+mod startup;
 use ra_jit_store as store;
 pub use stable::{block_place, lower_declared, static_place};
 mod target;
@@ -152,6 +153,8 @@ pub enum CodegenError {
     /// MIR lowering or layout failed in RA.
     Frontend(String),
     Backend(String),
+    /// A live edit cannot replace the executable's C entry point.
+    Startup(String),
     /// rustc exports nothing for the function, so there is nothing to replace: only code in
     /// its own crate can call it.
     NoSymbol,
@@ -173,6 +176,7 @@ impl fmt::Display for CodegenError {
             CodegenError::Unsupported(it) => write!(f, "unsupported: {it}"),
             CodegenError::Frontend(it) => write!(f, "frontend: {it}"),
             CodegenError::Backend(it) => write!(f, "backend: {it}"),
+            CodegenError::Startup(it) => write!(f, "startup wrapper: {it}"),
             CodegenError::NoSymbol | CodegenError::Private => {
                 write!(f, "unsupported: no rustc symbol for function")
             }
@@ -719,6 +723,13 @@ impl CodegenUnit {
         undoable: bool,
     ) -> Result<Option<CodegenUnit>> {
         backend::keep_frame_pointers(symbols.keeps_frame_pointers());
+        let trace_startup = || {
+            if let Some(main) = roots.start
+                && let Some(filter) = startup::FILTER.as_deref()
+            {
+                startup::trace(db, symbols, main, filter);
+            }
+        };
         let on_demand: FxHashSet<FunctionId> = roots.on_demand.iter().copied().collect();
         let all = || roots.entries.iter().chain(roots.on_demand).copied();
         // Code of the checkout comes from the store in the first build alone: what a patch is
@@ -767,6 +778,10 @@ impl CodegenUnit {
                 let why = match patch {
                     Ok(Ok(patch)) => break Some(patch),
                     Ok(Err(why)) => Some(why),
+                    Err(e @ CodegenError::Startup(_)) => {
+                        known.put_base(base);
+                        return Err(e);
+                    }
                     Err(_) => None,
                 };
                 // Code compiled at a higher level that a patch can't hold goes, not the
@@ -778,6 +793,7 @@ impl CodegenUnit {
                 }
             };
             if let Some(patch) = patch {
+                trace_startup();
                 backend::Tally::global().report();
                 let compiled_now = known.compiled_since_last_build();
                 known.stats = BuildStats {
@@ -836,6 +852,7 @@ impl CodegenUnit {
             futures,
             base,
             rustc,
+            rustc_start: _,
             full,
             forgot_rustc: _,
             patching: _,
@@ -1137,7 +1154,7 @@ impl CodegenUnit {
                     onto_rustcs: false,
                 };
                 if patching {
-                    *base = patch::Base::record(db, &cg, roots.entries, &compiled, &skipped);
+                    *base = patch::Base::record(db, &cg, roots.entries, start, &compiled, &skipped);
                 }
                 // The executable is linked from this object from now on.
                 (*rustc, *full) = (None, false);
@@ -1159,6 +1176,7 @@ impl CodegenUnit {
                 let (object, apart) = cg.finish()?;
                 stats.phases.object = start.elapsed();
                 backend::Tally::global().report();
+                trace_startup();
                 (*theirs, *unknown) = (own_statics.theirs, own_statics.unknown);
                 let patch = if patching { Some(patch::empty_object()?) } else { None };
                 return Ok(Some(CodegenUnit {
@@ -1355,6 +1373,8 @@ pub struct Rejections {
     base: Option<patch::Base>,
     /// The executable rustc linked, which an edit is a patch of until there is a `base`.
     rustc: Option<patch::Base>,
+    /// Whether the original rustc wrapper consumed a non-unit return value.
+    rustc_start: bool,
     /// Whether the next build is a full one though `rustc` could be patched: the one that
     /// makes a `base`, while nobody waits.
     full: bool,
@@ -1428,8 +1448,14 @@ impl Rejections {
     /// Has the next builds patch the executable rustc linked, until one in full makes a base
     /// of ours: rustc compiled what the daemon reads. `debug` is whether a patch says which
     /// lines its code is of.
-    pub fn start_from_rustc(&mut self, debug: bool) {
+    pub fn start_from_rustc(&mut self, debug: bool, non_unit_main: bool) {
         self.rustc = Some(patch::Base::of_rustc(debug));
+        self.rustc_start = non_unit_main;
+    }
+
+    /// Whether an edit must replace the C wrapper even if `main` now returns unit.
+    pub fn owns_start(&self) -> bool {
+        self.rustc_start || self.base.as_ref().is_some_and(|base| base.start.is_some())
     }
 
     /// Whether the edits are patches of what rustc linked, which a build in full while
@@ -1463,9 +1489,10 @@ impl Rejections {
     /// rustc's copies are copies of is kept, since they are not built again: the first build
     /// takes the source as it is then for what rustc compiled, which after an edit it is not.
     pub fn start_again(&mut self) {
-        let Rejections { patching, used_by_rustc, .. } = *self;
+        let Rejections { patching, used_by_rustc, rustc_start, .. } = *self;
         let frozen = std::mem::take(&mut self.frozen);
-        *self = Rejections { patching, used_by_rustc, frozen, ..Rejections::default() };
+        *self =
+            Rejections { patching, used_by_rustc, rustc_start, frozen, ..Rejections::default() };
     }
 
     /// Puts a base taken out for a build back where it was: what rustc linked or ours.
@@ -2865,9 +2892,10 @@ fn root_code(db: &dyn HirDatabase, func: FunctionId, tier: bool) -> Result<Produ
     }
     let signature = FunctionSignature::of(db, func);
     let (abi, variadic) = (signature.abi, signature.is_varargs());
+    let body = body_for_abi(abi, Cow::Borrowed(body))?;
     let args = GenericArgs::new_from_slice(&[]).store();
     let checked = crate_checks_overflow(db, func.krate(db)).unwrap_or(false);
-    compile_as(db, env, Some(body), track_caller(db, func), checked, tier, |fx| {
+    compile_as(db, env, Some(&body), track_caller(db, func), checked, tier, |fx| {
         fx.abi = abi;
         fx.variadic = variadic;
         fx.args = Some(args);
@@ -3326,7 +3354,22 @@ fn instance_body<'db>(
         | InstanceDef::FnPointerShim
         | InstanceDef::ReifyShim { .. } => unsupported!("the body of a shim"),
     };
-    body.map_err(|e| CodegenError::Frontend(format!("mir: {e:?}")))
+    let body = body.map_err(|e| CodegenError::Frontend(format!("mir: {e:?}")))?;
+    match instance.def {
+        InstanceDef::Fn(func) => body_for_abi(FunctionSignature::of(db, func).abi, body),
+        _ => Ok(body),
+    }
+}
+
+/// Adapts the MIR's tuple parameter to the arguments that arrive at a native entry point.
+fn body_for_abi<'db>(
+    abi: ExternAbi,
+    mut body: Cow<'db, MirBody<'db>>,
+) -> Result<Cow<'db, MirBody<'db>>> {
+    if abi == ExternAbi::RustCall && !body.to_mut().spread_rust_call_tuple() {
+        unsupported!("the last parameter of a rust-call function is not a tuple");
+    }
+    Ok(body)
 }
 
 /// The types a body takes and returns, which is all its callers have to know about it. Asked
@@ -11060,7 +11103,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             return self.reified(fn_ty, false);
         }
         let sig = self.interner.instantiate_bound_regions_with_erased(fn_ty.fn_sig(self.interner));
-        let abi = self.fn_abi(sig.abi(), sig.output(), sig.inputs().iter().copied())?;
+        let inputs = Self::abi_inputs(sig.abi(), sig.inputs())?;
+        let abi = self.fn_abi(sig.abi(), sig.output(), inputs.iter().copied())?;
         let mut sig = self.signature(&abi.args, abi.ret);
         self.declare_variadic(callee, &mut sig)?;
         self.cg.callee(InstanceDef::Fn(callee), callee_args, self.env, &sig)
@@ -12027,6 +12071,24 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         operands.iter().map(|it| self.operand(it)).collect()
     }
 
+    /// Appends the fields of a `rust-call` argument in declaration order.
+    fn spread_tuple(
+        &mut self,
+        args: &mut Vec<(Value, Ty<'db>)>,
+        tuple: Value,
+        ty: Ty<'db>,
+    ) -> Result<()> {
+        let TyKind::Tuple(fields) = ty.kind() else {
+            unsupported!("the final argument of a rust-call is {ty:?}");
+        };
+        let layout = self.layout(ty)?;
+        args.extend(fields.iter().enumerate().map(|(i, field)| {
+            let offset = layout.fields.offset(i).bytes() as i64;
+            (self.builder.ins().iadd_imm(tuple, offset), field)
+        }));
+        Ok(())
+    }
+
     /// `Fn::call`, `FnMut::call_mut` or `FnOnce::call_once`. For a call expression MIR passes
     /// the callee first and then the arguments one by one, not as a tuple.
     fn call_fn_trait(
@@ -12064,12 +12126,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 let mut values = vec![(thin, thin_ty)];
                 let tuple_ty = method_args.type_at(1);
                 match (&self.operands(rest)?[..], tuple_ty.kind()) {
-                    (&[(tuple, ty)], TyKind::Tuple(fields)) if ty == tuple_ty => {
-                        let layout = self.layout(tuple_ty)?;
-                        values.extend(fields.iter().enumerate().map(|(i, field)| {
-                            let offset = layout.fields.offset(i).bytes() as i64;
-                            (self.builder.ins().iadd_imm(tuple, offset), field)
-                        }));
+                    (&[(tuple, ty)], TyKind::Tuple(_)) if ty == tuple_ty => {
+                        self.spread_tuple(&mut values, tuple, ty)?;
                     }
                     (rest, _) => values.extend_from_slice(rest),
                 }
@@ -12082,18 +12140,11 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         // A call written as `f.call_mut(args)` does pass the tuple, which the callee takes
         // apart all the same.
         let tuple_ty = method_args.type_at(1);
-        if let (&[(tuple, ty)], TyKind::Tuple(fields)) = (&values[..], tuple_ty.kind())
+        if let (&[(tuple, ty)], TyKind::Tuple(_)) = (&values[..], tuple_ty.kind())
             && ty == tuple_ty
         {
-            let layout = self.layout(tuple_ty)?;
-            values = fields
-                .iter()
-                .enumerate()
-                .map(|(i, field)| {
-                    let offset = layout.fields.offset(i).bytes() as i64;
-                    (self.builder.ins().iadd_imm(tuple, offset), field)
-                })
-                .collect();
+            values.clear();
+            self.spread_tuple(&mut values, tuple, ty)?;
         }
         // The innermost reference to the callee and the address it is stored at.
         let mut by_ref = None;
@@ -12199,14 +12250,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
             // A type with its own `Fn` impls, which take the arguments as a tuple.
             TyKind::Adt(..) | TyKind::Ref(..) => {
-                let layout = self.layout(tuple_ty)?;
-                let tuple = self.stack_slot(&layout);
-                for (i, &(src, ty)) in values.iter().enumerate() {
-                    let size = self.layout(ty)?.size;
-                    let offset = layout.fields.offset(i).bytes() as i64;
-                    let field = self.builder.ins().iadd_imm(tuple, offset);
-                    self.copy(field, src, size);
-                }
+                let tuple = self.pack_call_tuple(tuple_ty, &values)?;
                 let [by_shared, by_mut, _] = fn_trait_methods(self.interner.lang_items())
                     .into_iter()
                     .find(|family| family.contains(&Some(method)))
@@ -12670,6 +12714,21 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         self.cg.callee(closure, parent_args, self.env, &sig)
     }
 
+    /// Physical inputs of a function signature. The final tuple in a `rust-call` signature
+    /// contributes one argument per field, just as it does in the compiled body.
+    fn abi_inputs<'a>(abi: ExternAbi, inputs: &'a [Ty<'db>]) -> Result<Cow<'a, [Ty<'db>]>> {
+        if abi != ExternAbi::RustCall {
+            return Ok(Cow::Borrowed(inputs));
+        }
+        let Some((&last, prefix)) = inputs.split_last() else {
+            unsupported!("rust-call without a trailing tuple");
+        };
+        let TyKind::Tuple(fields) = last.kind() else {
+            unsupported!("rust-call argument is not a tuple: {last:?}");
+        };
+        Ok(Cow::Owned(prefix.iter().copied().chain(fields.iter()).collect()))
+    }
+
     /// The `ReifyShim` of a fn item or fn pointer type.
     fn reified(&mut self, ty: Ty<'db>, receiver: bool) -> Result<FuncId> {
         let sig = self.reify_signature(ty, receiver)?.1;
@@ -12694,7 +12753,8 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         // receiver is an argument like the rest: where it goes moves where they do.
         let abi = if receiver { ExternAbi::Rust } else { fn_sig.abi() };
         let pointer = receiver.then(|| Ty::new_imm_ptr(self.interner, Ty::new_unit(self.interner)));
-        let inputs = pointer.into_iter().chain(fn_sig.inputs().iter().copied());
+        let inputs = Self::abi_inputs(abi, fn_sig.inputs())?;
+        let inputs = pointer.into_iter().chain(inputs.iter().copied());
         let mut abi = self.fn_abi(abi, fn_sig.output(), inputs)?;
         let sig = self.signature(&abi.args, abi.ret);
         if receiver {
@@ -12718,8 +12778,10 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             _ => self.stack_slot(&dst_layout),
         };
         let receiver = if receiver { incoming.next() } else { None };
+        let abi = if receiver.is_some() { ExternAbi::Rust } else { fn_sig.abi() };
+        let inputs = Self::abi_inputs(abi, fn_sig.inputs())?;
         let mut values = Vec::new();
-        for (&ty, mode) in fn_sig.inputs().iter().zip(modes) {
+        for (&ty, mode) in inputs.iter().zip(modes) {
             let layout = self.layout(ty)?;
             let addr = match mode {
                 PassMode::OnStack { padded: true, .. } => {
@@ -12732,6 +12794,13 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             };
             self.receive(mode, &mut incoming, addr, &layout);
             values.push((addr, ty));
+        }
+        if abi == ExternAbi::RustCall {
+            let (&tuple, prefix) =
+                fn_sig.inputs().split_last().expect("validated rust-call inputs");
+            let addr = self.pack_call_tuple(tuple, &values[prefix.len()..])?;
+            values.truncate(prefix.len());
+            values.push((addr, tuple));
         }
         match ty.kind() {
             TyKind::FnDef(def, generic_args) => match def.0 {
@@ -13226,7 +13295,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             let limit = tier::inline_limit(db, &instance)?;
             let body = tier::hot_body(db, &instance, &self.env.store(), limit, false)?;
             return (body.func.signature == *sig)
-                .then(|| self.cg.declare_inlined(&body, self.builder.func));
+                .then(|| self.cg.declare_inlined(instance, &body, self.builder.func));
         }
         let InstanceDef::Fn(func) = def else { return None };
         let own =
@@ -13250,7 +13319,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 tier::hot_body(db, &instance, &self.env.store(), limit, track_caller(db, func))
             && body.func.signature == *sig
         {
-            return Some(self.cg.declare_inlined(&body, self.builder.func));
+            return Some(self.cg.declare_inlined(instance, &body, self.builder.func));
         }
         if track_caller(db, func) {
             return None;
@@ -13264,11 +13333,11 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         if !flags.contains(AttrFlags::IS_INLINE) && args.iter().all(|it| it.region().is_some()) {
             return None;
         }
-        let body = inlinable(db, instance, self.env.store()).as_ref()?;
+        let body = inlinable(db, instance.clone(), self.env.store()).as_ref()?;
         if body.func.signature != *sig {
             return None;
         }
-        Some(self.cg.declare_inlined(body, self.builder.func))
+        Some(self.cg.declare_inlined(instance, body, self.builder.func))
     }
 
     /// Shows LLVM the body of the callee `id` a compile at a level above 1 calls, where
@@ -13337,6 +13406,19 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         Ok(())
     }
 
+    /// Reassembles separate arguments for a body that uses them as a tuple.
+    fn pack_call_tuple(&mut self, ty: Ty<'db>, values: &[(Value, Ty<'db>)]) -> Result<Value> {
+        let layout = self.layout(ty)?;
+        let tuple = self.stack_slot(&layout);
+        for (i, &(src, field_ty)) in values.iter().enumerate() {
+            let size = self.layout(field_ty)?.size;
+            let offset = layout.fields.offset(i).bytes() as i64;
+            let field = self.builder.ins().iadd_imm(tuple, offset);
+            self.copy(field, src, size);
+        }
+        Ok(tuple)
+    }
+
     /// Passes the arguments, which live at the given addresses, the way the Rust ABI wants them
     /// and stores the result in `dst`.
     fn emit_call(
@@ -13353,6 +13435,17 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             }
             Callee::Instance(..) => ExternAbi::Rust,
             Callee::Pointer(_, abi, _) => abi,
+        };
+        let mut spread;
+        let args = if abi == ExternAbi::RustCall {
+            let Some((&(tuple, ty), fixed)) = args.split_last() else {
+                unsupported!("a rust-call without its tuple");
+            };
+            spread = fixed.to_vec();
+            self.spread_tuple(&mut spread, tuple, ty)?;
+            &spread[..]
+        } else {
+            args
         };
         let FnAbi { ret: ret_mode, args: arg_modes } =
             self.fn_abi(abi, dst_ty, args.iter().map(|&(_, ty)| ty))?;

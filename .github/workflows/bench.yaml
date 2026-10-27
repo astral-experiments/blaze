@@ -5,15 +5,14 @@
 # On main they are run alone, for the times.
 name: bench
 on:
-  push:
-    branches: ["main"]
-    paths-ignore: ["site/**", "**.md", "harness/**"]
-  pull_request:
-    paths-ignore: ["site/**", "**.md", "harness/**"]
+  workflow_call:
+    inputs:
+      linux-runner:
+        type: string
+        required: true
   workflow_dispatch:
 
 concurrency:
-  # As ra-jit.yaml: a pull request's newer push cancels its run, every push to main finishes.
   group: bench-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
@@ -32,7 +31,7 @@ defaults:
 jobs:
   tango:
     name: tango
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.linux-runner || (github.repository_id == '1434979395' && 'namespace-profile-ubuntu-24-04-16' || 'ubuntu-24.04') }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7

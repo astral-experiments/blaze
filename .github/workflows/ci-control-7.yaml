@@ -1,36 +1,37 @@
-name: CI migration comparison
+name: macOS harness comparison
 on:
   push:
     branches: [charlie/ci-control-pr-7]
-
 permissions:
   contents: read
   actions: read
-
 jobs:
-  windows:
-    uses: ./.github/workflows/ra-jit-platform.yaml
-    with:
-      platform: windows-x64
-      os: windows-2025
-      tier: fast
-
-  macos:
-    name: storetracked on ${{ matrix.runner }}
+  quick:
+    name: Cranelift quick-2 on ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         runner: [macos-15, nscloud-macos-tahoe-arm64-6x14]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 25
+    timeout-minutes: 50
     env:
+      CARGO_INCREMENTAL: 0
+      CARGO_NET_RETRY: 10
+      CARGO_TERM_COLOR: always
+      RA_JIT_SANDBOX: ''
+      PYTHON: python3
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_GHA_RW_MODE: READ_WRITE
       RA_JIT_BACKEND: cranelift
       RA_JIT_OPT: 2
       RA_JIT_EMIT: fast
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: e8f3c023aa6916191bb73427155bdecfa47e6e46
+          ref: ea109290eb43c92af26408c96f7e3ac672c4d8b3
           persist-credentials: false
       - uses: ./.github/actions/toolchain
         with:
@@ -40,16 +41,25 @@ jobs:
           name: ra-jit-macos-arm64
           path: target/release
           github-token: ${{ github.token }}
-          run-id: 40419108200
-      - name: Repeat the Cranelift store test with the same binary
+          run-id: 40429568551
+      - name: Unpack the compiler from the main run
+        working-directory: target/release
         run: |
-          tar -xf target/release/ra-jit.tar -C target/release
-          export RA_JIT_BIN="$PWD/target/release/ra-jit"
-          failed=0
-          for i in 1 2 3 4 5; do
-            echo "::group::Trial $i"
-            python3 harness/storetracked.py || failed=$((failed + 1))
+          tar -xf ra-jit.tar
+          echo "RA_JIT_BIN=$PWD/ra-jit" >> "$GITHUB_ENV"
+          shasum -a 256 ra-jit
+          sw_vers
+      - name: Run the complete shard
+        run: python3 harness/ci.py quick-2
+      - name: Repeat the isolated test in the shard environment
+        if: always() && env.RA_JIT_BIN != ''
+        working-directory: harness
+        run: python3 storetracked.py
+      - name: Check which statics forced a full relink
+        if: failure()
+        run: |
+          find /private/tmp -path '/private/tmp/ra-jit-tracked-*/*/daemon.log' -maxdepth 3 -type f -print | while IFS= read -r log; do
+            echo "::group::$log"
+            grep -E 'not spliced|has another value|a function the executable was linked with' "$log" | head -18 || true
             echo "::endgroup::"
           done
-          echo "$failed of 5 trials failed"
-          test "$failed" = 0

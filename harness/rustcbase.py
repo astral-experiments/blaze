@@ -408,6 +408,66 @@ impl Termination for Status {
 SCENARIOS["termination"] = ([[edit(D, "{ 1 }", "{ 42 }")], [edit(D, "{ 42 }", "{ 1 }")]],
                             ["patch", "patch"], 0, {"RA_JIT_SPARE": "0"})
 
+# Even after main starts returning (), it must replace the startup wrapper rustc linked.
+UNIT_TERMINATION_FILES = {
+    **TERMINATION_FILES,
+    "Cargo.toml": FILES["Cargo.toml"],
+    D: TERMINATION_FILES[D].replace("{ 1 } else { 0 }", "{ 91 } else { 92 }"),
+}
+UNIT_MAIN = "fn main() { let _ = dep::Status(std::env::args().len() > 1); }\n"
+SCENARIOS["termination-unit"] = ([[edit(M, TERMINATION_FILES[M], UNIT_MAIN)],
+                                  [edit(M, UNIT_MAIN, TERMINATION_FILES[M])]],
+                                 [None, None], 0, {"RA_JIT_SPARE": "0"})
+
+# Only the runtime's concrete Termination::report reaches the helpers, including startup_leaf::<u8>.
+STARTUP_FILES = {
+    **TERMINATION_FILES,
+    M: "fn main() -> dep::Outcome { dep::status(std::env::args().len() > 1) }\n",
+    D: """use std::process::{ExitCode, Termination};
+
+pub struct Status<T>(T);
+pub struct WideStatus(u16);
+
+#[inline(never)]
+fn startup_leaf<T: Into<u8>>(value: T) -> u8 { std::hint::black_box(value.into()).wrapping_add(1) }
+#[inline(always)]
+fn startup_inline(value: u8) -> u8 { std::hint::black_box(value).wrapping_add(2) }
+
+impl<T: Into<u8>> Termination for Status<T> {
+    #[inline(never)]
+    fn report(self) -> ExitCode {
+        let value: u8 = self.0.into();
+        ExitCode::from(if value != 0 { startup_inline(startup_leaf(value)) } else { 0 })
+    }
+}
+impl Termination for WideStatus {
+    fn report(self) -> ExitCode { ExitCode::from(if self.0 != 0 { 84 } else { 0 }) }
+}
+pub type Outcome = Status<u8>;
+pub fn status(value: bool) -> Status<u8> { Status(u8::from(value)) }
+""",
+}
+# Name: (trace target, expected failure status after the edit, replacements).
+STARTUP_EDITS = {
+    "termination-leaf": ("startup_leaf::<u8>", 12, [edit(D, "wrapping_add(1)", "wrapping_add(9)")]),
+    "termination-inline": ("startup_inline", 9, [edit(D, "wrapping_add(2)", "wrapping_add(7)")]),
+    "termination-signature": ("::report", 84, [
+        edit(D, "pub type Outcome = Status<u8>;\npub fn status(value: bool) -> Status<u8> { Status(u8::from(value)) }",
+                "pub type Outcome = WideStatus;\npub fn status(value: bool) -> WideStatus { WideStatus(value as u16) }"),
+    ]),
+}
+for name, (target_name, _, changes) in STARTUP_EDITS.items():
+    undo = [(file, new, old) for file, old, new in changes]
+    first = None if name == "termination-inline" else "patch"
+    SCENARIOS[name] = ([changes, undo], [first, "patch"], 0,
+                       {"RA_JIT_SPARE": "0", "RA_JIT_TRACE_STARTUP": target_name})
+
+# What forces the first edit to rebuild a rustc executable, however the linker installs it.
+RUSTC_BASE_INVALIDATION = {
+    "termination-inline": "no patch: an edit of a generic, inline or default trait function",
+    "termination-unit": "no patch: an edit that is more than the bodies of functions",
+}
+
 # An optional dependency only a dev-dependency's feature turns on, which cargo does not build for
 # the program and the daemon loads, as `cargo metadata` has the features of every target (zed's
 # `livekit_api`, through `livekit_client/test-support`). Its build script fails, as one needing
@@ -686,13 +746,19 @@ def outputs(exe, cwd):
     return [(r.returncode, r.stdout, re.sub(r"thread '(.*?)' \(\d+\)", r"thread '\1'", r.stderr)) for r in runs]
 
 
-def logs(home):
-    """Every line the daemon and its workers logged so far."""
+def logs(home, offsets=None):
+    """Lines from the daemon and its workers, advancing each log's offset if supplied."""
     lines = []
     for root, _, names in os.walk(home):
         for name in sorted(names):
             if name in ("log", "daemon.log"):
-                lines += open(os.path.join(root, name), errors="replace").read().splitlines()
+                path = os.path.join(root, name)
+                with open(path, errors="replace") as log:
+                    if offsets is not None:
+                        log.seek(offsets.get(path, 0))
+                    lines += log.read().splitlines()
+                    if offsets is not None:
+                        offsets[path] = log.tell()
     return lines
 
 
@@ -731,7 +797,6 @@ def main():
     # The programs run with os.environ.
     fn_cache = os.path.join(work, "fn-cache")
     os.environ["RA_JIT_FN_CACHE_DIR"] = base["RA_JIT_FN_CACHE_DIR"] = fn_cache
-    cargo_env = dict(base, CARGO_TARGET_DIR=reference)
     failed = []
     for name in names:
         edits, expected, wait, extra = SCENARIOS[name]
@@ -742,6 +807,14 @@ def main():
             files = GENERIC_FILES
         elif name == "termination":
             files = TERMINATION_FILES
+        elif name == "termination-unit":
+            files = UNIT_TERMINATION_FILES
+        elif name in STARTUP_EDITS:
+            files = STARTUP_FILES
+            if name == "termination-inline":
+                # The mixed build can patch rustc's default dev profile. rustc still
+                # inlines #[inline(always)] at opt-level 0.
+                files = {**files, "Cargo.toml": FILES["Cargo.toml"]}
         elif name in UNBUILT_SCENARIOS:
             files = UNBUILT_FILES
         elif name in LIB_SCENARIOS:
@@ -760,6 +833,15 @@ def main():
             shutil.rmtree(path, ignore_errors=True)
         os.makedirs(home, mode=0o700)
         env = dict(base, RA_JIT_HOME=home, CARGO_TARGET_DIR=target, RA_JIT_CACHE=store, **extra)
+        cargo_env = dict(base, CARGO_TARGET_DIR=reference)
+        invalidation = RUSTC_BASE_INVALIDATION.get(name)
+        if invalidation:
+            # Cargo disables incremental compilation under CI. Blaze needs its symbols
+            # to patch rustc's executable, so use the same incremental build for both.
+            env["CARGO_INCREMENTAL"] = cargo_env["CARGO_INCREMENTAL"] = "1"
+            # In this single checkout, overlay mode keeps the idle worker from building
+            # its own base between the readiness check and the first edit.
+            env["RA_JIT_OVERLAY"] = "1"
         began = time.monotonic()
         r = run(["cargo", "ra-jit", "build"], ws, env)
         if r.returncode:
@@ -791,20 +873,32 @@ def main():
                 failed.append(f"{name}: the own base was {went}, not {OWN_BASE[name]} ({len(started)} starts, "
                               f"{interrupted} interrupted, {given_up} given up)")
         try:
+            if invalidation and not rustcs:
+                raise RuntimeError("the first edit did not start from the rustc executable")
+            if name == "termination-inline":
+                # Check what rustc put in the base before this edit: the caller needs both
+                # black_box operations, but only the out-of-line helper has its own symbol.
+                symbols = run(["nm", os.path.join(target, "debug", "app")], ws, env)
+                symbols.check_returncode()
+                if "startup_leaf" not in symbols.stdout or "startup_inline" in symbols.stdout:
+                    raise RuntimeError("the base did not inline startup_inline and keep startup_leaf")
+            offsets = {}
             for step, (replacements, want) in enumerate(zip(edits, map(wanted, expected)), 1):
+                logs(home, offsets)
                 for file, old, new in replacements:
                     path = os.path.join(ws, file)
                     text = open(path).read()
                     assert text.count(old) == 1, f"{name}: {old!r} is not once in {file}"
                     open(path, "w").write(text.replace(old, new))
-                seen = len(logs(home))
                 t = time.monotonic()
                 r = run(["cargo", "ra-jit", "build"], ws, env)
                 took = time.monotonic() - t
                 if r.returncode:
                     raise RuntimeError(f"ra-jit build {step} failed: {r.stderr[-1500:]}")
+                if name.startswith("termination-") and "[ra-jit]" not in r.stdout + r.stderr:
+                    raise RuntimeError(f"edit {step} was not built by the daemon: {r.stderr[-1500:]}")
                 time.sleep(0.2)
-                lines = logs(home)[seen:]
+                lines = logs(home, offsets)
                 r = run(["cargo", "build"], ws, cargo_env)
                 if r.returncode:
                     raise RuntimeError(f"cargo build {step} failed: {r.stderr[-1500:]}")
@@ -812,6 +906,27 @@ def main():
                 theirs = outputs(os.path.join(reference, "debug", "app"), ws)
                 how = how_built(lines)
                 same = ours == theirs
+                if step == 1 and invalidation and (how == "patch" or not any(
+                        it.startswith(invalidation) for it in lines)):
+                    failed.append(f"{name}: expected a rebuild of the rustc base ({invalidation}), got {how}")
+                if name in STARTUP_EDITS:
+                    target_name, changed, _ = STARTUP_EDITS[name]
+                    expected_codes = [0, changed if step == 1 else 4]
+                    if [code for code, _, _ in ours] != expected_codes:
+                        failed.append(f"{name} edit {step}: expected exit codes {expected_codes}, got {ours}")
+                    paths = [it for it in lines if it.startswith("startup dependency: startup wrapper -> ")]
+                    status = "WideStatus" if name == "termination-signature" and step == 1 else "Status<u8>"
+                    report = re.compile(r"<dep::(WideStatus|Status<u8>) as std::process::Termination>::report")
+                    matches = [it for it in paths if f"lang_start::<dep::{status}>" in it and status in report.findall(it)
+                               and target_name in it.rsplit(" -> ", 1)[-1]]
+                    if matches:
+                        print(f"  {matches[0]}", flush=True)
+                    else:
+                        failed.append(f"{name} edit {step}: no path through {status}::report to "
+                                      f"{target_name}; saw {paths[:5]}")
+                    if name == "termination-signature" and any(
+                            found != status for it in paths for found in report.findall(it)):
+                        failed.append(f"{name} edit {step}: the trace still reaches the previous report")
                 print(f"  edit {step}: {took:.2f}s {how} (wanted {want or 'either'}) same={same}", flush=True)
                 notable = [it for it in lines if re.search(
                     r"rustc|declin|no patch|built in full|spliced|not kept|nobody asks|outdated|interrupt", it)]
