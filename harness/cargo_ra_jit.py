@@ -1001,7 +1001,7 @@ pub struct Jar<T>(T);
 macro_rules! make {
     () => { impl Model {
         #[inline(never)]
-        pub fn key() -> impl Copy {
+        pub fn key<Key>() -> impl Copy {
             std::hint::black_box(17u8);
             #[derive(Copy, Clone)] struct Key;
             Key
@@ -1039,7 +1039,7 @@ pub extern "Rust" fn registered_consts() -> [TypeId; 2] {
 pub extern "Rust" fn registered() -> TypeId {
     std::hint::black_box(1.0f128);
     fn of<T: 'static>(_: T) -> TypeId { TypeId::of::<Jar<T>>() }
-    of(Model::key())
+    of(Model::key::<()>())
 }
 """)
     main = os.path.join(ws, "src/main.rs")
@@ -1055,11 +1055,11 @@ fn main() {
         _, cold = side.cargo("run")
         check("the original lookup has another type", cold.returncode == 0 and cold.stdout.strip() == "false", cold.stderr[-300:])
         wait_warm(side, ws)
-        rewrite(main, "of(0u8)", "of(model::Model::key())")
+        rewrite(main, "of(0u8)", "of(model::Model::key::<()>())")
         _, edited = side.cargo("run")
         how = how_built(edited.stderr)
-        check("the daemon hashes a type local to a macro-generated impl", edited.returncode == 0 and edited.stdout.strip() == "true" and how == "daemon", f"{how}, printed {edited.stdout.strip()!r}")
-        rewrite(main, '    println!("{}", of(model::Model::key()) == unsafe { registered() });', """    extern "Rust" { fn registered_consts() -> [TypeId; 2]; }
+        check("the daemon hashes a local type that shadows a macro-generated method's type parameter", edited.returncode == 0 and edited.stdout.strip() == "true" and how == "daemon", f"{how}, printed {edited.stdout.strip()!r}")
+        rewrite(main, '    println!("{}", of(model::Model::key::<()>()) == unsafe { registered() });', """    extern "Rust" { fn registered_consts() -> [TypeId; 2]; }
     type First = <model::First as model::Query>::Key;
     type Second = <model::Second as model::Query>::Key;
     let native = unsafe { registered_consts() };
