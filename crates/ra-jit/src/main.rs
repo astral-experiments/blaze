@@ -1594,8 +1594,17 @@ impl SymbolResolver for Resolver<'_> {
         let mut closures = Vec::new();
         let mut around = Vec::new();
         let mut owner = None;
-        for node in sema.ancestors_with_macros(source.value.syntax().clone()).skip(1) {
+        let mut child = source.value.syntax().clone();
+        for node in sema.ancestors_with_macros(child.clone()).skip(1) {
+            let inner = std::mem::replace(&mut child, node.clone());
             if is_closure(&node) {
+                if let Some(closure) = ast::ClosureExpr::cast(node.clone())
+                    && closure.async_token().is_some()
+                    && closure.body().is_some_and(|body| body.syntax() == &inner)
+                {
+                    // Rustc puts the async closure's body in a coroutine of its own.
+                    closures.push(0);
+                }
                 closures.push(closure_number(&sema, &self.places, &node)?);
                 continue;
             }
