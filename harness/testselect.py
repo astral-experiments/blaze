@@ -329,6 +329,8 @@ fn library() { assert_eq!(half(8_u32), 4.0); }
     }
     for name in ("first", "second"):
         files[f"tests/{name}.rs"] = f"#[test]\nfn {name}() {{ assert_eq!(unchanged::half(8_u32), 4.0); }}\n"
+        # Each disabled crate still needs a libtest entry point after it joins the worker.
+        files[f"tests/{name}_disabled.rs"] = '#![cfg(any())]\n#[test]\nfn hidden() { panic!("disabled test ran"); }\n'
     for path, text in files.items():
         path = os.path.join(ws, path)
         os.makedirs(os.path.dirname(path), exist_ok=True)
