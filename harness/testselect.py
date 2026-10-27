@@ -145,6 +145,7 @@ FILES = {
                   '[dependencies]\ntbase = { path = "tbase" }\n\n[workspace]\nmembers = ["tbase"]\n',
     "src/lib.rs": LIB,
     "data.txt": "tsel\n",
+    "overwrite.txt": "original\n",
     # A library of the workspace the unit tests are linked with as rustc built it, without
     # `cfg(test)`, as ripgrep's crates are each other's.
     "tbase/Cargo.toml": '[package]\nname = "tbase"\nversion = "0.1.0"\nedition = "2021"\n',
@@ -229,12 +230,13 @@ if SANDBOXED:
         ("outside the sandbox", [], "affected -v RA_JIT_SANDBOX=off", {FILE}, True),
         ("the file a test reads edited", [("data.txt", "tsel", "tsel tsel")], "affected -v", {FILE}, True),
         ("nothing edited after the file", [], "affected", set(), True),
+        # The manifest edit below can run the writer beside the data.txt reader under Cargo.
         ("a test that writes into the package", [
             ("src/lib.rs", "    #[test]\n    fn added()",
              "    #[test]\n    fn writes_a_file() {\n"
-             "        std::fs::write(\"data.txt\", \"written\").unwrap();\n"
+             "        std::fs::write(\"overwrite.txt\", \"written\").unwrap();\n"
              "        std::fs::write(\"written.txt\", \"written\").unwrap();\n"
-             "        assert_eq!(std::fs::read_to_string(\"data.txt\").unwrap(), \"written\");\n"
+             "        assert_eq!(std::fs::read_to_string(\"overwrite.txt\").unwrap(), \"written\");\n"
              "    }\n\n    #[test]\n    fn added()")], "affected", {WRITES}, True),
         ("nothing edited after it wrote", [], "affected", set(), True),
         ("a test that writes outside", [
@@ -274,7 +276,7 @@ if SANDBOXED:
 # What has to be so of the package after a step, beside what it says.
 AFTER = {
     "a test that writes into the package": lambda ws: (
-        open(os.path.join(ws, "data.txt")).read() == "tsel tsel\n"
+        open(os.path.join(ws, "overwrite.txt")).read() == "original\n"
         and not os.path.exists(os.path.join(ws, "written.txt"))) or "IT WROTE INTO THE PACKAGE",
     "a test that writes outside": lambda ws: (
         not os.path.exists(os.path.join(OUTSIDE, "written.txt"))) or "IT WROTE OUTSIDE THE SANDBOX",
