@@ -145,6 +145,7 @@ FILES = {
                   '[dependencies]\ntbase = { path = "tbase" }\n\n[workspace]\nmembers = ["tbase"]\n',
     "src/lib.rs": LIB,
     "data.txt": "tsel\n",
+    "overwrite.txt": "original\n",
     # A library of the workspace the unit tests are linked with as rustc built it, without
     # `cfg(test)`, as ripgrep's crates are each other's.
     "tbase/Cargo.toml": '[package]\nname = "tbase"\nversion = "0.1.0"\nedition = "2021"\n',
@@ -229,12 +230,13 @@ if SANDBOXED:
         ("outside the sandbox", [], "affected -v RA_JIT_SANDBOX=off", {FILE}, True),
         ("the file a test reads edited", [("data.txt", "tsel", "tsel tsel")], "affected -v", {FILE}, True),
         ("nothing edited after the file", [], "affected", set(), True),
+        # The manifest edit below can run the writer beside the data.txt reader under Cargo.
         ("a test that writes into the package", [
             ("src/lib.rs", "    #[test]\n    fn added()",
              "    #[test]\n    fn writes_a_file() {\n"
-             "        std::fs::write(\"data.txt\", \"written\").unwrap();\n"
+             "        std::fs::write(\"overwrite.txt\", \"written\").unwrap();\n"
              "        std::fs::write(\"written.txt\", \"written\").unwrap();\n"
-             "        assert_eq!(std::fs::read_to_string(\"data.txt\").unwrap(), \"written\");\n"
+             "        assert_eq!(std::fs::read_to_string(\"overwrite.txt\").unwrap(), \"written\");\n"
              "    }\n\n    #[test]\n    fn added()")], "affected", {WRITES}, True),
         ("nothing edited after it wrote", [], "affected", set(), True),
         ("a test that writes outside", [
@@ -274,7 +276,7 @@ if SANDBOXED:
 # What has to be so of the package after a step, beside what it says.
 AFTER = {
     "a test that writes into the package": lambda ws: (
-        open(os.path.join(ws, "data.txt")).read() == "tsel tsel\n"
+        open(os.path.join(ws, "overwrite.txt")).read() == "original\n"
         and not os.path.exists(os.path.join(ws, "written.txt"))) or "IT WROTE INTO THE PACKAGE",
     "a test that writes outside": lambda ws: (
         not os.path.exists(os.path.join(OUTSIDE, "written.txt"))) or "IT WROTE OUTSIDE THE SANDBOX",
@@ -313,14 +315,13 @@ BENCHED_ADDED = ("src/lib.rs", "    #[test]\n    fn adds()",
 
 
 def unchanged_instances(root, env):
-    """A second integration test installs another harness while both use the same native instance."""
+    """Both harnesses use the same native instance. Only the second reads the edited expression."""
     ws = os.path.join(root, "unchanged")
     files = {
         "Cargo.toml": '[package]\nname = "unchanged"\nversion = "0.1.0"\nedition = "2021"\n'
                       '[dependencies]\nunchanged-native = { path = "native" }\n'
                       '[profile.dev]\nopt-level = 1\n',
         "build.rs": """fn main() {
-    println!("cargo:rerun-if-changed=build.rs");
     let dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     for name in ["first", "second"] {
         std::fs::write(dir.join(format!("{name}.expr")), "0_u32").unwrap();
@@ -340,8 +341,11 @@ pub fn half<T: Into<f64>>(value: T) -> f64 {
 fn library() { assert_eq!(half(8_u32), 4.0); }
 """,
     }
+    # Cargo may create cache tags under its home; they are not inputs to this build script.
+    cargo_home = Path(root, "cargo-home")
+    (cargo_home / "registry").mkdir(parents=True, exist_ok=True)
     for name in ("first", "second"):
-        files[f"cargo-home/registry/{name}.data"] = "const VALUE: u32 = 8;\n"
+        (cargo_home / "registry" / f"{name}.data").write_text("const VALUE: u32 = 8;\n")
         files[f"tests/{name}.rs"] = (
             f'include!(concat!(env!("CARGO_HOME"), "/registry/{name}.data"));\n'
             f'#[test]\nfn {name}() {{\n'
@@ -356,22 +360,75 @@ fn library() { assert_eq!(half(8_u32), 4.0); }
         with open(path, "w") as out:
             out.write(text)
     # With incremental compilation off rustc can keep only the descriptor for the test.
-    env = dict(env, CARGO_HOME=os.path.join(ws, "cargo-home"), RUSTC_BOOTSTRAP="1", CARGO_INCREMENTAL="0")
+    env = dict(env, CARGO_HOME=str(cargo_home), RUSTC_BOOTSTRAP="1",
+               CARGO_INCREMENTAL="0", CARGO_TERM_COLOR="never")
     code, said = test(ws, env, "all --tests")
     if code or "[ra-jit]" not in said or set(RAN.findall(said)) != {
         ("library", "ok"), ("first", "ok"), ("second", "ok")
     }:
         return f"FAILED\n{said[-3000:]}"
+    # A warm build must see an edit to the generated file itself, including when Cargo
+    # builds the unsupported native instance again. Only the second executable reads it.
+    generated = list(Path(ws, "target").rglob("second.expr"))
+    if len(generated) != 1:
+        return f"FAILED to locate second.expr: {generated}"
+    expression = generated[0]
+    failures = []
+    for value, status, expected_code in (("2_u32", "FAILED", 101), ("0_u32", "ok", 0)):
+        expression.write_text(value)
+        code, said = test(ws, env, "all --tests --no-fail-fast")
+        expected = {("library", "ok"), ("first", "ok"), ("second", status)}
+        actual = expression.read_text() if expression.exists() else None
+        if code != expected_code or set(RAN.findall(said)) != expected or actual != value:
+            failures.append(f"second.expr = {value}: command exited {code}, file now {actual!r}\n{said[-3000:]}")
+        image = re.search(r"^\s*Running tests[/\\]second\.rs \((.+)\)$", said, re.M)
+        if image is None:
+            failures.append(f"second.expr = {value}: no executable reported for tests/second.rs")
+            continue
+        ran = subprocess.run([Path(ws, image[1])], cwd=ws, env=env, capture_output=True, text=True, timeout=TIMEOUT)
+        if (ran.returncode != expected_code or RAN.findall(ran.stdout) != [("second", status)]
+                or status == "FAILED" and not ("left: 5.0" in ran.stdout and "right: 4.0" in ran.stdout)):
+            failures.append(f"second.expr = {value}: executable exited {ran.returncode}\n{ran.stdout}{ran.stderr}")
+    return "\n".join(failures) or "ok"
 
-    # A restarted worker must observe edits to an existing generated test input.
-    (output,) = (Path(ws) / "target").rglob("first.expr")
-    for value, status, result in [(2, 101, "FAILED"), (0, 0, "ok")]:
-        subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, check=True,
-                       capture_output=True, timeout=120)
-        output.write_text(f"{value}_u32")
-        code, said = test(ws, env, "all --tests")
-        if code != status or ("first", result) not in RAN.findall(said):
-            return f"FAILED after writing {output.name} = {value}\n{said[-3000:]}"
+
+def generated_after_restart(root, env):
+    """A new worker must reject a native test built before its generated assertion changed."""
+    ws = Path(root, "generated")
+    (ws / "src").mkdir(parents=True)
+    (ws / "Cargo.toml").write_text(
+        '[package]\nname = "generated"\nversion = "0.1.0"\nedition = "2021"\n'
+        '[profile.dev]\nopt-level = 1\n'
+    )
+    (ws / "build.rs").write_text("""fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
+    let dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    std::fs::write(dir.join("value.expr"), "8_u32").unwrap();
+}
+""")
+    (ws / "src/lib.rs").write_text("""#![feature(f128)]
+#[test]
+fn value() {
+    let x = include!(concat!(env!("OUT_DIR"), "/value.expr"));
+    assert_eq!((std::hint::black_box(x as f128) / 2.0) as f64, 4.0);
+}
+""")
+    env = dict(env, RUSTC_BOOTSTRAP="1", CARGO_INCREMENTAL="0")
+    for value, code, status in [(None, 0, "ok"), ("10_u32", 101, "FAILED"), ("8_u32", 0, "ok")]:
+        if value is not None:
+            subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, check=True,
+                           capture_output=True, timeout=120)
+            paths = list((ws / "target").rglob("value.expr"))
+            if len(paths) != 1:
+                return f"FAILED to locate value.expr in {ws}: {paths}"
+            paths[0].write_text(value)
+        actual, said = test(ws, env, "all --lib")
+        if value is None and "[ra-jit] target(s)" not in said:
+            return f"FAILED to serve the original native test\n{said[-3000:]}"
+        if actual != code or RAN.findall(said) != [("value", status)]:
+            return f"FAILED with value.expr = {value}: exit {actual}\n{said[-3000:]}"
+        if value is not None and (not paths[0].exists() or paths[0].read_text() != value):
+            return f"FAILED: Cargo regenerated {paths[0]}"
     return "ok"
 
 
@@ -478,13 +535,16 @@ def main():
         verdict = unchanged_instances(root, env)
         wrong += verdict != "ok"
         print(f"{'unchanged native instance across harnesses':34} {verdict}", flush=True)
+        verdict = generated_after_restart(root, env)
+        wrong += verdict != "ok"
+        print(f"{'generated test after worker restart':34} {verdict}", flush=True)
         verdict = benched(root, env)
         wrong += verdict != "ok"
         print(f"{'a test added beside a bench':34} {verdict}", flush=True)
     finally:
         subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, capture_output=True, timeout=120)
         shutil.rmtree(OUTSIDE, ignore_errors=True)
-    print(f"{len(STEPS) + 2 - wrong} of {len(STEPS) + 2} right; under {root}, the daemon's home {home}")
+    print(f"{len(STEPS) + 3 - wrong} of {len(STEPS) + 3} right; under {root}, the daemon's home {home}")
     if wrong:
         sys.exit(1)
     shutil.rmtree(root, ignore_errors=True)
