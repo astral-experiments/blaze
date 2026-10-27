@@ -301,7 +301,7 @@ fn names_of_object(data: &[u8], names: &mut Vec<Named>, copied: bool) {
 }
 
 /// A symbol of an object that may be rustc's copy of a static under a name LLVM gave it, or
-/// one private to the object: Rust's symbol of data a program writes to, with something after
+/// one private to the object: Rust's symbol of data in the loaded image, with something after
 /// the symbol rustc gave it (`.0`, `.llvm.<hash>`), or local.
 struct CopyOfStatic<'data> {
     /// Without Mach-O's `_`.
@@ -322,7 +322,7 @@ impl<'data> CopyOfStatic<'data> {
             return None;
         }
         let section = object.section_by_index(symbol.section_index()?).ok()?;
-        if !written_at_run_time(&section) {
+        if !matches_static_section(&section) {
             return None;
         }
         let name = symbol.name().ok()?;
@@ -342,19 +342,24 @@ impl<'data> CopyOfStatic<'data> {
     }
 }
 
-/// Whether a section holds data a program writes to: a static with state is in one.
-pub(crate) fn written_at_run_time(section: &object::Section<'_, '_>) -> bool {
+/// Sections in which rustc can put a named static, including read-only relocation tables.
+fn matches_static_section(section: &object::Section<'_, '_>) -> bool {
     match section.flags() {
-        // `__thread_vars` holds the descriptor code refers to a thread-local by.
-        object::SectionFlags::MachO { .. } => {
-            matches!(section.name(), Ok("__data" | "__bss" | "__common" | "__thread_vars"))
-        }
-        object::SectionFlags::Elf { sh_flags } => {
-            sh_flags & u64::from(object::elf::SHF_WRITE) != 0
-                && !section.name().is_ok_and(|it| it.starts_with(".data.rel.ro"))
-        }
+        object::SectionFlags::MachO { .. } => section.name_bytes().is_ok_and(macho_static_section),
+        object::SectionFlags::Elf { sh_flags } => elf_static_section(sh_flags),
         _ => false,
     }
+}
+
+/// Whether this Mach-O section can contain a static or a thread-local descriptor.
+pub(crate) fn macho_static_section(name: &[u8]) -> bool {
+    matches!(name, b"__data" | b"__bss" | b"__common" | b"__thread_vars" | b"__const")
+}
+
+/// Whether an ELF data symbol belongs to the loaded image without being executable code.
+pub(crate) fn elf_static_section(flags: u64) -> bool {
+    flags & u64::from(object::elf::SHF_ALLOC) != 0
+        && flags & u64::from(object::elf::SHF_EXECINSTR) == 0
 }
 
 /// How long the symbol rustc made is at the start of `name`, a symbol LLVM may have put a
