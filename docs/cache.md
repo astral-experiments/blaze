@@ -28,18 +28,26 @@ everything in the edited crate and in the crates of the checkout that depend on 
 Dependencies, their generic instances, and untouched workspace crates keep their names.
 Within one running daemon, the database also keeps unchanged functions of an edited crate.
 
-A fresh daemon can also reuse Cranelift code for plain workspace functions over integers
-and booleans, including direct calls to other such functions. After type checking and
+A fresh daemon can also reuse Cranelift or LLVM code for plain workspace functions over
+integers and booleans, including direct calls to other such functions. After type checking and
 building Rust MIR, it checks the function's written source, MIR operations, resolved call
 targets and their signatures. The store keys the fragment by those facts and the codegen
-settings. A hit skips lowering to Cranelift IR and emitting machine code. Relocations,
-source locations and debug variables are rebound to the current checkout. An out-of-line
-callee's body can change without invalidating its caller. Generics, calls to inlineable
-functions and other unmodeled inputs go through ordinary lowering.
+settings, including the backend and LLVM optimization level. A hit skips lowering to
+Cranelift IR and emitting machine code. Relocations, source locations and debug variables
+are rebound to the current checkout. An out-of-line callee's body can change without
+invalidating its caller.
+
+At `-O2` and `-O3`, an LLVM edit worker can show LLVM small workspace functions marked
+`#[inline]` or `#[inline(always)]`. Before reusing the caller, it checks the MIR of each
+eligible callee, including callees reached through other inline bodies. An edit to any such body invalidates the
+caller even if LLVM removed the call. Whole-program LLVM builds check every workspace
+body that could be imported. Generic functions and bodies with unmodeled inputs use
+ordinary lowering. `RA_JIT_INLINE=0` disables inlining.
 
 `RA_JIT_TRACE_FUNCTION_CACHE=1` logs which functions this lookup restores and which it
 lowers. `harness/storerevisions.py` runs the edits and their undos in fresh daemons against
-Cargo, each starting from a store that has only the opposite revision.
+Cargo, each starting from a store that has only the opposite revision. On LLVM it also
+checks the caller's machine code and edits its helper in a running daemon.
 
 An entry of the checkout also holds its mark: a hash of its code and of what it calls and
 reads, by the same stable names, with the crates of the checkout named as they were when
@@ -48,8 +56,8 @@ with it, so a daemon that starts on a store holding the checkout's code takes th
 it is, and the first edit recompiles only what it touched. Before, those marks hashed ids
 of one process, and a started daemon compiled all it took of the checkout again before the
 first edit could be a patch (nushell: 73,586 functions, 9.4 s). A program that links
-rustc's code beside ra-jit's, an LLVM build and `#[ra_jit::cache]` functions keep no mark
-and still take that build ([#105](https://github.com/indexable-inc/ra-jit/issues/105)).
+rustc's code beside ra-jit's, multi-function LLVM units and `#[ra_jit::cache]` functions
+keep no mark and still take that build ([#105](https://github.com/indexable-inc/ra-jit/issues/105)).
 
 Before a record is written, the store hashes that key together with the store format, what
 ra-jit was built from and the toolchain's commit. What it was built from is a hash

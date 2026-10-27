@@ -103,6 +103,14 @@ pub(super) fn stable_mark(
     Some(u128::from(low) | u128::from(high) << 64)
 }
 
+/// Whether an edit to another workspace body can change the instructions of this caller.
+pub(super) fn embeds_workspace_body(db: &dyn HirDatabase, compiled: &CompiledFunction) -> bool {
+    compiled.requests.inlined.iter().any(|instance| match instance.def {
+        InstanceDef::Fn(func) => func.krate(db).data(db).origin.is_local(),
+        _ => false,
+    })
+}
+
 /// The items of the checkout the code of an instance comes from, as they are written now:
 /// the one its code is written in, with where it begins when `lines` (its mark has the lines
 /// of its code then), and those of what it tells the place of, with where each begins; those
@@ -861,11 +869,10 @@ pub(super) struct Base {
     /// to rustc, and stays there for as long as the base does.
     rejected: Vec<(Instance, StoredParamEnvAndCrate)>,
     pub(super) bodies: usize,
-    /// The roots and instances that are `#[ra_jit::cache]` functions, by their index in
-    /// `compiled` and `instances`. The hash of what each reaches is in its code, and an edit
-    /// anywhere can change that.
-    cached_roots: Vec<u32>,
-    cached_instances: Vec<u32>,
+    /// Roots and instances rechecked on every edit. A `#[ra_jit::cache]` function hashes
+    /// everything it reaches; an LLVM caller can embed bodies from other workspace files.
+    recheck_roots: Vec<u32>,
+    recheck_instances: Vec<u32>,
     /// Whether the base is the executable rustc linked, and not an object of ours: every
     /// function and static in it is rustc's. It knows the files that were about to change,
     /// in `homed`, as they were when rustc compiled them, and nothing else.
@@ -1299,9 +1306,6 @@ impl Base {
             .collect();
         let stored_marks: FxHashMap<u32, u128> =
             stored_tracked.iter().map(|(&i, it)| (i, it.mark)).collect();
-        let stored_items: FxHashMap<u32, Box<[WrittenItem]>> = (stored_tracked.into_iter())
-            .filter_map(|(i, it)| Some((i, Box::from(it.items?))))
-            .collect();
         let stored = |i: usize| stored_marks.contains_key(&(i as u32));
         let root_mark = |db: &dyn HirDatabase, root| Mark::of_root(db, root, debug);
         let instance_mark =
@@ -1400,9 +1404,22 @@ impl Base {
                 if from_store.untracked { ", some untracked" } else { "" },
             );
         }
+        let edit_inlining = super::revision::edit_inlining();
+        let cached = |func| super::fncache::cached_closure(db, func).is_some();
+        let mut recheck_roots = Vec::new();
         for (i, &(root, _)) in compiled.iter().enumerate() {
-            if !stored(i) {
-                note(Node::Root(root), &compiled_root(db, root).as_ref().ok()?.requests);
+            let inlined = if let Some(tracked) = stored_tracked.get(&(i as u32)) {
+                edit_inlining
+                    && tracked.home.is_none()
+                    && tracked.files.is_none()
+                    && tracked.items.is_none()
+            } else {
+                let code = compiled_root(db, root).as_ref().ok()?;
+                note(Node::Root(root), &code.requests);
+                edit_inlining && embeds_workspace_body(db, code)
+            };
+            if inlined || cached(root) {
+                recheck_roots.push(i as u32);
             }
         }
         let start = match start {
@@ -1413,9 +1430,16 @@ impl Base {
             }
             None => None,
         };
-        for (instance, known) in &instances {
-            if let Ok(compiled) = compiled_instance(db, instance.clone(), known.env.clone()) {
-                note(Node::Instance(instance.clone()), &compiled.requests);
+        let mut recheck_instances = Vec::new();
+        for (i, (instance, known)) in instances.iter().enumerate() {
+            let compiled = compiled_instance(db, instance.clone(), known.env.clone()).as_ref().ok();
+            if let Some(code) = compiled {
+                note(Node::Instance(instance.clone()), &code.requests);
+            }
+            if matches!(instance.def, InstanceDef::Fn(func) if cached(func))
+                || edit_inlining && compiled.is_some_and(|code| embeds_workspace_body(db, code))
+            {
+                recheck_instances.push(i as u32);
             }
         }
         for &id in statics.keys() {
@@ -1463,14 +1487,8 @@ impl Base {
         let crates: Vec<Crate> = compiled.iter().map(|&(root, _)| root.krate(db)).collect();
         let files: Vec<FileId> =
             compiled.iter().map(|&(root, _)| body_file(db, root.into())).collect();
-        let cached = |func| super::fncache::cached_closure(db, func).is_some();
-        let cached_roots =
-            (0..compiled.len() as u32).filter(|&i| cached(compiled[i as usize].0)).collect();
-        let cached_instances = (0..instances.len() as u32)
-            .filter(|&i| {
-                let (instance, _) = instances.get_index(i as usize).unwrap();
-                matches!(instance.def, InstanceDef::Fn(func) if cached(func))
-            })
+        let stored_items: FxHashMap<u32, Box<[WrittenItem]>> = (stored_tracked.into_iter())
+            .filter_map(|(i, it)| Some((i, Box::from(it.items?))))
             .collect();
         Some(Base {
             debug,
@@ -1516,8 +1534,8 @@ impl Base {
             outdated: false,
             outdated_by: None,
             bodies: cg.bodies,
-            cached_roots,
-            cached_instances,
+            recheck_roots,
+            recheck_instances,
             rustc: false,
             homed: FxHashSet::default(),
             unnamed: Vec::new(),
@@ -1562,8 +1580,8 @@ impl Base {
             outdated_by: None,
             rejected: Vec::new(),
             bodies: 0,
-            cached_roots: Vec::new(),
-            cached_instances: Vec::new(),
+            recheck_roots: Vec::new(),
+            recheck_instances: Vec::new(),
             rustc: true,
             homed: FxHashSet::default(),
             unnamed: Vec::new(),
@@ -1950,7 +1968,7 @@ impl Base {
         let mut asked: Vec<u32> = of_crates.chain(of_files).flatten().copied().collect();
         asked.extend(touched.roots.iter().filter_map(|it| homes.root.get(it)));
         if touched.edited() {
-            asked.extend(&self.cached_roots);
+            asked.extend(&self.recheck_roots);
         }
         Box::new(part_of(asked, part, parts))
     }
@@ -1974,7 +1992,7 @@ impl Base {
             asked.extend(&homes.instances_of_any_file);
         }
         if touched.edited() {
-            asked.extend(&self.cached_instances);
+            asked.extend(&self.recheck_instances);
         }
         asked.extend(
             touched
@@ -2272,7 +2290,7 @@ impl Base {
             let touched = self.touched.reaches(self.crates[i])
                 || self.touched.reaches_bodies(Some(&[self.files[i]]))
                 || self.touched.roots.contains(&root)
-                || self.touched.edited() && self.cached_roots.binary_search(&(i as u32)).is_ok();
+                || self.touched.edited() && self.recheck_roots.binary_search(&(i as u32)).is_ok();
             if !touched && !check_all {
                 continue;
             }
@@ -2361,7 +2379,7 @@ impl Base {
                 || self.touched.reaches_bodies(was.files.as_deref())
                 || self.touched.instances.contains(instance)
                 || self.touched.edited()
-                    && self.cached_instances.binary_search(&(i as u32)).is_ok();
+                    && self.recheck_instances.binary_search(&(i as u32)).is_ok();
             if !touched && !check_all {
                 continue;
             }

@@ -8,12 +8,122 @@ use syntax::ast::{HasAttrs, HasGenericParams};
 
 pub(super) struct Proof {
     pub(super) digest: [u8; 32],
-    /// Each resolved function once, in the order its calls first occur in MIR.
+    /// The root's direct calls first, followed by calls found in the bodies checked for LLVM.
     pub(super) callees: Vec<FunctionId>,
+    pub(super) direct: usize,
+    /// Indices of callees whose full bodies contribute to the digest.
+    pub(super) bodies: Vec<u32>,
+}
+
+/// Which bodies the regular, per-function compile may show its producer.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Policy {
+    Cranelift,
+    LlvmCalls,
+    LlvmAnnotated,
+    LlvmAcross,
+}
+
+impl Policy {
+    fn includes(self, flags: AttrFlags) -> bool {
+        !flags.contains(AttrFlags::INLINE_NEVER)
+            && (self == Self::LlvmAcross
+                || self == Self::LlvmAnnotated && flags.contains(AttrFlags::IS_INLINE))
+    }
+}
+
+/// Fingerprints the root and each body the current LLVM inlining policy may incorporate.
+pub(super) fn prove<'db>(
+    db: &'db dyn HirDatabase,
+    func: FunctionId,
+    body: &MirBody<'db>,
+    env: ParamEnvAndCrate<'db>,
+    checked: bool,
+    policy: Policy,
+) -> Option<Proof> {
+    let (digest, callees) = prove_body(db, func, body, policy)?;
+    let direct = callees.len();
+    let proof = Proof { digest, callees, direct, bodies: Vec::new() };
+    if direct == 0 || matches!(policy, Policy::Cranelift | Policy::LlvmCalls) {
+        return Some(proof);
+    }
+    if direct > Dependencies::MAX_CALLEES {
+        return None;
+    }
+    let mut deps =
+        Dependencies { db, env, checked, policy, proof, path: vec![func], hash: Sha256::new() };
+    deps.hash.update(digest);
+    for index in 0..direct {
+        deps.visit(index)?;
+    }
+    deps.proof.digest = deps.hash.finalize().into();
+    Some(deps.proof)
+}
+
+struct Dependencies<'db> {
+    db: &'db dyn HirDatabase,
+    env: ParamEnvAndCrate<'db>,
+    checked: bool,
+    policy: Policy,
+    proof: Proof,
+    path: Vec<FunctionId>,
+    hash: Sha256,
+}
+
+impl Dependencies<'_> {
+    // Decline large dependency graphs rather than making a cache lookup compile the program.
+    const MAX_CALLEES: usize = 32;
+    const MAX_DEPTH: usize = 8;
+
+    fn visit(&mut self, index: usize) -> Option<()> {
+        let func = self.proof.callees[index];
+        if !self.policy.includes(AttrFlags::query(self.db, func.into())) {
+            return Some(());
+        }
+        if self.path.contains(&func) || self.path.len() > Self::MAX_DEPTH {
+            return None;
+        }
+        if self.proof.bodies.contains(&(index as u32)) {
+            return Some(());
+        }
+        let instance = Instance {
+            def: InstanceDef::Fn(func),
+            args: GenericArgs::new_from_slice(&[]).store(),
+            checked: self.checked,
+        };
+        // Inlining builds an instance in its caller's environment and overflow mode.
+        let body = instance_body(self.db, &instance, self.env.store()).ok()?;
+        let (digest, callees) = prove_body(self.db, func, &body, self.policy)?;
+        self.hash.update((index as u32).to_le_bytes());
+        self.hash.update(digest);
+        self.hash.update((callees.len() as u32).to_le_bytes());
+        self.path.push(func);
+        for callee in callees {
+            let callees = &mut self.proof.callees;
+            let child = match callees.iter().position(|&it| it == callee) {
+                Some(child) => child,
+                None if callees.len() == Self::MAX_CALLEES => return None,
+                None => {
+                    callees.push(callee);
+                    callees.len() - 1
+                }
+            };
+            self.hash.update((child as u32).to_le_bytes());
+            self.visit(child)?;
+        }
+        self.path.pop();
+        self.proof.bodies.push(index as u32);
+        Some(())
+    }
 }
 
 /// Fingerprints only MIR whose operands, types and references can all be named across revisions.
-pub(super) fn prove(db: &dyn HirDatabase, func: FunctionId, body: &MirBody<'_>) -> Option<Proof> {
+fn prove_body(
+    db: &dyn HirDatabase,
+    func: FunctionId,
+    body: &MirBody<'_>,
+    policy: Policy,
+) -> Option<([u8; 32], Vec<FunctionId>)> {
     if !matches!(body.owner, InferBodyId::DefWithBodyId(DefWithBodyId::FunctionId(it)) if it == func)
         || body.coroutine.is_some()
         || !body.closures.is_empty()
@@ -27,7 +137,7 @@ pub(super) fn prove(db: &dyn HirDatabase, func: FunctionId, body: &MirBody<'_>) 
     {
         return None;
     }
-    let mut proof = Evidence { hash: Sha256::new(), callees: Vec::new() };
+    let mut proof = Evidence { hash: Sha256::new(), callees: Vec::new(), policy };
     // Most functions have a pointer or a Rust aggregate. Decline them before reading source.
     for (_, local) in body.locals.iter() {
         proof.field(integer(local.ty.as_ref())?);
@@ -123,7 +233,7 @@ pub(super) fn prove(db: &dyn HirDatabase, func: FunctionId, body: &MirBody<'_>) 
             _ => return None,
         }
     }
-    Some(Proof { digest: proof.hash.finalize().into(), callees: proof.callees })
+    Some((proof.hash.finalize().into(), proof.callees))
 }
 
 /// The primitive Rust types whose representation is fixed by the target. Signedness matters
@@ -141,6 +251,7 @@ fn integer(ty: Ty<'_>) -> Option<&'static [u8]> {
 struct Evidence {
     hash: Sha256,
     callees: Vec<FunctionId>,
+    policy: Policy,
 }
 
 impl Evidence {
@@ -228,12 +339,24 @@ impl Evidence {
         };
         let TyKind::FnDef(def, args) = ty.kind() else { return None };
         let CallableDefId::FunctionId(func) = def.0 else { return None };
-        if !args.is_empty() || AttrFlags::query(db, func.into()).contains(AttrFlags::IS_INLINE) {
+        if !args.is_empty() {
             return None;
         }
         let index = match self.callees.iter().position(|&it| it == func) {
             Some(index) => index,
             None => {
+                let flags = AttrFlags::query(db, func.into());
+                if self.policy == Policy::Cranelift {
+                    if flags.contains(AttrFlags::IS_INLINE) {
+                        return None;
+                    }
+                } else {
+                    self.field(&[
+                        flags.contains(AttrFlags::INLINE_NEVER) as u8,
+                        flags.contains(AttrFlags::INLINE_ALWAYS) as u8,
+                        flags.contains(AttrFlags::IS_INLINE) as u8,
+                    ]);
+                }
                 self.signature(db, func)?;
                 self.callees.push(func);
                 self.callees.len() - 1

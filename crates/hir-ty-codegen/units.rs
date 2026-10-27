@@ -464,7 +464,7 @@ impl Round {
         let why: std::result::Result<Pending, &str> = match produced {
             None => return,
             Some(Ok(Produced::Pending(pending))) => shares(&pending).map(|()| pending),
-            Some(Ok(Produced::Code(_))) => Err("its code built without LLVM"),
+            Some(Ok(Produced::Code(..))) => Err("its code built without LLVM"),
             Some(Err(_)) => Err("IR not built for a unit"),
         };
         self.functions += 1;
