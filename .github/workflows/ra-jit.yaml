@@ -27,9 +27,10 @@ permissions:
 
 jobs:
   luna:
+    # Blaze keeps this repository ID across renames. Forks have their own IDs.
     name: Select CI suites with Luna
     if: >-
-      github.repository == 'viarius-experiments/blaze' &&
+      github.repository_id == '1434979395' &&
       (github.event_name == 'push' || (github.event_name == 'pull_request' &&
        github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]'))
     runs-on: ubuntu-24.04
@@ -101,17 +102,17 @@ jobs:
               pinned rustc run-pass tests and reduced Bun repros.
             - linux-arm64: native AArch64 compiler tests, code generation and fast harnesses.
             - macos: Apple Silicon compiler tests, Darwin linking, live edits and pinned run-pass tests.
-            - windows: native x64 Windows tests, linking, SDK, paths and fast harnesses.
             - fork: build and test the rust-analyzer subtree outside Blaze.
             - bench: paired store microbenchmarks against the PR base, or timings on main.
             - nix: Nix unit graphs, flake builds, demo and live edits on Linux and macOS.
             - install: run install.sh against release artifacts and install this commit without Rust.
-            Site deployment, publishing and scheduled maintenance have separate workflows.
+            Windows runs in the nightly or manual full tier. Site deployment, publishing and
+            scheduled maintenance have separate workflows.
           output-schema: |
             {"type":"object","additionalProperties":false,"required":["rationale","suites"],"properties":{
               "rationale":{"type":"string"},"suites":{"type":"array","items":{"type":"object",
               "additionalProperties":false,"required":["id","reason"],"properties":{
-              "id":{"type":"string","enum":["fmt","linux-x64","linux-arm64","macos","windows","fork","bench","nix","install"]},
+              "id":{"type":"string","enum":["fmt","linux-x64","linux-arm64","macos","fork","bench","nix","install"]},
               "reason":{"type":"string"}}}}}}
 
   changes:
@@ -129,7 +130,7 @@ jobs:
       # Decide runner access before running any code from the checkout.
       - id: namespace
         if: >-
-          github.repository == 'viarius-experiments/blaze' && github.event_name != 'merge_group' &&
+          github.repository_id == '1434979395' && github.event_name != 'merge_group' &&
           (github.event_name != 'pull_request' || (github.event.pull_request.head.repo.full_name == github.repository &&
            github.event.pull_request.user.login != 'dependabot[bot]' && github.actor != 'dependabot[bot]'))
         run: |
@@ -216,6 +217,7 @@ jobs:
       pinned-ui: true
       cargo-ra-jit: ${{ needs.changes.outputs.tier == 'full' }}
 
+  # The Windows build alone takes longer than the fast tier.
   windows:
     name: windows x64
     needs: changes
@@ -224,7 +226,7 @@ jobs:
     with:
       platform: windows-x64
       os: windows-2025
-      tier: ${{ needs.changes.outputs.tier }}
+      tier: full
 
   # vendor/rust-analyzer as the fork has it, built and tested outside this repository, so that
   # the subtree cannot come to depend on crates/ (docs/architecture-split.md, step 5). The

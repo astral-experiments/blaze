@@ -31,7 +31,7 @@ defaults:
 jobs:
   tango:
     name: tango
-    runs-on: ${{ inputs.linux-runner || (github.repository == 'viarius-experiments/blaze' && 'namespace-profile-ubuntu-24-04-16' || 'ubuntu-24.04') }}
+    runs-on: ${{ inputs.linux-runner || (github.repository_id == '1434979395' && 'namespace-profile-ubuntu-24-04-16' || 'ubuntu-24.04') }}
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v7

@@ -8,7 +8,7 @@ from pathlib import Path
 
 
 FAST = ["fmt", "linux-x64", "linux-arm64", "macos", "fork"]
-SUITES = FAST + ["windows", "bench", "nix", "install"]
+SUITES = FAST + ["bench", "nix", "install"]
 
 
 def changed_paths(base, head, event):

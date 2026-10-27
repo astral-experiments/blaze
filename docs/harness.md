@@ -327,7 +327,7 @@ For a CI failure, the last line of the harness step lists which scripts failed.
 each platform, each on a machine of its own kind.
 
 On same-repository pull requests and pushes to main, Luna reads a bounded GitHub diff and
-selects from `fmt`, `linux-x64`, `linux-arm64`, `macos`, `windows`, `fork`, `bench`, `nix`
+selects from `fmt`, `linux-x64`, `linux-arm64`, `macos`, `fork`, `bench`, `nix`
 and `install`. Each selected platform runs its fast tier. A documentation change can select
 no suites. The **Resolve CI plan** job records the rationale and suite IDs in its summary and
 in the `luna-ci-plan-<attempt>` artifact. The planner runs on a fresh GitHub-hosted runner
