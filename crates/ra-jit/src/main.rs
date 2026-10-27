@@ -10526,6 +10526,7 @@ fn main() {}
                 ws.join(".cargo/registry"),
             ],
             targets: vec![ws.join("custom-output")],
+            ..WatchPaths::default()
         };
         for source in [
             "src/registry/rule_set.rs",
