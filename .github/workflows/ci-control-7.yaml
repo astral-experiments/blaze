@@ -1,17 +1,18 @@
-name: Trace the generated-input Cargo fallback
+name: Compare generated-input fixes against unchanged, edited, and restored inputs
 on:
   push:
     branches: [charlie/ci-control-pr-7]
 permissions:
   contents: read
+  actions: read
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: linux
-            runner: namespace-profile-ubuntu-24-04-16
+          - platform: macos
+            runner: nscloud-macos-sequoia-arm64-6x14
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
     env:
@@ -21,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 097e074391eefd9bb8f8935d9c53d63cba212cde
+          ref: 9d66eaefc31b47720c2c1870c9d19eba6d782b4e
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/toolchain
@@ -32,65 +33,6 @@ jobs:
           shared-key: build
           save-if: false
       - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Record native lookup and source invalidation
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          
-          
-          def replace(path, old, new):
-              source = Path(path).read_text()
-              assert source.count(old) == 1, (path, old)
-              Path(path).write_text(source.replace(old, new))
-          
-          
-          main = "crates/ra-jit/src/main.rs"
-          codegen = "crates/hir-ty-codegen/mod.rs"
-          
-          replace(main, "            if !as_rustc_read {\n                changed.push(*file);",
-                  '''            eprintln!("INCLUDE_TRACE input {} id={:?} prior={:?} now={:?} as_read={as_rustc_read}", path.display(), file, was.get(path), now.as_ref().map(|it| it.mtime));
-                      if !as_rustc_read {
-                          changed.push(*file);''')
-          replace(main, "            let owners = ide_db::base_db::relevant_crates(db, file);\n            if owners.is_empty() {",
-                  '''            let owners = ide_db::base_db::relevant_crates(db, file);
-                      eprintln!("INCLUDE_TRACE owners {file:?} {:?}", owners.iter().map(|&it| crate_root_file(db, it.into())).collect::<Vec<_>>());
-                      if owners.is_empty() {''')
-          replace(main, "        self.known.distrust(db, &other);\n        // A file rustc did not read",
-                  '''        for file in files {
-                      if let Watched::Source(id) = file.file && unread.contains(&id) {
-                          eprintln!("INCLUDE_TRACE distrust {} {} mtime={:?} built={built:?}", self.args.krate, file.path.display(), file.mtime);
-                      }
-                  }
-                  self.known.distrust(db, &other);
-                  // A file rustc did not read''')
-          replace(main, "        self.table.get(path).or_else(private).map(str::to_owned)",
-                  '''        if path.contains("::half") {
-                      eprintln!("INCLUDE_TRACE lookup {path} table={:?} private={:?} has_linked={}", self.table.get(path), private(), self.rustcs().is_some());
-                  }
-                  self.table.get(path).or_else(private).map(str::to_owned)''')
-          replace(codegen, "    pub fn touch(&mut self, db: &dyn HirDatabase, crates: Option<&[Crate]>) {\n        match crates {",
-                  '''    #[track_caller]
-              pub fn touch(&mut self, db: &dyn HirDatabase, crates: Option<&[Crate]>) {
-                  eprintln!("INCLUDE_TRACE touch {} {:?}", std::panic::Location::caller(), crates.map(|v| v.iter().map(|it| it.root_file(db)).collect::<Vec<_>>()));
-                  match crates {''')
-          replace(codegen, '''        let symbol = if args.iter().all(|arg| arg.region().is_some()) {
-                      // A test's path also names its descriptor. Resolve the function as an item.
-                      self.symbols.function(func)?
-                  } else {
-                      self.symbols.path(&path)?
-                  };
-                  let symbol = self.rustc_copy(symbol, instance.checked)?;''',
-                  '''        let candidate = if args.iter().all(|arg| arg.region().is_some()) {
-                      self.symbols.function(func)
-                  } else {
-                      self.symbols.path(&path)
-                  };
-                  let symbol = candidate.clone().and_then(|s| self.rustc_copy(s, instance.checked));
-                  if path.contains("unchanged") || path.starts_with("first") || path.starts_with("second") {
-                      eprintln!("INCLUDE_TRACE forward {path} candidate={candidate:?} copies={:?} checked={} linked={symbol:?}", candidate.as_deref().map(|s| self.symbols.copies(s)), instance.checked);
-                  }
-                  let symbol = symbol?;''')
-          PY
       - run: nix develop --command cargo build -p ra-jit --release --features llvm --locked
         env:
           RUSTC_WRAPPER: sccache
@@ -101,67 +43,81 @@ jobs:
           name: probe-${{ matrix.platform }}
           path: target/release/probe.tar
           retention-days: 1
-  trace:
+  fixture:
     needs: build
-    runs-on: ubuntu-24.04
+    if: ${{ !cancelled() }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - candidate: 47
+            os: ubuntu-24.04
+            artifact: ra-jit-linux-x64
+            source-run: 40464047658
+          - candidate: 47
+            os: macos-15
+            artifact: ra-jit-macos-arm64
+            source-run: 40464047658
+          - candidate: 48
+            os: ubuntu-24.04
+            artifact: ra-jit-linux-x64
+            source-run: 40464690857
+          - candidate: 48
+            os: macos-15
+            artifact: probe-macos
+            source-run: 0
+    name: Candidate ${{ matrix.candidate }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 097e074391eefd9bb8f8935d9c53d63cba212cde
+          ref: 9d66eaefc31b47720c2c1870c9d19eba6d782b4e
+          fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/toolchain
         with:
           llvm: run
       - uses: actions/download-artifact@v8
         with:
-          name: probe-linux
+          name: ${{ matrix.artifact }}
+          run-id: ${{ matrix.source-run || github.run_id }}
+          github-token: ${{ github.token }}
           path: target/release
-      - run: tar -xf probe.tar
+      - run: tar -xf ${{ matrix.source-run && 'ra-jit.tar' || 'probe.tar' }}
         working-directory: target/release
-      - name: Compare the worker logs for failing and passing fixture runs
+      - name: Exercise the original generated input and the edit and undo
         working-directory: harness
+        shell: bash
         run: |
+          git show 097e074391eefd9bb8f8935d9c53d63cba212cde:harness/testselect.py > testselect_original.py
           python3 - <<'PY'
-          import os, pathlib, subprocess, tempfile
+          import os
+          import pathlib
+          import subprocess
+          import tempfile
           import testselect
+          import testselect_original
           binary = pathlib.Path("../target/release").resolve()
-          out = pathlib.Path(os.environ["RUNNER_TEMP"])/"include-evidence"
-          out.mkdir()
-          outcomes = set()
-          for i in range(8):
-              with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory(dir="/tmp") as home:
-                  env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", RA_JIT_BIN=str(binary/"ra-jit"),
-                             RA_JIT_BACKEND="llvm", RA_JIT_OPT="2", RA_JIT_EMIT="fast", RA_JIT_HOME=home,
-                             CARGO_INCREMENTAL="0", CARGO_TERM_COLOR="never", RUST_BACKTRACE="0")
-                  ws = pathlib.Path(root)/"unchanged"
-                  try:
-                      result = testselect.unchanged_instances(root, env)
-                      print(f"Trial {i + 1}: {result}", flush=True)
-                  finally:
-                      subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, capture_output=True)
-                  ok = result == "ok"
-                  for worker in pathlib.Path(home).rglob("log"):
-                      if not worker.is_file(): continue
-                      log = worker.read_text(errors="replace")
-                      (out/f"trial-{i+1}-{worker.parent.name}.log").write_text(log)
-                      if ok not in outcomes:
-                          print(f"Worker {worker.parent.name}", flush=True)
-                          for line in log.splitlines():
-                              if "INCLUDE_TRACE" in line or "left to rustc" in line or "from before the edit" in line:
-                                  print(line[:1300], flush=True)
-                  for exe in sorted((ws/"target/debug/deps").glob("*")):
-                      if exe.is_file() and os.access(exe, os.X_OK) and exe.name.startswith(("first-", "second-", "unchanged-")):
-                          syms = subprocess.run(["nm", "-P", str(exe)], capture_output=True, text=True).stdout.splitlines()
-                          print(exe.name, [s[:250] for s in syms if "4half" in s], flush=True)
-                  outcomes.add(ok)
-              if len(outcomes) == 2: break
-          print(f"Observed passing={True in outcomes} failing={False in outcomes}", flush=True)
-          raise SystemExit(False in outcomes)
+          failed = 0
+          for label, module in (("original", testselect_original), ("edit-undo", testselect)):
+              original_test = module.test
+              def observed(ws, env, mode):
+                  code, said = original_test(ws, env, mode)
+                  print(f"Call {label} {backend}: exit={code} blaze={'[ra-jit]' in said} tests={module.RAN.findall(said)}", flush=True)
+                  return code, said
+              module.test = observed
+              for backend in ("cranelift", "llvm"):
+                  for trial in range(2 if label == "original" else 1):
+                      with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory(dir="/tmp") as home:
+                          env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", RA_JIT_BIN=str(binary/"ra-jit"),
+                                     RA_JIT_BACKEND=backend, RA_JIT_OPT="2", RA_JIT_EMIT="fast", RA_JIT_HOME=home,
+                                     RUST_BACKTRACE="0", CARGO_INCREMENTAL="0", CARGO_TERM_COLOR="never")
+                          try:
+                              result = module.unchanged_instances(root, env)
+                              print(f"Result {label} {backend} {trial+1}: {result}", flush=True)
+                              failed += result != "ok"
+                          finally:
+                              subprocess.run(["cargo", "ra-jit", "stop"], cwd=pathlib.Path(root)/"unchanged", env=env, capture_output=True)
+          raise SystemExit(bool(failed))
           PY
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: generated-input-worker-logs
-          path: ${{ runner.temp }}/include-evidence
-          retention-days: 1
