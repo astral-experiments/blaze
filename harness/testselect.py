@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ.setdefault("RUSTUP_TOOLCHAIN", open(os.path.join(HERE, "toolchain")).read().strip())
@@ -319,6 +320,7 @@ def unchanged_instances(root, env):
                       '[dependencies]\nunchanged-native = { path = "native" }\n'
                       '[profile.dev]\nopt-level = 1\n',
         "build.rs": """fn main() {
+    println!("cargo:rerun-if-changed=build.rs");
     let dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     for name in ["first", "second"] {
         std::fs::write(dir.join(format!("{name}.expr")), "0_u32").unwrap();
@@ -360,6 +362,16 @@ fn library() { assert_eq!(half(8_u32), 4.0); }
         ("library", "ok"), ("first", "ok"), ("second", "ok")
     }:
         return f"FAILED\n{said[-3000:]}"
+
+    # A restarted worker must observe edits to an existing generated test input.
+    (output,) = (Path(ws) / "target").rglob("first.expr")
+    for value, status, result in [(2, 101, "FAILED"), (0, 0, "ok")]:
+        output.write_text(f"{value}_u32")
+        subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, check=True,
+                       capture_output=True, timeout=120)
+        code, said = test(ws, env, "all --tests")
+        if code != status or ("first", result) not in RAN.findall(said):
+            return f"FAILED after writing {output.name} = {value}\n{said[-3000:]}"
     return "ok"
 
 
