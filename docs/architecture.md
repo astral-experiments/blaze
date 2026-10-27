@@ -240,8 +240,11 @@ about the instance.
 A fresh daemon can reuse Cranelift or LLVM code for plain workspace functions over
 integers and booleans across revisions. After type checking and building MIR, it checks the
 function's source, MIR operations, direct call targets and signatures, backend, and codegen
-settings. A hit skips lowering and emission and rebinds relocations and debug locations to
-the current checkout. Changing an out-of-line callee's body can preserve the caller's entry.
+settings. For integer and boolean branches it checks operand types, the destination for
+each case value, and the default destination. Changing a constant used in a match pattern
+can therefore invalidate the matcher even when its source is unchanged. A hit skips lowering
+and emission and rebinds relocations and debug locations to the current checkout.
+Changing an out-of-line callee's body can preserve the caller's entry.
 
 At `-O2` and `-O3`, LLVM edit workers can inline small workspace functions marked
 `#[inline]` or `#[inline(always)]`. Reuse depends on the MIR of every body LLVM could

@@ -1,7 +1,7 @@
 //! What a plain integer function and its direct calls mean before Cranelift IR is built.
 
 use crate::*;
-use hir_ty::mir::type_name::rustc_function_name;
+use hir_ty::mir::{SwitchTargets, type_name::rustc_function_name};
 use rustc_type_ir::{IntTy, UintTy};
 use sha2::{Digest, Sha256};
 use syntax::ast::{HasAttrs, HasGenericParams};
@@ -41,7 +41,7 @@ pub(super) fn prove<'db>(
     checked: bool,
     policy: Policy,
 ) -> Option<Proof> {
-    let (digest, callees) = prove_body(db, func, body, policy)?;
+    let (digest, callees) = prove_body(db, func, body, env, policy)?;
     let direct = callees.len();
     let proof = Proof { digest, callees, direct, bodies: Vec::new() };
     if direct == 0 || matches!(policy, Policy::Cranelift | Policy::LlvmCalls) {
@@ -93,7 +93,7 @@ impl Dependencies<'_> {
         };
         // Inlining builds an instance in its caller's environment and overflow mode.
         let body = instance_body(self.db, &instance, self.env.store()).ok()?;
-        let (digest, callees) = prove_body(self.db, func, &body, self.policy)?;
+        let (digest, callees) = prove_body(self.db, func, &body, self.env, self.policy)?;
         self.hash.update((index as u32).to_le_bytes());
         self.hash.update(digest);
         self.hash.update((callees.len() as u32).to_le_bytes());
@@ -118,10 +118,11 @@ impl Dependencies<'_> {
 }
 
 /// Fingerprints only MIR whose operands, types and references can all be named across revisions.
-fn prove_body(
-    db: &dyn HirDatabase,
+fn prove_body<'db>(
+    db: &'db dyn HirDatabase,
     func: FunctionId,
-    body: &MirBody<'_>,
+    body: &MirBody<'db>,
+    env: ParamEnvAndCrate<'db>,
     policy: Policy,
 ) -> Option<([u8; 32], Vec<FunctionId>)> {
     if !matches!(body.owner, InferBodyId::DefWithBodyId(DefWithBodyId::FunctionId(it)) if it == func)
@@ -137,12 +138,12 @@ fn prove_body(
     {
         return None;
     }
-    let mut proof = Evidence { hash: Sha256::new(), callees: Vec::new(), policy };
+    let mut proof = Evidence { db, body, env, hash: Sha256::new(), callees: Vec::new(), policy };
     // Most functions have a pointer or a Rust aggregate. Decline them before reading source.
     for (_, local) in body.locals.iter() {
         proof.field(integer(local.ty.as_ref())?);
     }
-    let source = proof.signature(db, func)?;
+    let source = proof.signature(func)?;
     // Span and binding indices are local to a written body. Macros and conditional source
     // inside it can change their meaning even when the text of the function stays put.
     let syntax = source.body()?;
@@ -206,6 +207,15 @@ fn prove_body(
                 proof.field(b"goto");
                 proof.index(target.into_raw().into_u32());
             }
+            TerminatorKind::SwitchInt { discr, targets } => {
+                proof.field(b"switch");
+                let ty = proof.operand(discr)?;
+                if ty.is_unit() {
+                    return None;
+                }
+                proof.field(integer(ty)?);
+                hash_switch_targets(&mut proof.hash, targets);
+            }
             TerminatorKind::Call {
                 func,
                 args,
@@ -215,7 +225,7 @@ fn prove_body(
                 from_hir_call: true,
             } => {
                 proof.field(b"call");
-                proof.callee(db, func)?;
+                proof.callee(func)?;
                 for arg in args {
                     proof.operand(arg)?;
                 }
@@ -248,13 +258,26 @@ fn integer(ty: Ty<'_>) -> Option<&'static [u8]> {
     })
 }
 
-struct Evidence {
+/// Each MIR case is a full-width value paired with a block. The final block is the default.
+fn hash_switch_targets(hash: &mut Sha256, targets: &SwitchTargets) {
+    hash.update((targets.all_targets().len() as u64).to_le_bytes());
+    for (value, block) in targets.iter() {
+        hash.update(value.to_le_bytes());
+        hash.update(block.into_raw().into_u32().to_le_bytes());
+    }
+    hash.update(targets.otherwise().into_raw().into_u32().to_le_bytes());
+}
+
+struct Evidence<'a, 'db> {
+    db: &'db dyn HirDatabase,
+    body: &'a MirBody<'db>,
+    env: ParamEnvAndCrate<'db>,
     hash: Sha256,
     callees: Vec<FunctionId>,
     policy: Policy,
 }
 
-impl Evidence {
+impl<'db> Evidence<'_, 'db> {
     fn field(&mut self, bytes: &[u8]) {
         self.hash.update((bytes.len() as u64).to_le_bytes());
         self.hash.update(bytes);
@@ -277,7 +300,8 @@ impl Evidence {
         self.index(id);
     }
 
-    fn signature(&mut self, db: &dyn HirDatabase, func: FunctionId) -> Option<ast::Fn> {
+    fn signature(&mut self, func: FunctionId) -> Option<ast::Fn> {
+        let db = self.db;
         let loc = func.lookup(db);
         let sig = FunctionSignature::of(db, func);
         if !matches!(loc.container, ItemContainerId::ModuleId(_))
@@ -330,7 +354,8 @@ impl Evidence {
         Some(source.value)
     }
 
-    fn callee(&mut self, db: &dyn HirDatabase, operand: &Operand) -> Option<()> {
+    fn callee(&mut self, operand: &Operand) -> Option<()> {
+        let db = self.db;
         self.operand_span(operand);
         let ty = match &operand.kind {
             OperandKind::Constant { ty, .. } => ty.as_ref(),
@@ -357,7 +382,7 @@ impl Evidence {
                         flags.contains(AttrFlags::IS_INLINE) as u8,
                     ]);
                 }
-                self.signature(db, func)?;
+                self.signature(func)?;
                 self.callees.push(func);
                 self.callees.len() - 1
             }
@@ -366,21 +391,24 @@ impl Evidence {
         Some(())
     }
 
-    fn place(&mut self, place: &StoredPlace) -> Option<()> {
-        self.index(place.as_ref().as_local()?.into_raw().into_u32());
-        Some(())
+    fn place(&mut self, place: &StoredPlace) -> Option<LocalId> {
+        let local = place.as_ref().as_local()?;
+        self.index(local.into_raw().into_u32());
+        Some(local)
     }
 
-    fn operand(&mut self, operand: &Operand) -> Option<()> {
+    fn operand(&mut self, operand: &Operand) -> Option<Ty<'db>> {
         self.operand_span(operand);
-        match &operand.kind {
+        Some(match &operand.kind {
             OperandKind::Copy(p) => {
                 self.field(b"copy");
-                self.place(p)?;
+                let local = self.place(p)?;
+                self.body.locals[local].ty.as_ref()
             }
             OperandKind::Move(p) => {
                 self.field(b"move");
-                self.place(p)?;
+                let local = self.place(p)?;
+                self.body.locals[local].ty.as_ref()
             }
             OperandKind::Allocation { allocation } => {
                 let value = allocation.as_ref();
@@ -390,19 +418,42 @@ impl Evidence {
                 self.field(b"bytes");
                 self.field(integer(value.ty)?);
                 self.field(&value.memory);
+                value.ty
             }
             OperandKind::Constant { konst, ty } => {
-                let ConstKind::Value(value) = konst.as_ref().kind() else { return None };
-                let scalar = value.try_to_leaf()?;
+                let ty = ty.as_ref();
                 self.field(b"constant");
-                self.field(integer(ty.as_ref())?);
-                self.field(integer(value.ty)?);
-                self.field(&scalar.size().bytes().to_le_bytes());
-                self.field(&scalar.to_bits_unchecked().to_le_bytes());
+                self.field(integer(ty)?);
+                match konst.as_ref().kind() {
+                    ConstKind::Value(value) => {
+                        let scalar = value.try_to_leaf()?;
+                        self.field(integer(value.ty)?);
+                        self.field(&scalar.size().bytes().to_le_bytes());
+                        self.field(&scalar.to_bits_unchecked().to_le_bytes());
+                    }
+                    ConstKind::Unevaluated(UnevaluatedConst { def, args }) => {
+                        // A module constant in a match can change without editing its consumer.
+                        let GeneralConstId::ConstId(id) = def.0 else { return None };
+                        if !args.is_empty()
+                            || ty.is_unit()
+                            || !id.krate(self.db).data(self.db).origin.is_local()
+                            || !matches!(id.lookup(self.db).container, ItemContainerId::ModuleId(_))
+                        {
+                            return None;
+                        }
+                        let value = self.db.const_eval(id, args, Some(self.env)).ok()?;
+                        if value.ty != ty || !matches!(value.memory_map, MemoryMap::Empty) {
+                            return None;
+                        }
+                        self.field(b"module const");
+                        self.field(&value.memory);
+                    }
+                    _ => return None,
+                }
+                ty
             }
             _ => return None,
-        }
-        Some(())
+        })
     }
 
     fn operand_span(&mut self, operand: &Operand) {
@@ -429,16 +480,47 @@ impl Evidence {
                 | BinOp::Mul
                 | BinOp::BitAnd
                 | BinOp::BitOr
-                | BinOp::BitXor),
+                | BinOp::BitXor
+                | BinOp::Eq
+                | BinOp::Ne
+                | BinOp::Lt
+                | BinOp::Le
+                | BinOp::Gt
+                | BinOp::Ge),
                 left,
                 right,
             ) => {
                 self.field(op.to_string().as_bytes());
-                self.operand(left)?;
-                self.operand(right)?;
+                let left = self.operand(left)?;
+                let right = self.operand(right)?;
+                if left != right || left.is_unit() {
+                    return None;
+                }
             }
             _ => return None,
         }
         Some(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn switch_cases_and_default_contribute_to_the_proof() {
+        let block = |n| BasicBlockId::from_raw(la_arena::RawIdx::from_u32(n));
+        let digest = |cases: [(u128, u32); 2], otherwise| {
+            let mut hash = Sha256::new();
+            let cases = cases.into_iter().map(|(v, target)| (v, block(target)));
+            hash_switch_targets(&mut hash, &SwitchTargets::new(cases, block(otherwise)));
+            hash.finalize()
+        };
+        let cases = [(1, 2), (u64::MAX as u128, 3)];
+        let original = digest(cases, 4);
+        assert_ne!(original, digest([(1, 2), (u32::MAX as u128, 3)], 4));
+        assert_ne!(original, digest([(1, 2), (u128::MAX, 3)], 4));
+        assert_ne!(original, digest([(1, 3), (u64::MAX as u128, 2)], 4));
+        assert_ne!(original, digest(cases, 2));
     }
 }

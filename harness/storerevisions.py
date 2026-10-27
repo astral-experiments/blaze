@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check per-function disk reuse when a fresh Blaze worker starts after an edit or its undo.
 
-    RA_JIT_BIN=.../ra-jit python3 harness/storerevisions.py [leaf|inline|signature|binding ...]
+    RA_JIT_BIN=.../ra-jit python3 harness/storerevisions.py [leaf|inline|signature|binding|tag ...]
 
 Each forward build starts on a copy of the store containing only A. Each undo starts on a
 store populated independently from B, so an exact hit for the old checkout cannot hide an
@@ -25,7 +25,8 @@ pub const fn cache_inline(x: i32) -> i32 { x + 2 }
 LIVE_HELPER = """#[inline]
 pub fn cache_inline(x: i32) -> i32 { x + 2 }
 """
-LIB = """use cache_leaf as selected;
+LIB = """mod tags;
+use cache_leaf as selected;
 
 #[inline(never)]
 pub fn cache_leaf(x: i32) -> i32 { x + 1 }
@@ -40,6 +41,14 @@ pub fn cache_embedded() -> i32 { [0_u8; INLINE_COUNT].len() as i32 }
 pub fn cache_public(x: u8) -> u8 { (128u8 | x) as _ }
 #[inline(never)]
 pub fn cache_sibling(x: i32) -> i32 { x + 40 }
+#[inline(never)]
+pub fn cache_if(x: i32) -> i32 { if x < 0 { x - 9 } else { x + 31 } }
+#[inline(never)]
+pub fn cache_switch(x: i32) -> i32 {
+    match x { tags::TAG => x + 41, -1 => x - 11, _ => x + 50 }
+}
+#[inline(never)]
+pub fn cache_arm(x: i32) -> i32 { if x < 0 { cache_inline(x) + 20 } else { 0 } }
 """
 FILES = {
     "Cargo.toml": """[package]
@@ -55,24 +64,30 @@ overflow-checks = false
 """,
     "lib/Cargo.toml": '[package]\nname = "store_dep"\nversion = "0.1.0"\nedition = "2021"\n',
     "lib/src/lib.rs": LIB,
+    "lib/src/tags.rs": "pub const TAG: i32 = 1;\n",
     "src/main.rs": """#[inline(never)]
 fn cache_public_caller(x: u8) -> i32 { store_dep::cache_public(x) as i32 }
 fn main() {
     let x = std::env::args().len() as i32;
-    println!("{} {} {} {} {}", store_dep::cache_leaf_caller(x), store_dep::cache_inline_caller(x),
-             cache_public_caller(x as u8), store_dep::cache_sibling(x), store_dep::cache_embedded());
+    let signed = x - 2;
+    println!("{} {} {} {} {} {} {} {} {}", store_dep::cache_leaf_caller(x), store_dep::cache_inline_caller(x),
+             cache_public_caller(x as u8), store_dep::cache_sibling(x), store_dep::cache_if(signed),
+             store_dep::cache_switch(x), store_dep::cache_switch(signed), store_dep::cache_arm(signed),
+             store_dep::cache_embedded());
 }
 """,
 }
 # Functions which the worker must lower, and which it must actually restore for this edit.
-# The sibling lives in the edited file. The public signature's caller lives in the other crate.
+# The leaf's siblings live in the edited file. The public signature's caller lives in the other crate.
 CASES = {
-    "leaf": ("{ x + 1 }", "{ x + 4 }", {"cache_leaf"}, {"cache_sibling", "cache_leaf_caller"}),
-    "inline": ("{ x + 2 }", "{ x + 7 }", {"cache_inline_caller", "cache_embedded"}, {"cache_sibling"}),
+    "leaf": ("{ x + 1 }", "{ x + 4 }", {"cache_leaf"},
+             {"cache_sibling", "cache_leaf_caller", "cache_if", "cache_switch"}),
+    "inline": ("{ x + 2 }", "{ x + 7 }", {"cache_inline_caller", "cache_embedded", "cache_arm"}, {"cache_sibling"}),
     "signature": ("cache_public(x: u8) -> u8", "cache_public(x: u8) -> i8",
                   {"cache_public", "cache_public_caller"}, {"cache_sibling"}),
     "binding": ("use cache_leaf as selected;", "use cache_sibling as selected;",
                 {"cache_leaf_caller"}, {"cache_sibling"}),
+    "tag": ("TAG: i32 = 1", "TAG: i32 = 2", {"cache_switch"}, {"cache_if", "cache_sibling"}),
 }
 
 
@@ -96,11 +111,13 @@ def instructions(executable, function):
     return body
 
 
-def check_inline_caller(executable, delta):
+def check_inline_caller(executable, delta, function="cache_inline_caller"):
     # A runtime argument enters this caller. LLVM folds the helper and the caller's own add
     # into one offset, using add or lea on x86-64 and add on AArch64.
-    body = instructions(executable, "cache_inline_caller")
-    assert not re.search(r"\b(callq?|jmpq?|bl|blr|b|br)\b", body), body
+    body = instructions(executable, function)
+    assert not re.search(r"\b(callq?|bl|blr)\b", body), body
+    if function == "cache_inline_caller":
+        assert not re.search(r"\b(jmpq?|b|br)\b", body), body
     immediate = rf"(?:0x{delta:x}|{delta})\b"
     assert re.search(rf"\b(?:add[lq]?|lea[lq]?)\b[^\n]*(?:[$#]{immediate}|{immediate}\()", body), body
 
@@ -173,6 +190,7 @@ def build(ws, store, label, inline=False, live=False):
                 assert re.search(r"^backend: llvm compiled [1-9]\d* functions?\b", log, re.M), log
             delta = int(expected[0].split()[1]) - 1
             check_inline_caller(executable, delta)
+            check_inline_caller(executable, delta, "cache_arm")
             leaf_caller = instructions(executable, "cache_leaf_caller")
             assert re.search(r"^\s*(?:callq?|bl|blr)\s", leaf_caller, re.M), leaf_caller
             detail = f" (LLVM inlined add {delta}, cache_leaf_caller kept a call)"
@@ -222,20 +240,28 @@ def main():
     for case in cases:
         old, new, lowered, reused = CASES[case]
         if llvm and case != "inline":
-            reused = reused | {"cache_inline_caller"}
-        assert LIB.count(old) == 1
+            reused = reused | {"cache_inline_caller", "cache_arm"}
+        filename = "lib/src/tags.rs" if case == "tag" else "lib/src/lib.rs"
+        contents = FILES[filename]
+        assert contents.count(old) == 1
         edited = checkout(ws, f"{case}-edit")
-        (edited / "lib/src/lib.rs").write_text(LIB.replace(old, new))
+        (edited / filename).write_text(contents.replace(old, new))
         forward = root / f"{case}-from-A"
         shutil.copytree(first_store, forward)
         changed, log = build(edited, forward, f"{case}-edit", inline=case == "inline")
         assert all(a != b for a, b in zip(original, changed)), f"{case}: edit did not change the Cargo oracle"
+        if case == "inline":
+            assert [a.split()[-2] != b.split()[-2] for a, b in zip(original, changed)] == [True, False]
+        if case == "tag":
+            # x is 1 or 2. The other switch invocation takes the fixed -1 arm or the default.
+            assert all(a.split()[-4] != b.split()[-4] and a.split()[-3] == b.split()[-3]
+                       for a, b in zip(original, changed))
         decisions(log, f"{case} edit", lowered, reused)
         reverse = root / f"{case}-only-B"
         seed = checkout(edited, f"{case}-seed-B")
         build(seed, reverse, f"{case}-seed-B")
         undo = checkout(seed, f"{case}-undo")
-        (undo / "lib/src/lib.rs").write_text(LIB)
+        (undo / filename).write_text(contents)
         restored, log = build(undo, reverse, f"{case}-undo", inline=case == "inline")
         assert restored == original, f"{case}: undo did not restore the original program"
         decisions(log, f"{case} undo", lowered, reused)
