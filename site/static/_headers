@@ -1,6 +1,0 @@
-# Headers for the static pages (Workers static assets). The same CSP as the HTML the worker renders (worker/http.ts
-# csp()), less what only worker pages need: no GitHub avatars (comments) and no Turnstile (/updates, which sets its own).
-/*
-  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; media-src 'self'; frame-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'; object-src 'none'
-  X-Content-Type-Options: nosniff
-  Referrer-Policy: strict-origin-when-cross-origin

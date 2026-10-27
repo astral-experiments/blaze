@@ -18,9 +18,9 @@ A bump, in order (each step names itself when it fails, and stops there):
     compiler/rustc_abi/src copied as it is, and vendor/proc-macro-srv is upstream's crates at
     the new commit with ra-jit's changes to them at the old commit carried over (a three-way
     apply; a conflict stops the bump and names the files);
- 4. moves the pins written down elsewhere: the old toolchain name, rustc version line and
-    commit in install.sh and vendor/proc-macro-srv (RUSTC_VERSION_STRING, the manifest's
-    header), Cargo.toml's rust-version, and the flake's rust-overlay input (`nix flake update
+ 4. moves the pins written down elsewhere: the toolchain name, rustc version line and commit
+    in vendor/proc-macro-srv (RUSTC_VERSION_STRING, the manifest's header), Cargo.toml's
+    rust-version, and the flake's rust-overlay input (`nix flake update
     rust-overlay`, when nix is on PATH);
  5. installs the nightly with rustup.
 
@@ -45,7 +45,7 @@ HOSTS = ["aarch64-apple-darwin", "x86_64-unknown-linux-gnu", "aarch64-unknown-li
 COMPONENTS = ["rustc", "cargo", "rust-std", "rust-src", "llvm-tools-preview", "rustfmt-preview",
               "clippy-preview", "rust-analyzer-preview", "rustc-codegen-cranelift-preview"]
 # Where the old pin is written down besides harness/toolchain and pins.txt.
-MENTIONS = ["install.sh", "vendor/proc-macro-srv/Cargo.toml",
+MENTIONS = ["vendor/proc-macro-srv/Cargo.toml",
             "vendor/proc-macro-srv/crates/proc-macro-srv/src/lib.rs"]
 # vendor/proc-macro-srv's manifest and lock file are ra-jit's, written from upstream's (their
 # header says how) and carried as they are; its crates are upstream's (`server_dirs`).

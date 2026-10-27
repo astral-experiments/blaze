@@ -28,7 +28,7 @@ Both outputs are normalized (the root's absolute path and CARGO_HOME replaced, s
 different machines compare) and compared as text, key order included. A workspace is counted
 equal, different, blaze-failed, cargo-failed or both-failed (both refused it, with cargo's error
 text or not), and the first difference of each that is not equal is printed. `--out` writes every case and its class as
-JSON; the counts are docs/resolve.md's.
+JSON.
 
 `--fixtures` runs cargo on each fixture of crates/blaze-manifest/tests/fixtures, copied into a
 directory of its own, from the directory its `fixture.json` names in `cwd` (its root if none),

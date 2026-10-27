@@ -244,7 +244,7 @@ jobs:
           echo "RA_JIT_BIN=$PWD/ra-jit" >> "$GITHUB_ENV"
       - run: $PYTHON harness/bun_repros.py
 
-  # The borrow checker against rustc's own borrow-check tests (docs/borrowck.md), at the
+  # The borrow checker against rustc's own borrow-check tests, at the
   # commit of the nightly whose verdicts they are scored by, with a floor under the passes.
   borrowck:
     name: borrowck

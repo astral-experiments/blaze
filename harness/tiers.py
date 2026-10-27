@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Tiering end to end (macOS on AArch64, ra-jit built with `--features llvm`): a program that
 takes edits runs under the daemon, which samples it and compiles its hot functions again with
-LLVM, swapping them in as patches while it runs (docs/tiers.md).
+LLVM, swapping them in as patches while it runs.
 
 usage: tiers.py          (RA_JIT_BIN names the ra-jit built; cargo-ra-jit and ra-jit-rustc
                           are found next to it)

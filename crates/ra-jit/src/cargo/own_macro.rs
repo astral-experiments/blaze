@@ -30,7 +30,7 @@ use super::{
 /// is also what is used when it is not set and that server is there, or `0` for none.
 pub(crate) const SERVER: &str = "RA_JIT_PROC_MACRO_SERVER";
 
-/// The server's executable a release has beside ra-jit's (`.github/scripts/build_release.py`).
+/// The proc-macro server's executable name beside ra-jit.
 pub(crate) const SHIPPED: &str = "blaze-proc-macro-srv";
 
 /// The variable ra-jit sets for the cargo of a load into its own target directory.

@@ -40,14 +40,6 @@ debug = 0
 inherits = "release"
 debug = 2
 
-# The binaries a release ships, built with PGO by .github/scripts/build_release.py
-# (docs/reports/RELEASE-BUILD.md). Thin LTO takes 4-5% off an edit's work in the daemon but
-# makes a rebuild of ra-jit after a one-line change 2.5 times longer, so `release`, which the
-# harnesses and CI build after every change, goes without.
-[profile.dist]
-inherits = "release"
-lto = "thin"
-
 [patch.'crates-io']
 # rustc's layout code, from the tag of the stable in `harness/toolchain`.
 ra-ap-rustc_abi = { path = "vendor/rustc_abi" }

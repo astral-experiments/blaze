@@ -152,7 +152,7 @@ FILES = {
 M = "app/src/main.rs"
 D = "dep/src/lib.rs"
 
-# A program with a `#[ra_jit::cache]` function (docs/fn-cache.md): rustc's copy of it caches
+# A program with a `#[ra_jit::cache]` function: rustc's copy of it caches
 # nothing, ours does, and a patch of what it reaches must not find what the code before kept.
 CACHED_MAIN = """\
 #[inline(never)]

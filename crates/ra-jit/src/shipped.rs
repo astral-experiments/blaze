@@ -1,18 +1,11 @@
-//! The standard library as a release of ra-jit ships it (docs/no-rustc.md, "The standard
-//! library, shipped"). A build with nothing of rustc's starts from the standard library's unit
-//! and the frozen maps of its crates, which take seconds to make on a machine of many cores
-//! and most of a minute on a laptop. `ra-jit std REMOTE TOOLCHAIN` makes them once, for the
-//! toolchain and this build of ra-jit, and sends them to a remote as the project
-//! `std-<target>-<build>`; the release workflow does that for each target and attaches what
-//! it sent to the release. A build of a release fetches that project before it first reads
-//! the store, once a store, and `RA_JIT_STD_FROM` names another remote to fetch it from
-//! (`off` for none).
+//! Sharing the compiled standard library. `ra-jit std REMOTE TOOLCHAIN` builds the
+//! standard library's unit and frozen maps once and sends them to the remote as
+//! `std-<target>-<build>`. A build with `RA_JIT_STD_FROM` set fetches that project
+//! before it first reads the store.
 //!
-//! What is fetched is checked as everything a remote gives is (`remote.rs`): a pack is used
-//! only when its bytes hash to the name its list gives it, and only by the build of ra-jit
-//! and the toolchain that made it, which its keys say. Its list is not signed (`signed.rs`):
-//! it is taken from the release the program came from, or from the remote the user named.
-//! `RA_JIT_REMOTE_TRUST` is for the lists of `RA_JIT_REMOTE`.
+//! Each pack is verified against its content hash. The store keys include the build
+//! and toolchain that produced it. The user chooses the remote and trusts its unsigned
+//! list. `RA_JIT_REMOTE_TRUST` applies to the lists of `RA_JIT_REMOTE`.
 
 use std::{
     path::Path,
@@ -24,9 +17,6 @@ use anyhow::Context;
 
 use crate::{cargo::own_script, remote};
 
-/// Where the assets of the releases are.
-const RELEASES: &str = "https://github.com/indexable-inc/blaze/releases/download";
-
 /// How long after a fetch that failed the next one is tried.
 const AGAIN_AFTER: Duration = Duration::from_secs(60 * 60);
 
@@ -36,16 +26,9 @@ fn project(target: &str) -> Option<String> {
     Some(format!("std-{target}-{}", ra_jit_store::build_name()?))
 }
 
-/// Where the standard library is fetched from: `RA_JIT_STD_FROM`, and without it the release
-/// this build is, when it is one.
+/// The remote selected for the standard library. An empty value or `off` disables fetching.
 fn source() -> Option<String> {
-    match std::env::var("RA_JIT_STD_FROM") {
-        Ok(from) => (!from.is_empty() && from != "off").then_some(from),
-        Err(_) => {
-            let release = option_env!("RA_JIT_RELEASE").filter(|it| !it.is_empty());
-            release.map(|tag| format!("{RELEASES}/{tag}"))
-        }
-    }
+    std::env::var("RA_JIT_STD_FROM").ok().filter(|from| !from.is_empty() && from != "off")
 }
 
 /// Fetches the standard library for `target` into the store on a thread of its own, when
