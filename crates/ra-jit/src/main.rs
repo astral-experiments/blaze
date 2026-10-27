@@ -3708,9 +3708,11 @@ fn harnesses<'a>(
 
 /// Gives the files the texts [`harnesses`] wrote. The files.
 fn write_harnesses(db: &mut RootDatabase, texts: Vec<(vfs::FileId, String)>) -> Vec<vfs::FileId> {
-    use ide_db::base_db::salsa::Durability;
+    use ide_db::base_db::salsa::{Durability, Setter as _};
     for (file, text) in &texts {
         db.set_file_text_with_durability(*file, text, Durability::LOW);
+        let module = text.contains(test_harness::MARK).then_some(test_harness::MODULE);
+        db.file_text(*file).set_appended_root_module(db).to(module);
     }
     texts.into_iter().map(|it| it.0).collect()
 }
@@ -6141,7 +6143,10 @@ impl WatchPaths {
         let mut as_rustc_read = true;
         for (file, path) in &added {
             let now = self.file(Watched::Source(*file), path, &db.on_disk(path));
-            as_rustc_read &= now.as_ref().is_some_and(|it| was.get(path) == Some(&it.mtime));
+            as_rustc_read &= match &now {
+                Some(file) => was.get(path) == Some(&file.mtime),
+                None => self.immutable(path),
+            };
             files.extend(now);
         }
         if as_rustc_read { Loaded::AsRustcRead } else { Loaded::New }
