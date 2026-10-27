@@ -1,13 +1,21 @@
-name: Trace compilation of the native test body
+name: Check the native symbol fix against both test fixtures
 on:
   push:
     branches: [charlie/ci-control-pr-7]
 permissions:
   contents: read
 jobs:
-  trace:
-    runs-on: namespace-profile-ubuntu-24-04-16
-    timeout-minutes: 30
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            runner: namespace-profile-ubuntu-24-04-16
+          - platform: macos
+            runner: nscloud-macos-sequoia-arm64-6x14
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
     env:
       CARGO_INCREMENTAL: 0
       SCCACHE_GHA_ENABLED: "true"
@@ -15,8 +23,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: c8d198814f29545db3cc391e2a898ebed03ce97c
+          ref: 065f3bd3f0355d86aab63b423c0ae97b131c3800
+          fetch-depth: 0
           persist-credentials: false
+      - name: Apply the candidate to the current main
+        run: |
+          git -c user.name=CI -c user.email=ci@users.noreply.github.com merge --no-ff --no-commit 4bb212d8d615838d0ebee46c6644a1de62e534c1
+          git status --short
       - uses: ./.github/actions/toolchain
         with:
           llvm: build
@@ -25,42 +38,70 @@ jobs:
           shared-key: build
           save-if: false
       - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Trace rejected instances in this control build
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          path = Path("crates/hir-ty-codegen/mod.rs")
-          data = path.read_text()
-          one = "                if let Err(e) = defined {\n                    if self.forward_to_rustc"
-          assert data.count(one) == 1
-          data = data.replace(one, '                if let Err(e) = defined {\n                    eprintln!("BLAZE_DIAG cannot compile {}: {e}", self.callee_name(instance.def));\n                    if self.forward_to_rustc')
-          two = "        let symbol = self.rustc_copy(symbol, instance.checked)?;\n        let sig = self.module"
-          assert data.count(two) == 1
-          data = data.replace(two, '        let symbol = self.rustc_copy(symbol, instance.checked)?;\n        eprintln!("BLAZE_DIAG candidate {} -> {symbol}", self.callee_name(instance.def));\n        if symbol.contains("9unchanged7library") { return None; }\n        let sig = self.module')
-          path.write_text(data)
-          PY
       - run: nix develop --command cargo build -p ra-jit --release --features llvm --locked
         env:
           RUSTC_WRAPPER: sccache
-      - name: Trace the original regression fixture
+      - run: tar -cf probe.tar ra-jit cargo-ra-jit ra-jit-rustc ra-jit-rustc-first
+        working-directory: target/release
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: probe-${{ matrix.platform }}
+          path: target/release/probe.tar
+          retention-days: 1
+  fixture:
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+          - platform: macos
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: 065f3bd3f0355d86aab63b423c0ae97b131c3800
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: ./.github/actions/toolchain
+        with:
+          llvm: run
+      - uses: actions/download-artifact@v8
+        with:
+          name: probe-${{ matrix.platform }}
+          path: target/release
+      - run: tar -xf probe.tar
+        working-directory: target/release
+      - name: Run the original and expanded fixtures under both CI backends
         working-directory: harness
         shell: bash
         run: |
+          git show 9bc237eddb96020ceecd24a92f1fa5e96226a792:harness/testselect.py > testselect_original.py
           python3 - <<'PY'
-          from pathlib import Path
-          import os, subprocess, tempfile
+          import os
+          import pathlib
+          import subprocess
+          import tempfile
           import testselect
-          binary = Path("../target/release").resolve()
-          home, root = tempfile.mkdtemp(dir="/tmp"), tempfile.mkdtemp()
-          env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", RA_JIT_HOME=home,
-                     RA_JIT_BIN=str(binary/"ra-jit"), RA_JIT_BACKEND="cranelift",
-                     RA_JIT_OPT="2", RA_JIT_EMIT="fast", CARGO_TERM_COLOR="never")
-          result = testselect.unchanged_instances(root, env)
-          print("FIXTURE", result, flush=True)
-          subprocess.run(["cargo", "ra-jit", "stop"], cwd=Path(root)/"unchanged", env=env, capture_output=True)
-          for path in Path(home).rglob("log"):
-              if path.is_file():
-                  print(path)
-                  print("\n".join(l for l in path.read_text(errors="replace").splitlines()
-                        if "BLAZE_DIAG" in l or "left to rustc" in l or "unsupported" in l)[:12000])
+          import testselect_original
+
+          binary = pathlib.Path("../target/release").resolve()
+          failures = 0
+          for name, module in (("original", testselect_original), ("expanded", testselect)):
+              for backend in ("cranelift", "llvm"):
+                  with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory(dir="/tmp") as home:
+                      env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", RA_JIT_HOME=home,
+                                 RA_JIT_BIN=str(binary/"ra-jit"), RA_JIT_BACKEND=backend,
+                                 RA_JIT_OPT="2", RA_JIT_EMIT="fast", RUST_BACKTRACE="0", CARGO_TERM_COLOR="never")
+                      try:
+                          result = module.unchanged_instances(root, env)
+                          print(f"{name} / {backend}: {result}", flush=True)
+                          failures += result != "ok"
+                      finally:
+                          subprocess.run(["cargo","ra-jit","stop"], cwd=pathlib.Path(root)/"unchanged",
+                                         env=env, capture_output=True)
+          raise SystemExit(bool(failures))
           PY
