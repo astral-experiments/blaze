@@ -6040,12 +6040,25 @@ struct WatchedFile {
 }
 
 /// What [`WatchPaths::include_sources`] took in.
-#[derive(Clone, Copy, PartialEq)]
+#[derive(PartialEq)]
 enum Loaded {
     Nothing,
     /// Files that rustc read as they are now: what it linked is of them.
     AsRustcRead,
-    New,
+    /// The crates with newly discovered inputs whose native contents could not be verified.
+    /// When a file has no known owner, it can affect any crate.
+    New(Option<Vec<ide_db::base_db::Crate>>),
+}
+
+impl Loaded {
+    fn invalidate(&self, db: &RootDatabase, known: &mut Rejections) {
+        if let Self::New(crates) = self {
+            known.touch(db, crates.as_deref());
+        }
+        if *self != Self::Nothing {
+            known.touch_own(db);
+        }
+    }
 }
 
 /// The installed sources and Cargo output directories of the loaded workspaces.
@@ -6139,16 +6152,30 @@ impl WatchPaths {
             }
             !watched
         });
-        let mut as_rustc_read = true;
+        let mut changed = Vec::new();
         for (file, path) in &added {
             let now = self.file(Watched::Source(*file), path, &db.on_disk(path));
-            as_rustc_read &= match &now {
+            let as_rustc_read = match &now {
                 Some(file) => was.get(path) == Some(&file.mtime),
                 None => self.immutable(path),
             };
+            if !as_rustc_read {
+                changed.push(*file);
+            }
             files.extend(now);
         }
-        if as_rustc_read { Loaded::AsRustcRead } else { Loaded::New }
+        if changed.is_empty() {
+            return Loaded::AsRustcRead;
+        }
+        let mut crates = Vec::new();
+        for file in changed {
+            let owners = ide_db::base_db::relevant_crates(db, file);
+            if owners.is_empty() {
+                return Loaded::New(None);
+            }
+            crates.extend_from_slice(owners);
+        }
+        Loaded::New(Some(crates))
     }
 
     /// Adds the files the last build included that are not watched yet. One is read again once
@@ -8349,8 +8376,9 @@ fn run_holding(
             }
             let mut cold = build_unheld(&db, &table, &args, &mut known, &listed)?;
             // An `include!` in a body is first seen when the body is compiled.
-            if checkouts.watch.include_sources(&mut files, &mut tree, &mut db) != Loaded::Nothing {
-                known.touch(&db, None);
+            let loaded = checkouts.watch.include_sources(&mut files, &mut tree, &mut db);
+            if loaded != Loaded::Nothing {
+                loaded.invalidate(&db, &mut known);
                 listed.touch(&db, None);
                 cold = build_unheld(&db, &table, &args, &mut known, &listed)?;
             }
@@ -8543,12 +8571,10 @@ fn run_holding(
         }
         let included = checkouts.watch.watch_included(&mut files, &mut db);
         let loaded = checkouts.watch.include_sources(&mut files, &mut tree, &mut db);
-        match loaded {
-            _ if included => programs.iter_mut().for_each(|it| it.known.touch(&db, None)),
-            Loaded::Nothing => {}
-            // A build of the daemon's own compiled without them; what rustc linked is of them.
-            Loaded::AsRustcRead => programs.iter_mut().for_each(|it| it.known.touch_own(&db)),
-            Loaded::New => programs.iter_mut().for_each(|it| it.known.touch(&db, None)),
+        if included {
+            programs.iter_mut().for_each(|it| it.known.touch(&db, None));
+        } else {
+            programs.iter_mut().for_each(|it| loaded.invalidate(&db, &mut it.known));
         }
         // What they declare is in the crates now, and a listing from before has none of it.
         if loaded != Loaded::Nothing {

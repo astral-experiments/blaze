@@ -316,13 +316,24 @@ def unchanged_instances(root, env):
     ws = os.path.join(root, "unchanged")
     files = {
         "Cargo.toml": '[package]\nname = "unchanged"\nversion = "0.1.0"\nedition = "2021"\n'
+                      '[dependencies]\nunchanged-native = { path = "native" }\n'
                       '[profile.dev]\nopt-level = 1\n',
-        "src/lib.rs": """#![feature(f128)]
+        "build.rs": """fn main() {
+    let dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    for name in ["first", "second"] {
+        std::fs::write(dir.join(format!("{name}.expr")), "0_u32").unwrap();
+    }
+}
+""",
+        "native/Cargo.toml": '[package]\nname = "unchanged-native"\nversion = "0.1.0"\nedition = "2021"\n',
+        "native/src/lib.rs": """#![feature(f128)]
 #[inline(never)]
 pub fn half<T: Into<f64>>(value: T) -> f64 {
     let wide = std::hint::black_box(value.into() as f128);
     (wide / 2.0) as f64
 }
+""",
+        "src/lib.rs": """pub use unchanged_native::half;
 #[test]
 fn library() { assert_eq!(half(8_u32), 4.0); }
 """,
@@ -331,7 +342,9 @@ fn library() { assert_eq!(half(8_u32), 4.0); }
         files[f"cargo-home/registry/{name}.data"] = "const VALUE: u32 = 8;\n"
         files[f"tests/{name}.rs"] = (
             f'include!(concat!(env!("CARGO_HOME"), "/registry/{name}.data"));\n'
-            f"#[test]\nfn {name}() {{ assert_eq!(unchanged::half(VALUE), 4.0); }}\n"
+            f'#[test]\nfn {name}() {{\n'
+            f'    let extra = include!(concat!(env!("OUT_DIR"), "/{name}.expr"));\n'
+            f'    assert_eq!(unchanged::half(VALUE + extra), 4.0);\n}}\n'
         )
         # Each disabled crate still needs a libtest entry point after it joins the worker.
         files[f"tests/{name}_disabled.rs"] = '#![cfg(any())]\n#[test]\nfn hidden() { panic!("disabled test ran"); }\n'
