@@ -17,7 +17,7 @@ CRATES = ["devdep", "blanket", "edition2015", "fragment", "procmacro"]
 # Crates that use a nightly feature, built by the pinned compiler with RUSTC_BOOTSTRAP=1. That
 # also has cargo read the `[unstable]` table of its configuration, where `checksum-freshness`
 # would make the touch that has cargo link the test again do nothing.
-NIGHTLY_CRATES = ["allocated", "rustcall"]
+NIGHTLY_CRATES = ["allocated"]
 NIGHTLY_ENV = {"RUSTC_BOOTSTRAP": "1", "CARGO_UNSTABLE_CHECKSUM_FRESHNESS": "false"}
 # What is reduced and not fixed: these are expected to differ, and are told apart when they do.
 OPEN = {"assert_message", "future_unwind_flags", "fragment_edition_through_macro", "assert_long_expression"}

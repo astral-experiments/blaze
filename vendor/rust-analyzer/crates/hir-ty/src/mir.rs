@@ -1568,6 +1568,39 @@ impl MirBody<'_> {
         self.param_locals.iter().copied().chain(self.upvars_in_place.iter().map(|it| it.0))
     }
 
+    /// Receives the final tuple of a monomorphized `extern "rust-call"` body as individual
+    /// parameters. The body still uses its original tuple, assembled once on entry.
+    pub fn spread_rust_call_tuple(&mut self) -> bool {
+        let Some(&tuple) = self.param_locals.last() else { return false };
+        let ty = self.locals[tuple].ty.as_ref();
+        let TyKind::Tuple(fields) = ty.kind() else { return false };
+        self.param_locals.pop();
+        let operands = fields
+            .iter()
+            .map(|field| {
+                let local = self.locals.alloc(Local { ty: field.store() });
+                self.param_locals.push(local);
+                Operand { kind: OperandKind::Move(Place::from(local).store()), span: None }
+            })
+            .collect();
+        let span = MirSpan::Unknown;
+        self.start_block = self.basic_blocks.alloc(BasicBlock {
+            statements: vec![Statement {
+                kind: StatementKind::Assign(
+                    Place::from(tuple).store(),
+                    Rvalue::Aggregate(AggregateKind::Tuple(ty.store()), operands),
+                ),
+                span,
+            }],
+            terminator: Some(Terminator {
+                span,
+                kind: TerminatorKind::Goto { target: self.start_block },
+            }),
+            is_cleanup: false,
+        });
+        true
+    }
+
     pub fn local_to_binding_map(&self) -> ArenaMap<LocalId, BindingId> {
         self.binding_locals.iter().map(|(it, y)| (*y, it)).collect()
     }
@@ -1577,37 +1610,6 @@ impl MirBody<'_> {
 }
 
 impl<'db> MirBody<'db> {
-    /// Exposes the final tuple of a monomorphized `extern "rust-call"` body as separate ABI
-    /// parameters, then rebuilds the tuple that its MIR uses.
-    pub fn spread_tuple_argument(&mut self) -> Option<()> {
-        let &tuple = self.param_locals.last()?;
-        let ty = self.locals[tuple].ty.as_ref();
-        let TyKind::Tuple(fields) = ty.kind() else { return None };
-        self.param_locals.pop();
-        let fields = fields
-            .iter()
-            .map(|field| {
-                let local = self.locals.alloc(Local { ty: field.store() });
-                self.param_locals.push(local);
-                Operand { kind: OperandKind::Move(Place::from(local).store()), span: None }
-            })
-            .collect();
-        let span = MirSpan::Unknown;
-        let assign = StatementKind::Assign(
-            Place::from(tuple).store(),
-            Rvalue::Aggregate(AggregateKind::Tuple(ty.store()), fields),
-        );
-        self.start_block = self.basic_blocks.alloc(BasicBlock {
-            statements: vec![Statement { kind: assign, span }],
-            terminator: Some(Terminator {
-                kind: TerminatorKind::Goto { target: self.start_block },
-                span,
-            }),
-            is_cleanup: false,
-        });
-        Some(())
-    }
-
     /// Says `Move` for every operand that reads a place whose type is not `Copy`, as rustc's
     /// MIR building does: lowering writes `Copy` for each, and whether a use of a place moves
     /// out of it depends on its type alone.

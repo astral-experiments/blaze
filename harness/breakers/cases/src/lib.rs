@@ -44,7 +44,6 @@ cases![
     macro_statements_as_expr,
     promoted_unsized,
     dyn_fn_supertrait,
-    forwarded_dyn_fn,
     println_concat,
     wide_bit_set,
     destructure_assign_try,

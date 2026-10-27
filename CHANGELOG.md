@@ -838,7 +838,7 @@ All notable changes to ra-jit are written here. The format follows
 ### Fixed
 
 - The borrow checker now includes associated type bindings on trait objects when inferring lifetime bounds.
-- A reference to a `dyn Fn` can be forwarded as another trait object. The `rust-call` method in its vtable now receives the arguments separately, as rustc passes them.
+- Non-generic `extern "rust-call"` functions now use the same calling convention when called directly or through a function pointer.
 
 - `cargo install --git https://github.com/indexable-inc/blaze ra-jit` builds ra-jit
   ([#242](https://github.com/indexable-inc/blaze/issues/242), #293, by @gakonst). It failed

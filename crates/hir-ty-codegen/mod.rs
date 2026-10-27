@@ -3366,8 +3366,8 @@ fn body_for_abi<'db>(
     abi: ExternAbi,
     mut body: Cow<'db, MirBody<'db>>,
 ) -> Result<Cow<'db, MirBody<'db>>> {
-    if abi == ExternAbi::RustCall && body.to_mut().spread_tuple_argument().is_none() {
-        unsupported!("rust-call body without a trailing tuple");
+    if abi == ExternAbi::RustCall && !body.to_mut().spread_rust_call_tuple() {
+        unsupported!("the last parameter of a rust-call function is not a tuple");
     }
     Ok(body)
 }
@@ -12071,6 +12071,24 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         operands.iter().map(|it| self.operand(it)).collect()
     }
 
+    /// Appends the fields of a `rust-call` argument in declaration order.
+    fn spread_tuple(
+        &mut self,
+        args: &mut Vec<(Value, Ty<'db>)>,
+        tuple: Value,
+        ty: Ty<'db>,
+    ) -> Result<()> {
+        let TyKind::Tuple(fields) = ty.kind() else {
+            unsupported!("the final argument of a rust-call is {ty:?}");
+        };
+        let layout = self.layout(ty)?;
+        args.extend(fields.iter().enumerate().map(|(i, field)| {
+            let offset = layout.fields.offset(i).bytes() as i64;
+            (self.builder.ins().iadd_imm(tuple, offset), field)
+        }));
+        Ok(())
+    }
+
     /// `Fn::call`, `FnMut::call_mut` or `FnOnce::call_once`. For a call expression MIR passes
     /// the callee first and then the arguments one by one, not as a tuple.
     fn call_fn_trait(
@@ -12109,7 +12127,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
                 let tuple_ty = method_args.type_at(1);
                 match (&self.operands(rest)?[..], tuple_ty.kind()) {
                     (&[(tuple, ty)], TyKind::Tuple(_)) if ty == tuple_ty => {
-                        values.extend(self.spread_call_tuple(tuple, ty)?);
+                        self.spread_tuple(&mut values, tuple, ty)?;
                     }
                     (rest, _) => values.extend_from_slice(rest),
                 }
@@ -12122,10 +12140,11 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         // A call written as `f.call_mut(args)` does pass the tuple, which the callee takes
         // apart all the same.
         let tuple_ty = method_args.type_at(1);
-        if let &[(tuple, ty)] = &values[..]
+        if let (&[(tuple, ty)], TyKind::Tuple(_)) = (&values[..], tuple_ty.kind())
             && ty == tuple_ty
         {
-            values = self.spread_call_tuple(tuple, ty)?;
+            values.clear();
+            self.spread_tuple(&mut values, tuple, ty)?;
         }
         // The innermost reference to the callee and the address it is stored at.
         let mut by_ref = None;
@@ -13400,22 +13419,6 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
         Ok(tuple)
     }
 
-    /// The fields that a `rust-call` argument tuple passes separately at the call boundary.
-    fn spread_call_tuple(&mut self, tuple: Value, ty: Ty<'db>) -> Result<Vec<(Value, Ty<'db>)>> {
-        let TyKind::Tuple(fields) = ty.kind() else {
-            unsupported!("rust-call argument is not a tuple: {ty:?}");
-        };
-        let layout = self.layout(ty)?;
-        Ok(fields
-            .iter()
-            .enumerate()
-            .map(|(i, field)| {
-                let offset = layout.fields.offset(i).bytes() as i64;
-                (self.builder.ins().iadd_imm(tuple, offset), field)
-            })
-            .collect())
-    }
-
     /// Passes the arguments, which live at the given addresses, the way the Rust ABI wants them
     /// and stores the result in `dst`.
     fn emit_call(
@@ -13433,13 +13436,14 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             Callee::Instance(..) => ExternAbi::Rust,
             Callee::Pointer(_, abi, _) => abi,
         };
-        let spread;
+        let mut spread;
         let args = if abi == ExternAbi::RustCall {
-            let Some((&(tuple, ty), prefix)) = args.split_last() else {
-                unsupported!("rust-call without a trailing tuple");
+            let Some((&(tuple, ty), fixed)) = args.split_last() else {
+                unsupported!("a rust-call without its tuple");
             };
-            spread = [prefix, &self.spread_call_tuple(tuple, ty)?].concat();
-            &spread
+            spread = fixed.to_vec();
+            self.spread_tuple(&mut spread, tuple, ty)?;
+            &spread[..]
         } else {
             args
         };
