@@ -6816,7 +6816,9 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             // Nothing else defines the statics of a program compiled to WebAssembly, and
             // under its own name a static is the same one after a build in full.
             let own = if cfg!(feature = "wasm") { self.symbols.static_(id) } else { None };
-            let name = own.unwrap_or_else(|| format!("ra_jit::static::{}", self.location_counter));
+            let prefix = if self.base.is_some() { "ra_jit.patch" } else { "ra_jit" };
+            let name =
+                own.unwrap_or_else(|| format!("{prefix}::static::{}", self.location_counter));
             self.location_counter += 1;
             let linkage = if self.patching { Linkage::Hidden } else { Linkage::Local };
             self.module.declare_data(&name, linkage, compiled.writable, thread_local)?

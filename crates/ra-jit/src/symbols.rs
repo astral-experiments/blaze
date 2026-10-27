@@ -1075,6 +1075,18 @@ impl SymbolTable {
         self.built_from.iter().flat_map(|(_, sources)| sources.iter().map(|it| &*it.path))
     }
 
+    /// The timestamps of the native objects whose dep-info lists this input. A missing
+    /// object's timestamp sorts first, so the oldest build cannot attest to the input.
+    pub(crate) fn builds_reading<'a>(
+        &'a self,
+        path: &'a Path,
+    ) -> impl Iterator<Item = Option<SystemTime>> + 'a {
+        self.built_from
+            .iter()
+            .filter(move |(_, sources)| sources.iter().any(|source| source.path == path))
+            .map(|(object, _)| written(object))
+    }
+
     /// Each source written after rustc built its crate, paired with the crate's root.
     pub(crate) fn all_written_since_built(&self) -> impl Iterator<Item = (&Path, &Path)> {
         let finished = self.finished();
