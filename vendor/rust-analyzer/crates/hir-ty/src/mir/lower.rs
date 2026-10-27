@@ -1932,7 +1932,12 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                                 .push(Operand { kind: OperandKind::Move(tmp.store()), span: None });
                         }
                         UpvarCapture::ByValue => {
-                            operands.push(Operand { kind: OperandKind::Move(p), span: None })
+                            let kind = if self.is_copy(capture.captured_ty(self.db)) {
+                                OperandKind::Copy(p)
+                            } else {
+                                OperandKind::Move(p)
+                            };
+                            operands.push(Operand { kind, span: None });
                         }
                         UpvarCapture::ByUse => not_supported!("capture by use"),
                     }
