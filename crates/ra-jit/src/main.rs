@@ -190,6 +190,56 @@ impl Args {
         std::iter::once(&self.krate).chain(&self.batch).chain(&self.widened)
     }
 
+    /// Adds edited native libraries and their linked callers to this program's build.
+    /// Returns the libraries the edit directly touched.
+    fn widen(
+        &mut self,
+        db: &RootDatabase,
+        table: &SymbolTable,
+        files: &[vfs::FileId],
+    ) -> anyhow::Result<Vec<ide_db::base_db::Crate>> {
+        // Every crate of a whole build is the daemon's: rustc has no copy of any.
+        if files.is_empty() || self.exe.is_some() {
+            return Ok(Vec::new());
+        }
+        let built: Vec<ide_db::base_db::Crate> = self
+            .crates()
+            .filter_map(|name| crates_named(db, name, self).ok())
+            .flatten()
+            .map(Into::into)
+            .collect();
+        let used: FxHashSet<_> = built
+            .iter()
+            .flat_map(|it| it.transitive_deps(db))
+            .filter(|&it| table.is_empty() || links(db, table, it.into()))
+            .collect();
+        let edited: Vec<_> = files
+            .iter()
+            .filter_map(|&file| outline::left_to_rustc(db, &built, &used, file))
+            .collect();
+        if edited.is_empty() {
+            return Ok(edited);
+        }
+        let mut stale: Vec<_> = edited.iter().flat_map(|it| it.transitive_rev_deps(db)).collect();
+        stale.retain(|it| used.contains(it) && !built.contains(it));
+        stale.sort_unstable();
+        stale.dedup();
+        for &krate in &stale {
+            let Some(root) = crate_root_file(db, krate.into()) else {
+                let name = krate.extra_data(db).display_name.as_ref().map(|it| it.to_string());
+                anyhow::bail!(
+                    "an edit is to `{}`, which the program uses and the daemon was not asked to \
+                     build: its root file has no path to build it by",
+                    name.unwrap_or_default()
+                );
+            };
+            let root = root.display().to_string();
+            eprintln!("widened: {root} is built here from now on, rustc's copy is of before");
+            self.widened.push(root);
+        }
+        Ok(edited)
+    }
+
     /// Whether the file is one the checkout is built from. A file of the checkout it shares
     /// packages with is, when a crate of this one has it.
     fn owns(&self, db: &RootDatabase, file: vfs::FileId, path: &Path) -> bool {
@@ -8453,15 +8503,21 @@ fn run_holding(
 
         // The first build can read newer sources than the native code it calls. A data
         // input like include_bytes! belongs to the unit that listed it, too.
+        let mut roots = Vec::new();
         let mut crates = Vec::new();
-        let placed = units.into_iter().all(|unit| {
+        let mut placed = true;
+        for unit in units {
             let Some((id, _)) = abs(unit).ok().and_then(|path| tree.vfs().file_id(&path)) else {
-                return false;
+                placed = false;
+                continue;
             };
+            roots.push(id);
             let owners = ide_db::base_db::relevant_crates(&db, id);
+            placed &= !owners.is_empty();
             crates.extend(owners.iter().copied());
-            !owners.is_empty()
-        });
+        }
+        let native = args.widen(&db, &table, &roots)?;
+        known.distrust(&db, &native);
         known.touch(&db, placed.then_some(&crates));
     }
     let sysroot = checkouts.loaded.workspaces().first().and_then(|it| it.sysroot.root());
@@ -9072,7 +9128,7 @@ fn run_holding(
                                 program.whole = built.whole.clone();
                             }
                             let first = program.args.symbol_files == programs[0].args.symbol_files;
-                            program.distrust_rustc(&db, &files, first.then_some(&as_compiled));
+                            program.distrust_rustc(&db, &files, first.then_some(&as_compiled))?;
                             clients.push((programs.len(), (request, asked, stream)));
                             outputs.insert(programs.len(), wanted);
                             programs.push(program);
@@ -9941,7 +9997,7 @@ impl Program {
         db: &RootDatabase,
         files: &[WatchedFile],
         as_compiled: Option<&FxHashMap<PathBuf, triomphe::Arc<str>>>,
-    ) {
+    ) -> anyhow::Result<()> {
         let built = self
             .args
             .symbol_files
@@ -9969,6 +10025,10 @@ impl Program {
             .collect();
         // A newly registered harness can link rustc's code before its body includes are loaded.
         unread.extend(written_sources(files, self.table.stale_generated_roots()).into_keys());
+        // A new target can link a library older than the worker's first checkout.
+        let roots = self.table.all_written_since_built().map(|(root, _)| root);
+        unread.extend(written_sources(files, roots).into_keys());
+        self.args.widen(db, &self.table, &unread)?;
         let other: Vec<_> = unread
             .iter()
             .flat_map(|&id| ide_db::base_db::relevant_crates(db, id).to_vec())
@@ -9978,6 +10038,7 @@ impl Program {
         self.unbuilt.edited.extend(unread);
         self.unbuilt.edited.sort_unstable();
         self.unbuilt.edited.dedup();
+        Ok(())
     }
 
     /// Has the program be one of its checkout as it was loaded again: of the crates and the
@@ -10010,9 +10071,9 @@ impl Program {
                 }
                 self.table =
                     Arc::new(SymbolTable::load(&self.args.symbol_files, &self.args.root()?)?);
-                self.distrust_rustc(db, files, None);
-                self.unbuilt.named_anew = true;
                 self.args.widened.clear();
+                self.distrust_rustc(db, files, None)?;
+                self.unbuilt.named_anew = true;
                 // The tests listed were of the program rustc linked before.
                 (self.tests, self.tests_now) = (None, None);
             }
@@ -10024,56 +10085,13 @@ impl Program {
         Ok(())
     }
 
-    /// Takes over from rustc the crates that an edit since the last build is to, of those the
-    /// program links and the daemon was not asked to build, and the crates between them and
-    /// the ones it was: rustc's copies of them are from before the edit. A crate the program
-    /// depends on but rustc did not link (an integration test's package's dependencies it does
-    /// not use) has nothing in it an edit changes. The result is why one can't be taken over,
-    /// when one can't.
+    /// Discards the patch base when an edit makes the program take over a native library.
     fn widen(&mut self, db: &RootDatabase) -> Option<String> {
-        // Every crate of a whole build is the daemon's: rustc has no copy of any.
-        if self.args.exe.is_some() {
-            return None;
-        }
-        let built: Vec<ide_db::base_db::Crate> = self
-            .args
-            .crates()
-            .filter_map(|name| crates_named(db, name, &self.args).ok())
-            .flatten()
-            .map(Into::into)
-            .collect();
-        let table = &self.table;
-        let used: FxHashSet<_> = built
-            .iter()
-            .flat_map(|it| it.transitive_deps(db))
-            .filter(|&it| table.is_empty() || links(db, table, it.into()))
-            .collect();
-        let edited: Vec<_> = self
-            .unbuilt
-            .edited
-            .iter()
-            .filter_map(|&file| outline::left_to_rustc(db, &built, &used, file))
-            .collect();
-        if edited.is_empty() {
-            return None;
-        }
-        let mut stale: Vec<_> = edited.iter().flat_map(|it| it.transitive_rev_deps(db)).collect();
-        stale.retain(|it| used.contains(it) && !built.contains(it));
-        stale.sort_unstable();
-        stale.dedup();
-        for &krate in &stale {
-            let Some(root) = crate_root_file(db, krate.into()) else {
-                let name = krate.extra_data(db).display_name.as_ref().map(|it| it.to_string());
-                return Some(format!(
-                    "an edit is to `{}`, which the program uses and the daemon was not asked to \
-                     build: its root file has no path to build it by",
-                    name.unwrap_or_default()
-                ));
-            };
-            let root = root.display().to_string();
-            eprintln!("widened: {root} is built here from now on, rustc's copy is of before");
-            self.args.widened.push(root);
-        }
+        let edited = match self.args.widen(db, &self.table, &self.unbuilt.edited) {
+            Ok(edited) if edited.is_empty() => return None,
+            Ok(edited) => edited,
+            Err(error) => return Some(error.to_string()),
+        };
         self.known.distrust(db, &edited);
         self.known.forget_base();
         (self.whole, self.moved) = (None, true);

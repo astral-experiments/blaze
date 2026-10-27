@@ -147,7 +147,7 @@ enum Guard {
         what: String,
         files: Vec<(PathBuf, bool)>,
     },
-    /// The files of the libraries a unit test is linked with as rustc built them, without
+    /// The files of the libraries a test is linked with as rustc built them, without
     /// `cfg(test)`, each there or not, and when it was there, when it was written and its
     /// [`without_tests`]. Never why a build is cargo's: an edit to one is the daemon's. One in
     /// which only the tests changed leaves what rustc built of it as it is, so `cargo` (cargo's
@@ -999,6 +999,11 @@ impl State {
             let unit_test = test && !matches!(kind, Kind::Test | Kind::Bench);
             let name = artifact.target.name.clone();
             let unit = Record::of_artifact(&used, executable.as_std_path());
+            let compiled = reached_from(unit.into_iter().collect(), &used);
+            let native = match kind {
+                Kind::Test => optimized_test_deps(package, &compiled),
+                _ => FxHashSet::default(),
+            };
             // Named as cargo names the unit, the same in every build of it.
             let files = dir.join("programs").join(unit.map_or(&name, |it| &it.id));
             std::fs::create_dir_all(&files)?;
@@ -1010,7 +1015,7 @@ impl State {
                 .filter(|it| same_file::is_same_file(it, executable).unwrap_or(false))
                 .collect();
             let plan = match unit {
-                Some(unit) => Plan::of(unit, &used, &files, unit_test)?,
+                Some(unit) => Plan::of(unit, &used, &files, unit_test, &native)?,
                 None => Err(format!(
                     "cargo built `{name}` before ra-jit recorded what it is linked from; \
                      `cargo clean -p {}` has it built again",
@@ -1026,7 +1031,6 @@ impl State {
                 }
                 Err(why) => (None, Some(why)),
             };
-            let compiled = reached_from(unit.into_iter().collect(), &used);
             let inputs: FxHashSet<PathBuf> = compiled
                 .iter()
                 .flat_map(|it| it.inputs().files)
@@ -1062,7 +1066,9 @@ impl State {
         for checkout in &mut checkouts {
             let sources = checkout.programs.iter().flat_map(|plan| {
                 let compiled = used.iter().filter(|it| plan.crates.contains(&it.source));
-                compiled.flat_map(|it| it.inputs().files)
+                compiled
+                    .flat_map(|it| it.inputs().files)
+                    .chain(plan.linked_as_built.iter().cloned())
             });
             // What a build script wrote is cargo's, written while it built.
             let target_dir = metadata.target_directory.as_std_path();
@@ -1609,6 +1615,35 @@ fn named_above<'a>(dir: &'a Path, names: &'a [&str]) -> impl Iterator<Item = Pat
 /// against, and the ones those are.
 fn runs_in_build(used: &[Record]) -> Vec<&Record> {
     reached_from(used.iter().filter(|it| it.runs_in_build()).collect(), used)
+}
+
+/// Optimized workspace libraries an integration test can keep as rustc built them. Keep
+/// the package under test editable, along with every caller that may have inlined an
+/// editable library. An edit inside the remaining native libraries widens the build.
+fn optimized_test_deps<'a>(package: &Package, compiled: &[&'a Record]) -> FxHashSet<&'a str> {
+    let libraries = compiled.iter().copied().filter(|unit| unit.is_rlib());
+    let (mut native, editable): (Vec<_>, Vec<_>) = libraries.partition(|unit| {
+        unit.codegen("opt-level").is_some_and(|level| level != "0")
+            && !package.targets.iter().any(|target| target.src_path.as_std_path() == unit.source)
+            && !unit.stands_in()
+    });
+    // Cargo can pass either metadata or an rlib in --extern. Compare their stems with
+    // the directory and unit hash intact so that a renamed dependency is the same unit.
+    let outputs = |unit: &Record| unit.outputs().into_iter().map(|path| path.with_extension(""));
+    let mut editable: FxHashSet<_> = editable.into_iter().flat_map(outputs).collect();
+    loop {
+        let before = native.len();
+        native.retain(|unit| {
+            if unit.externs().any(|path| editable.contains(&path.with_extension(""))) {
+                editable.extend(outputs(unit));
+                return false;
+            }
+            true
+        });
+        if native.len() == before {
+            return native.into_iter().map(|unit| unit.id.as_str()).collect();
+        }
+    }
 }
 
 /// `found` and the units among `used` they are built against, and the ones those are.

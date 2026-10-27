@@ -866,6 +866,7 @@ def daemon(work):
     shared_async_statics(work, check)
     in_place(work, check)
     through_link(work, check)
+    optimized_test_dependencies(work, check)
     cached_type_ids(work, check)
     local_type_ids(work, check)
     pinned(work, check)
@@ -977,6 +978,77 @@ fn main() {
                   f"{how_built(ran.stderr)}, printed {ran.stdout.strip()!r}")
         finally:
             side.cargo("stop")
+
+
+def optimized_test_dependencies(work, check):
+    """An edit replaces every native caller that may have inlined the old value."""
+    ws = os.path.join(work, "optimized-test-deps")
+    packages = {
+        ".": ("subject", '''[workspace]
+members = ["leaf", "middle", "observer"]
+[lib]
+name = "api"
+[[test]]
+name = "probe"
+harness = false
+[profile.dev]
+opt-level = 1
+[dependencies]
+renamed = { package = "middle", path = "middle" }
+[dev-dependencies]
+observer = { path = "observer" }
+''', "#[inline(always)] pub fn value() -> u32 { renamed::value() + 1 }"),
+        "leaf": ("leaf", "", "#[inline(always)] pub fn value() -> u32 { 1 }"),
+        "middle": ("middle", '[dependencies]\nleaf = { path = "../leaf" }',
+                   "#[inline(never)] pub fn value() -> u32 { leaf::value() }"),
+        "observer": ("observer", '[dependencies]\nunder_test = { package = "subject", path = ".." }',
+                     "#[inline(never)] pub fn value() -> u32 { under_test::value() }"),
+    }
+    for directory, (name, manifest, body) in packages.items():
+        path = os.path.join(ws, directory)
+        os.makedirs(os.path.join(path, "src"))
+        open(os.path.join(path, "Cargo.toml"), "w").write(
+            f'[package]\nname = "{name}"\nversion = "0.0.0"\nedition = "2021"\n' + manifest + "\n")
+        open(os.path.join(path, "src/lib.rs"), "w").write(body + "\n")
+    os.makedirs(os.path.join(ws, "tests"))
+    open(os.path.join(ws, "tests/probe.rs"), "w").write('fn main() { println!("value={}", observer::value()); }\n')
+    env = base_env(os.path.join(work, "home-optimized-test-deps"))
+    side = Side(ws, dict(env, RA_JIT_RUSTC_BASE="0"), True)
+
+    def check_value(label, value):
+        _, ran = side.cargo("test", "--test", "probe")
+        how = how_built(ran.stderr)
+        check(label, ran.returncode == 0 and ran.stdout.strip() == f"value={value}" and how == "daemon",
+              f"{how}, {ran.stdout.strip()}, {ran.stderr[-180:]}")
+
+    try:
+        _, cold = side.cargo("test", "--test", "probe")
+        check("the integration test runs before edits", cold.returncode == 0 and "value=2" in cold.stdout, cold.stderr[-300:])
+        wait_warm(side, ws)
+        states = glob.glob(os.path.join(env["RA_JIT_HOME"], "states", "*.json"))
+        plans = [plan for path in states if not path.endswith(".kept.json")
+                 for checkout in json.load(open(path)).get("checkouts", [])
+                 for plan in checkout["programs"] if plan["crates"][0] == os.path.join(ws, "tests/probe.rs")]
+        expected = {"tests/probe.rs", "src/lib.rs", "observer/src/lib.rs"}
+        check("only the tested package and its caller are built with the harness",
+              any({os.path.relpath(file, ws) for file in plan["crates"]} == expected for plan in plans), str(plans)[:300])
+        for file, old, new, value in [("src/lib.rs", "+ 1", "+ 2", 3), ("leaf/src/lib.rs", "{ 1 }", "{ 6 }", 8)]:
+            rewrite(os.path.join(ws, file), old, new)
+            check_value(f"editing {file} updates its inlined callers", value)
+        side.cargo("stop")
+        leaf = os.path.join(ws, "leaf/src/lib.rs")
+        rewrite(leaf, "{ 6 }", "{ 7 }")
+        check_value("a fresh worker sees an edit to a previously native library", 9)
+        side.cargo("stop")
+        rewrite(leaf, "{ 7 }", "{ missing() }")
+        _, broken = side.cargo("test", "--test", "probe")
+        check("a cold build reports an error in a retained dependency",
+              broken.returncode == 101 and "missing" in broken.stderr and "value=" not in broken.stdout,
+              broken.stderr[-300:])
+        rewrite(leaf, "{ missing() }", "{ 8 }")
+        check_value("fixing the dependency wakes the failed worker", 10)
+    finally:
+        side.cargo("stop")
 
 
 def local_type_ids(work, check):

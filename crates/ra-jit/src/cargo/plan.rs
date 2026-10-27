@@ -5,6 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
+use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 use super::{package, units::Record};
@@ -89,7 +90,7 @@ pub(crate) struct Plan {
     /// Whether the program's own crate is compiled with `cfg(test)` and is not a test target:
     /// the unit tests of a library or a binary.
     pub(crate) unit_test: bool,
-    /// The source of the libraries of the workspace a unit test is linked with as rustc built
+    /// The source of the libraries of the workspace a test is linked with as rustc built
     /// them, without `cfg(test)`: a change to their tests alone leaves rustc's copy as it is.
     pub(crate) linked_as_built: Vec<PathBuf>,
     /// The copies of rustc's output the plan names, which have to stay.
@@ -125,6 +126,7 @@ impl Plan {
         records: &[Record],
         dir: &Path,
         unit_test: bool,
+        native: &FxHashSet<&str>,
     ) -> anyhow::Result<Result<Plan, String>> {
         if let Some(why) = unsupported(unit) {
             return Ok(Err(why));
@@ -178,9 +180,9 @@ impl Plan {
                 continue;
             }
             patched_as_built &= calls_by_symbol(owner);
-            // The libraries of a unit test are rustc's until an edit reaches one, which the
+            // These libraries are rustc's until an edit reaches one, which the
             // daemon then takes over, built as rustc built it, without `cfg(test)`.
-            match unit_test {
+            match unit_test || native.contains(owner.id.as_str()) {
                 true => plan.linked_as_built.extend(owner.inputs().files),
                 false => plan.crates.push(owner.source.clone()),
             }
@@ -709,7 +711,7 @@ mod tests {
         program.link_line = Some(line);
         program.copies =
             vec![Copied { original: "/t/deps/rustc1/symbols.o".into(), copy: copy.clone() }];
-        let plan = Plan::of(&program, &[], &dir, false).unwrap().unwrap();
+        let plan = Plan::of(&program, &[], &dir, false, &FxHashSet::default()).unwrap().unwrap();
         let args = std::fs::read_to_string(dir.join("link.args")).unwrap();
         let args: Vec<String> = args.lines().flat_map(|it| shlex::split(it).unwrap()).collect();
         assert!(args.contains(&copy.display().to_string()), "{args:?}");
