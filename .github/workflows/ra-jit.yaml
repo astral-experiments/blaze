@@ -112,7 +112,7 @@ jobs:
             - cached-type-ids: Cargo crate identity and cached TypeId (seconds per backend).
               testselect: affected tests, generated native and proc-macro inputs, edit/undo.
               storetracked, storebuilds, storefull: tracked edits, artifact reuse, disk limits.
-              storerevisions checks fresh-checkout Cranelift reuse across body and signature edits.
+              storerevisions checks Cranelift and LLVM reuse across leaf, inline and signature edits.
             - difftest: compare code generation and layouts with rustc (~30s). backends is LLVM
               coverage. fuzz-check replays reduced Linux compiler bugs. fuzz-smoke and edits-smoke
               check generated programs and live edits on Linux x64.

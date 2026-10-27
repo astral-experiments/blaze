@@ -863,9 +863,11 @@ def daemon(work):
     here.cargo("stop")
     manners(work, ws, env, here, check, edit)
     abuse(work, ws, tree, env, check, status, alive)
+    shared_async_statics(work, check)
     in_place(work, check)
     through_link(work, check)
     cached_type_ids(work, check)
+    local_type_ids(work, check)
     pinned(work, check)
     own_toolchain(work, check)
     return checks
@@ -885,8 +887,64 @@ def fake_toolchain(dir, version):
     os.chmod(rustc, 0o755)
 
 
+def duplicate_local_type_ids(work, check):
+    """Macro expansion can add another local type with the same spelling."""
+    ws = os.path.join(work, "duplicate-type-ids")
+    os.makedirs(os.path.join(ws, "src"))
+    os.makedirs(os.path.join(ws, "model/src"))
+    open(os.path.join(ws, "Cargo.toml"), "w").write("""[package]
+name = "duplicate-ids"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+model = { path = "model" }
+[profile.dev.package.model]
+opt-level = 2
+""")
+    open(os.path.join(ws, "model/Cargo.toml"), "w").write('[package]\nname="model"\nversion="0.0.0"\nedition="2021"\n')
+    main = os.path.join(ws, "src/main.rs")
+    open(os.path.join(ws, "model/src/lib.rs"), "w").write("""#![feature(f128)]
+use std::any::TypeId;
+pub struct Jar<T>(T);
+macro_rules! make { () => {{ #[derive(Clone, Copy)] struct Key; Key }} }
+pub fn pair() -> (impl Copy, impl Copy) {
+    let a = { #[derive(Clone, Copy)] struct Key; Key };
+    (a, make!())
+}
+fn id<T: 'static>(_: T) -> TypeId { TypeId::of::<Jar<T>>() }
+#[unsafe(no_mangle)]
+pub extern "Rust" fn native_ids() -> [TypeId; 2] {
+    std::hint::black_box(1.0f128);
+    let (a, b) = pair();
+    [id(a), id(b)]
+}
+""")
+    open(main, "w").write("""use std::any::TypeId;
+fn id<T: 'static>(_: T) -> TypeId { TypeId::of::<model::Jar<T>>() }
+fn main() {
+    extern "Rust" { #[link_name = "native_ids"] fn registered() -> [TypeId; 2]; }
+    let native = unsafe { registered() };
+    let (a, b) = model::pair();
+    println!("{} {} {}", native[0] != native[1], id(0u8) == native[0], id(0u16) == native[1]);
+}
+""")
+    side = Side(ws, dict(base_env(os.path.join(work, "home-duplicate-ids")), RA_JIT_RUSTC_BASE="0"), True)
+    try:
+        _, cold = side.cargo("run")
+        check("native code distinguishes the two local types", cold.returncode == 0 and cold.stdout.strip() == "true false false", cold.stderr[-300:])
+        wait_warm(side, ws)
+        rewrite(main, "id(0u8) == native[0], id(0u16)", "id(a) == native[0], id(b)")
+        _, edited = side.cargo("run")
+        check("both local type IDs match their native registrations after an edit",
+              edited.returncode == 0 and edited.stdout.strip() == "true true true",
+              f"{how_built(edited.stderr)}, printed {edited.stdout.strip()!r}")
+    finally:
+        side.cargo("stop")
+
+
 def cached_type_ids(work, check):
     """A cached lookup must agree with a rustc-built registration after crate metadata changes."""
+    duplicate_local_type_ids(work, check)
     ws = os.path.join(work, "type-ids")
     os.makedirs(os.path.join(ws, "src"))
     open(os.path.join(ws, "Cargo.toml"), "w").write('[package]\nname = "ids"\nversion = "0.1.0"\nedition = "2021"\n')
@@ -919,6 +977,99 @@ fn main() {
                   f"{how_built(ran.stderr)}, printed {ran.stdout.strip()!r}")
         finally:
             side.cargo("stop")
+
+
+def local_type_ids(work, check):
+    """A lookup introduced by an edit must agree with the native registration."""
+    ws = os.path.join(work, "local-type-ids")
+    os.makedirs(os.path.join(ws, "model", "src"))
+    os.makedirs(os.path.join(ws, "src"))
+    open(os.path.join(ws, "Cargo.toml"), "w").write("""[package]
+name = "lookup"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+model = { path = "model" }
+[profile.dev.package.model]
+opt-level = 2
+""")
+    open(os.path.join(ws, "model/Cargo.toml"), "w").write('[package]\nname="model"\nversion="0.0.0"\nedition="2021"\n')
+    open(os.path.join(ws, "model/src/lib.rs"), "w").write("""#![feature(f128)]
+use std::any::TypeId;
+pub struct Model;
+pub struct Jar<T>(T);
+macro_rules! make {
+    () => { impl Model {
+        #[inline(never)]
+        pub fn key() -> impl Copy {
+            std::hint::black_box(17u8);
+            #[derive(Copy, Clone)] struct Key;
+            Key
+        }
+    } }
+}
+make!();
+
+pub trait Query { type Key; fn registered() -> TypeId; }
+pub trait Witness { fn id() -> TypeId; }
+pub struct First;
+pub struct Second;
+macro_rules! query {
+    ($query:ident, $key:ident) => { const _: () = {
+        pub struct $key;
+        impl Witness for $key {
+            #[inline(never)]
+            fn id() -> TypeId { std::hint::black_box(TypeId::of::<Jar<Self>>()) }
+        }
+        impl Query for $query {
+            type Key = $key;
+            fn registered() -> TypeId { <$key as Witness>::id() }
+        }
+    }; }
+}
+query!(First, FirstKey);
+query!(Second, SecondKey);
+
+#[unsafe(no_mangle)]
+pub extern "Rust" fn registered_consts() -> [TypeId; 2] {
+    std::hint::black_box(1.0f128);
+    [First::registered(), Second::registered()]
+}
+#[unsafe(no_mangle)]
+pub extern "Rust" fn registered() -> TypeId {
+    std::hint::black_box(1.0f128);
+    fn of<T: 'static>(_: T) -> TypeId { TypeId::of::<Jar<T>>() }
+    of(Model::key())
+}
+""")
+    main = os.path.join(ws, "src/main.rs")
+    open(main, "w").write("""use std::any::TypeId;
+fn of<T: 'static>(_: T) -> TypeId { TypeId::of::<model::Jar<T>>() }
+fn main() {
+    extern "Rust" { fn registered() -> TypeId; }
+    println!("{}", of(0u8) == unsafe { registered() });
+}
+""")
+    side = Side(ws, dict(base_env(os.path.join(work, "home-local-ids")), RA_JIT_RUSTC_BASE="0"), True)
+    try:
+        _, cold = side.cargo("run")
+        check("the original lookup has another type", cold.returncode == 0 and cold.stdout.strip() == "false", cold.stderr[-300:])
+        wait_warm(side, ws)
+        rewrite(main, "of(0u8)", "of(model::Model::key())")
+        _, edited = side.cargo("run")
+        how = how_built(edited.stderr)
+        check("the daemon hashes a type local to a macro-generated impl", edited.returncode == 0 and edited.stdout.strip() == "true" and how == "daemon", f"{how}, printed {edited.stdout.strip()!r}")
+        rewrite(main, '    println!("{}", of(model::Model::key()) == unsafe { registered() });', """    extern "Rust" { fn registered_consts() -> [TypeId; 2]; }
+    type First = <model::First as model::Query>::Key;
+    type Second = <model::Second as model::Query>::Key;
+    let native = unsafe { registered_consts() };
+    println!("{} {}", TypeId::of::<model::Jar<First>>() == native[0], TypeId::of::<model::Jar<Second>>() == native[1]);""")
+        _, edited = side.cargo("run")
+        how = how_built(edited.stderr)
+        check("the daemon distinguishes two anonymous constants in native registrations",
+              edited.returncode == 0 and edited.stdout.strip() == "true true" and how == "daemon", f"{how}, printed {edited.stdout.strip()!r}")
+    finally:
+        side.cargo("stop")
 
 
 def pinned(work, check):
@@ -1064,6 +1215,74 @@ def through_link(work, check):
     check("an edit of a workspace named through a link, with a path dependency outside it, is the daemon's and right",
           mine.returncode == 0 and how == "daemon" and not wrong, f"{how[:90]}; {wrong or 'same as cargo'}; {mine.stderr.strip()[-300:]!r}")
     ours.cargo("stop", *manifest)
+
+
+def shared_async_statics(work, check):
+    """A new instantiation of a generic must use the statics of the native instantiation."""
+    ws = os.path.join(work, "async-statics")
+    os.makedirs(os.path.join(ws, "model/src"))
+    os.makedirs(os.path.join(ws, "src"))
+    open(os.path.join(ws, "Cargo.toml"), "w").write("""[workspace]
+members = ["model"]
+[package]
+name = "caller"
+version = "0.0.0"
+edition = "2021"
+[dependencies]
+model = { path = "model" }
+""")
+    open(os.path.join(ws, "model/Cargo.toml"), "w").write('[package]\nname="model"\nversion="0.0.0"\nedition="2021"\n')
+    open(os.path.join(ws, "model/src/lib.rs"), "w").write("""#![feature(f128)]
+use std::{future::Future, pin::pin, sync::atomic::{AtomicUsize, Ordering}, task::{Context, Poll, Waker}};
+
+async fn counters<T>() -> [usize; 3] {
+    let ordinary = || {
+        static CELL: AtomicUsize = AtomicUsize::new(10);
+        CELL.fetch_add(1, Ordering::Relaxed)
+    };
+    let first = async || {
+        static CELL: AtomicUsize = AtomicUsize::new(20);
+        CELL.fetch_add(1, Ordering::Relaxed)
+    };
+    let second = async || {
+        let nested = || {
+            static CELL: AtomicUsize = AtomicUsize::new(30);
+            CELL.fetch_add(1, Ordering::Relaxed)
+        };
+        nested()
+    };
+    [ordinary() + std::mem::size_of::<T>(), first().await, second().await]
+}
+pub fn values<T>() -> [usize; 3] {
+    match pin!(counters::<T>()).as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(v) => v, Poll::Pending => unreachable!()
+    }
+}
+#[unsafe(no_mangle)]
+pub extern "Rust" fn native_values() -> [usize; 3] {
+    std::hint::black_box(1.0f128);
+    values::<u8>()
+}
+""")
+    main = os.path.join(ws, "src/main.rs")
+    open(main, "w").write("""extern crate model;
+extern "Rust" { fn native_values() -> [usize; 3]; }
+fn main() { println!("{:?} {:?}", unsafe { native_values() }, [0; 3]); }
+""")
+    side = Side(ws, dict(base_env(os.path.join(work, "home-async-statics")), RA_JIT_RUSTC_BASE="0"), True)
+    try:
+        _, cold = side.cargo("run")
+        check("the native instantiation increments its three counters",
+              cold.returncode == 0 and cold.stdout.strip() == "[11, 20, 30] [0, 0, 0]", cold.stderr[-300:])
+        wait_warm(side, ws)
+        rewrite(main, "[0; 3]", "model::values::<[u8; 7]>()")
+        _, edited = side.cargo("run")
+        how = how_built(edited.stderr)
+        check("an edited caller increments the same async closure statics",
+              edited.returncode == 0 and edited.stdout.strip() == "[11, 20, 30] [18, 21, 31]" and how == "daemon",
+              f"{how}, printed {edited.stdout.strip()!r}")
+    finally:
+        side.cargo("stop")
 
 
 def in_place(work, check):
@@ -1725,7 +1944,9 @@ def main():
                 raise SystemExit(1)
 
         with tempfile.TemporaryDirectory(prefix="rj-ids-", dir="/tmp" if sys.platform == "darwin" else None) as work:
-            cached_type_ids(os.path.realpath(work), check)
+            work = os.path.realpath(work)
+            cached_type_ids(work, check)
+            local_type_ids(work, check)
         return
     names = [a for a in argv if not a.startswith("--")] or (SMALL if "--small" in argv else list(PROJECTS))
     modes = [m for m in MODES if f"--{m}" in argv] or list(MODES)

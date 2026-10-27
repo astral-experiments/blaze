@@ -16,18 +16,22 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from storetracked import Logs, serve
+from storetracked import Logs, build as worker_build, serve
 
 
+INLINE_HELPER = """#[inline(always)]
+pub const fn cache_inline(x: i32) -> i32 { x + 2 }
+"""
+LIVE_HELPER = """#[inline]
+pub fn cache_inline(x: i32) -> i32 { x + 2 }
+"""
 LIB = """use cache_leaf as selected;
 
 #[inline(never)]
 pub fn cache_leaf(x: i32) -> i32 { x + 1 }
 #[inline(never)]
 pub fn cache_leaf_caller(x: i32) -> i32 { selected(x) + 10 }
-#[inline(always)]
-pub const fn cache_inline(x: i32) -> i32 { x + 2 }
-#[inline(never)]
+""" + INLINE_HELPER + """#[inline(never)]
 pub fn cache_inline_caller(x: i32) -> i32 { cache_inline(x) + 20 }
 const INLINE_COUNT: usize = cache_inline(0) as usize;
 #[inline(never)]
@@ -77,33 +81,69 @@ def output(executable):
             for args in ([], ["second"])]
 
 
-def check_embedded(executable, expected):
+def instructions(executable, function):
     # Mach-O can label the address with a co-located assembler symbol.
     symbols = subprocess.check_output(["nm", "-n", executable], text=True)
-    addresses = re.findall(r"^([\da-fA-F]+)\s+[tT]\s+\S*cache_embedded\S*$", symbols, re.M)
-    assert len(addresses) == 1, f"expected one cache_embedded function, saw {addresses}"
+    addresses = re.findall(rf"^([\da-fA-F]+)\s+[tT]\s+\S*{function}\S*$", symbols, re.M)
+    assert len(addresses) == 1, f"expected one {function} function, saw {addresses}"
     start = int(addresses[0], 16)
     objdump = ["xcrun", "llvm-objdump"] if sys.platform == "darwin" else ["objdump"]
     assembly = subprocess.check_output([*objdump, "-d", "--no-show-raw-insn", f"--start-address={start:#x}",
                                         f"--stop-address={start + 256:#x}", executable], text=True)
-    instructions, *end = re.split(r"\bretq?\b", assembly, maxsplit=1)
-    assert end, f"missing return from cache_embedded: {assembly}"
-    assert not re.search(r"\b(callq?|bl|blr)\b|cache_inline", instructions), instructions
-    # x86-64 uses '$' for an immediate; AArch64 uses '#'.
-    assert re.search(rf"[$#](?:0x)?{expected}\b", instructions), instructions
+    ops = "\n".join(re.findall(r"^\s*[\da-fA-F]+:[ \t]+([^\n]+)", assembly, re.M))
+    body, *end = re.split(r"\bretq?\b", ops, maxsplit=1)
+    assert end, f"missing return from {function}: {assembly}"
+    return body
 
 
-def build(ws, store, label, inline=False):
+def check_inline_caller(executable, delta):
+    # A runtime argument enters this caller. LLVM folds the helper and the caller's own add
+    # into one offset, using add or lea on x86-64 and add on AArch64.
+    body = instructions(executable, "cache_inline_caller")
+    assert not re.search(r"\b(callq?|jmpq?|bl|blr|b|br)\b", body), body
+    immediate = rf"(?:0x{delta:x}|{delta})\b"
+    assert re.search(rf"\b(?:add[lq]?|lea[lq]?)\b[^\n]*(?:[$#]{immediate}|{immediate}\()", body), body
+
+
+def cargo(ws, env, target):
+    subprocess.run(["cargo", "build", "--quiet", "--target-dir", target], cwd=ws, env=env,
+                   check=True, timeout=180)
+    return target / "debug/store_app"
+
+
+def live_inline(ws, env, initial):
+    def workers():
+        status = subprocess.check_output(["cargo", "ra-jit", "status"], cwd=ws, env=env, text=True, timeout=30)
+        return re.findall(r"worker: pid (\d+)", status)
+
+    pids = workers()
+    assert len(pids) == 1, f"expected one live worker, saw {pids}"
+    source = ws / "lib/src/helper.rs"
+    old, new, *_ = CASES["inline"]
+    for step, contents in (("edit", LIVE_HELPER.replace(old, new)), ("undo", LIVE_HELPER)):
+        source.write_text(contents)
+        expected = output(cargo(ws, env, ws.parent / f"live-{step}-oracle"))
+        assert (expected == initial) == (step == "undo"), f"live inline {step}: unexpected Cargo output {expected!r}"
+        served = worker_build(str(ws), env, f"live inline {step}")
+        assert "[ra-jit]" in served and workers() == pids, f"live inline {step}: {served}"
+        actual = output(ws / "target/debug/store_app")
+        assert actual == expected, f"live inline {step}: Blaze printed {actual!r}, Cargo printed {expected!r}"
+        print(f"live inline {step}: worker {pids[0]} matched Cargo {actual!r}", flush=True)
+
+
+def build(ws, store, label, inline=False, live=False):
     assert not (ws / "target").exists(), f"{label}: expected a clean Blaze target"
     home = ws.parent / "home"
     env = dict(os.environ, RA_JIT_HOME=str(home), RA_JIT_CACHE=str(store), RA_JIT_RUSTC_BASE="0",
                RA_JIT_SPARE="0", RA_JIT_TRACE_FUNCTION_CACHE="1")
     for name in ("CARGO_TARGET_DIR", "RUSTFLAGS", "CARGO_ENCODED_RUSTFLAGS"):
         env.pop(name, None)
-    oracle = ws.parent / "oracle"
-    subprocess.run(["cargo", "build", "--quiet", "--target-dir", oracle], cwd=ws, env=env,
-                   check=True, timeout=180)
-    reference = oracle / "debug/store_app"
+    llvm = env.get("RA_JIT_BACKEND") == "llvm"
+    if llvm:
+        env.update(RA_JIT_OPT="2", RA_JIT_INLINE="all")
+    if live:
+        env["RA_JIT_STATS"] = "1"
+    reference = cargo(ws, env, ws.parent / "oracle")
     expected = output(reference)
     if inline:
         # The fresh rustc executable runs the changed arithmetic, keeps its caller and its
@@ -117,10 +157,29 @@ def build(ws, store, label, inline=False):
         executable = ws / "target/debug/store_app"
         actual = output(executable)
         assert actual == expected, f"{label}: Blaze printed {actual!r}, Cargo printed {expected!r}"
+        log = logs.text()
         if inline:
-            check_embedded(executable, expected[0].split()[-1])
-        print(f"{label}: matched Cargo {actual!r}", flush=True)
-        return expected, logs.text()
+            body = instructions(executable, "cache_embedded")
+            assert not re.search(r"\b(callq?|bl|blr)\b|cache_inline", body), body
+            assert re.search(rf"[$#](?:0x)?{expected[0].split()[-1]}\b", body), body
+        detail = ""
+        if llvm:
+            assert re.search(r"^backend: llvm -O2\b", log, re.M), log
+            if live:
+                assert re.search(r"^base from the store: [1-9]\d* roots\b", log, re.M), log
+                assert not re.search(r"^(?:function cache: \w+|  left to rustc:) store_dep::cache_inline_caller\b",
+                                     log, re.M), log
+            else:
+                assert re.search(r"^backend: llvm compiled [1-9]\d* functions?\b", log, re.M), log
+            delta = int(expected[0].split()[1]) - 1
+            check_inline_caller(executable, delta)
+            leaf_caller = instructions(executable, "cache_leaf_caller")
+            assert re.search(r"^\s*(?:callq?|bl|blr)\s", leaf_caller, re.M), leaf_caller
+            detail = f" (LLVM inlined add {delta}, cache_leaf_caller kept a call)"
+        print(f"{label}: matched Cargo {actual!r}{detail}", flush=True)
+        if live:
+            live_inline(ws, env, expected)
+        return expected, log
     finally:
         subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, capture_output=True,
                        check=True, timeout=120)
@@ -159,8 +218,11 @@ def main():
     def checkout(source, label):
         return Path(shutil.copytree(source, root / label / "ws", ignore=shutil.ignore_patterns("target")))
 
+    llvm = os.environ.get("RA_JIT_BACKEND") == "llvm"
     for case in cases:
         old, new, lowered, reused = CASES[case]
+        if llvm and case != "inline":
+            reused = reused | {"cache_inline_caller"}
         assert LIB.count(old) == 1
         edited = checkout(ws, f"{case}-edit")
         (edited / "lib/src/lib.rs").write_text(LIB.replace(old, new))
@@ -177,6 +239,16 @@ def main():
         restored, log = build(undo, reverse, f"{case}-undo", inline=case == "inline")
         assert restored == original, f"{case}: undo did not restore the original program"
         decisions(log, f"{case} undo", lowered, reused)
+    if llvm and "inline" in cases:
+        # An ordinary inline hint allows a body-only edit. Exact hydration must retain
+        # the dependency even though the caller lives in a different file.
+        seed = checkout(ws, "live-seed")
+        (seed / "lib/src/helper.rs").write_text(LIVE_HELPER)
+        live_lib = LIB.replace(INLINE_HELPER, "mod helper;\nuse helper::cache_inline;\n")
+        (seed / "lib/src/lib.rs").write_text(live_lib.replace("cache_inline(0) as usize", "2"))
+        store = root / "live-store"
+        build(seed, store, "live-seed")
+        build(checkout(seed, "live-restart"), store, "live-restart", live=True)
     shutil.rmtree(root)
 
 

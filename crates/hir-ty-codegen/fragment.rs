@@ -95,13 +95,14 @@ pub(super) enum TextPart {
 pub(super) struct Requests {
     pub(super) funcs: Vec<FuncRequest>,
     pub(super) datas: Vec<DataRequest>,
-    /// With startup tracing, the bodies incorporated into this fragment that have no relocation.
+    /// Workspace bodies shown to an LLVM edit compile, plus bodies reported by startup tracing.
     pub(super) inlined: Vec<Instance>,
 }
 
 impl Hash for Requests {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Tracing records why code was emitted without changing its build fingerprint.
+        // Inlined dependencies tell the worker what to recheck. The same instructions and
+        // references can be emitted after an edit changes which bodies supplied them.
         self.funcs.hash(state);
         self.datas.hash(state);
     }
@@ -362,6 +363,8 @@ pub(super) struct Recorder<'db> {
     /// The bodies of the callees that are built into their callers, which call them by their
     /// place here in [`INLINED`] until [`inline`](super::inline) puts the bodies there.
     pub(super) inlined: Vec<ir::Function>,
+    /// Workspace callees whose typed bodies the current edit compile has validated for LLVM.
+    pub(super) edit_inlines: Vec<FunctionId>,
     /// The function is built to be put in its callers, whose statements its instructions
     /// are then of: it marks none with a statement of its own.
     pub(super) unlocated: bool,
@@ -697,6 +700,7 @@ impl<'db> Recorder<'db> {
             span_ids: FxHashMap::default(),
             named: Vec::new(),
             inlined: Vec::new(),
+            edit_inlines: Vec::new(),
             unlocated: false,
             opaque: false,
         }

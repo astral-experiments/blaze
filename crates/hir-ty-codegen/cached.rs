@@ -426,7 +426,11 @@ impl Entry {
         field(b"ra-jit entry 11");
         field(program.map_or(&[][..], |it| it));
         // Code of one producer is not what another would have given.
-        field(super::Backend::from_env().ok()?.to_string().as_bytes());
+        let backend = super::Backend::from_env().ok()?;
+        field(backend.to_string().as_bytes());
+        if matches!(backend, super::Backend::Llvm(_)) {
+            field(&super::revision::llvm_mode());
+        }
         // Nor is code of an optimized body; the keys of the default level stay what they were.
         let level = super::mir_opt_level().number();
         if level != 0 {

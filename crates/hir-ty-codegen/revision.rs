@@ -1,4 +1,4 @@
-//! Reuse a Cranelift fragment across source revisions after checking its current Rust MIR.
+//! Reuse a function across source revisions after checking the Rust MIR its producer saw.
 //! Function requests, source spans and variables are rebound to the database doing the build.
 
 mod proof;
@@ -16,7 +16,47 @@ use super::{
     Instance, InstanceDef, MirSpan, Produced, Requests, Result, Variable, backend,
     cached::CachedCode, panics_abort, store::Store,
 };
-use proof::Proof;
+use proof::{Policy, Proof};
+
+/// Only functions with a bounded, verified set of annotated workspace callees can expose
+/// their bodies to an optimizing LLVM edit worker. Other functions keep ordinary calls.
+pub(super) fn edit_inlining() -> bool {
+    backend::edits_follow()
+        && backend::optimizing()
+        && super::tier::requested_across() != Some(false)
+}
+
+/// Distinguishes the inputs offered to per-function LLVM in edit and whole-program builds.
+pub(super) fn llvm_mode() -> [u8; 3] {
+    #[cfg(feature = "llvm")]
+    let imports = super::imports::enabled();
+    #[cfg(not(feature = "llvm"))]
+    let imports = false;
+    [edit_inlining() as u8, super::tier::across() as u8, imports as u8]
+}
+
+/// The source functions an edit compile can ask LLVM to inline, including calls made by
+/// an inline body. The same rule applies while building a body for another function.
+fn edit_bodies(proof: &Proof) -> Vec<FunctionId> {
+    proof.bodies.iter().map(|&index| proof.callees[index as usize]).collect()
+}
+
+/// Applies the edit worker's body proof while building a small callee for LLVM.
+pub(super) fn nested_edit_bodies<'db>(
+    db: &'db dyn HirDatabase,
+    func: FunctionId,
+    body: &MirBody<'db>,
+    env: ParamEnvAndCrate<'db>,
+    checked: bool,
+) -> Vec<FunctionId> {
+    if edit_inlining() && func.krate(db).data(db).origin.is_local() {
+        return proof::prove(db, func, body, env, checked, Policy::LlvmAnnotated)
+            .as_ref()
+            .map(edit_bodies)
+            .unwrap_or_default();
+    }
+    Vec::new()
+}
 
 /// Run the usual lowering unless a record for these validated inputs can be rebound in full.
 pub(super) fn compile<'db>(
@@ -25,16 +65,27 @@ pub(super) fn compile<'db>(
     body: &MirBody<'db>,
     env: ParamEnvAndCrate<'db>,
     checked: bool,
-    lower: impl FnOnce() -> Result<Produced>,
+    lower: impl FnOnce(Vec<FunctionId>) -> Result<Produced>,
 ) -> Result<Produced> {
     static TRACE: LazyLock<bool> =
         LazyLock::new(|| std::env::var_os("RA_JIT_TRACE_FUNCTION_CACHE").is_some());
-    if Backend::from_env() != Ok(Backend::Cranelift) || !func.krate(db).data(db).origin.is_local() {
-        return lower();
+    let Ok(producer) = Backend::from_env() else { return lower(Vec::new()) };
+    if !func.krate(db).data(db).origin.is_local() {
+        return lower(Vec::new());
     }
+    #[cfg(feature = "llvm")]
+    if super::units::enabled() {
+        return lower(Vec::new());
+    }
+    let policy = match producer {
+        Backend::Cranelift => Policy::Cranelift,
+        Backend::Llvm(_) if edit_inlining() => Policy::LlvmAnnotated,
+        Backend::Llvm(_) if super::tier::across() => Policy::LlvmAcross,
+        Backend::Llvm(_) => Policy::LlvmCalls,
+    };
     let store = Store::global();
-    if store.is_none() && !*TRACE {
-        return lower();
+    if store.is_none() && !*TRACE && policy != Policy::LlvmAnnotated {
+        return lower(Vec::new());
     }
     let trace = |action| {
         if *TRACE {
@@ -43,15 +94,32 @@ pub(super) fn compile<'db>(
         }
     };
     static CHECKING: LazyLock<bool> = LazyLock::new(|| {
-        ["RA_JIT_CACHE_CHECK", "RA_JIT_CHECK_ALL", "RA_JIT_LAYOUTS", "RA_JIT_DUMP_CLIF"]
-            .iter()
-            .any(|name| std::env::var_os(name).is_some())
+        [
+            "RA_JIT_CACHE_CHECK",
+            "RA_JIT_CHECK_ALL",
+            "RA_JIT_LAYOUTS",
+            "RA_JIT_DUMP_CLIF",
+            "RA_JIT_DUMP_LLVM",
+            "RA_JIT_DUMP_TIER",
+        ]
+        .iter()
+        .any(|name| std::env::var_os(name).is_some())
     });
-    let candidate = store.filter(|_| !*CHECKING).and_then(|store| {
+    let store = store.filter(|_| !*CHECKING);
+    let proof = if store.is_some() || policy == Policy::LlvmAnnotated {
+        proof::prove(db, func, body, env, checked, policy)
+    } else {
+        None
+    };
+    let candidate = store.zip(proof.as_ref()).and_then(|(store, proof)| {
         let target = super::selected_target().ok().filter(|it| !it.is_wasm())?;
-        let proof = proof::prove(db, func, body)?;
         let mut hash = Sha256::new();
-        hash.update(b"blaze cranelift MIR fragment 1");
+        hash.update(b"blaze MIR fragment 2");
+        hash.update(producer.to_string());
+        if matches!(producer, Backend::Llvm(_)) {
+            hash.update(llvm_mode());
+            hash.update([backend::whole_program() as u8]);
+        }
         hash.update(proof.digest);
         hash.update([
             checked as u8,
@@ -66,19 +134,21 @@ pub(super) fn compile<'db>(
         hash.update(target.triple().as_bytes());
         Some((store, proof, hash.finalize().into()))
     });
-    if let Some((store, proof, key)) = &candidate
-        && let Some(bytes) = store.lookup(key)
+    if let Some((store, proof, key)) = candidate
+        && let Some(bytes) = store.lookup(&key)
         && let Ok(record) = postcard::from_bytes::<Record>(&bytes)
         && let Some(compiled) = record.restore(proof, func, body, env, checked)
     {
         trace("reused");
-        return Ok(Produced::Code(compiled));
+        return Ok(Produced::Code(compiled, Some(producer)));
     }
-    let output = lower()?;
+    let shown = proof.as_ref().filter(|_| policy == Policy::LlvmAnnotated).map(edit_bodies);
+    let output = lower(shown.unwrap_or_default())?;
     trace("lowered");
     if let Some((store, proof, key)) = candidate
-        && let Produced::Code(compiled) = &output
-        && let Some(record) = Record::new(&proof, func, body, env, checked, compiled)
+        && let Produced::Code(compiled, Some(actual)) = &output
+        && *actual == producer
+        && let Some(record) = Record::new(proof, func, body, env, checked, compiled)
         && let Ok(bytes) = postcard::to_allocvec(&record)
     {
         store.insert(&key, &bytes);
@@ -91,6 +161,8 @@ struct Record {
     code: CachedCode,
     /// In relocation order, with the index of the call target in the validated MIR.
     calls: Vec<(u32, Signature)>,
+    /// Validated bodies shown to LLVM. Their code can matter even after a call disappears.
+    inlined: Vec<u32>,
     /// Rust MIR can put integer literals in read-only data. These contain no pointers.
     literals: Vec<ConstBlob>,
     /// Indices into the current body's source locations.
@@ -100,8 +172,7 @@ struct Record {
 }
 
 impl Record {
-    /// Keep the machine code only when each MIR call has an out-of-line target to rebind and
-    /// every other request can be carried into a fresh database.
+    /// Each direct call must be represented by a rebindable request or a validated body.
     fn new(
         proof: &Proof,
         func: FunctionId,
@@ -110,8 +181,17 @@ impl Record {
         checked: bool,
         compiled: &CompiledFunction,
     ) -> Option<Self> {
-        if !compiled.requests.inlined.is_empty() {
-            return None;
+        let mut inlined = Vec::new();
+        for instance in &compiled.requests.inlined {
+            let InstanceDef::Fn(func) = instance.def else { return None };
+            let i = proof.callees.iter().position(|&id| id == func)? as u32;
+            if !instance.args.as_ref().is_empty()
+                || instance.checked != checked
+                || !proof.bodies.contains(&i)
+            {
+                return None;
+            }
+            inlined.push(i);
         }
         let mut literals = Vec::new();
         for data in &compiled.requests.datas {
@@ -138,7 +218,7 @@ impl Record {
             called[index] = true;
             calls.push((index as u32, request.sig.clone()));
         }
-        if called.contains(&false) {
+        if (0..proof.direct).any(|i| !called[i] && !proof.bodies.contains(&(i as u32))) {
             return None;
         }
         let (owner, spans) = compiled.source.as_ref()?;
@@ -166,7 +246,14 @@ impl Record {
                 variables.push((local.into_raw().into_u32(), var.slot));
             }
         }
-        Some(Self { code: CachedCode::from(&compiled.code), calls, literals, spans, variables })
+        Some(Self {
+            code: CachedCode::from(&compiled.code),
+            calls,
+            inlined,
+            literals,
+            spans,
+            variables,
+        })
     }
 
     /// Resolve relocations and debugger references against the newly checked body.
@@ -193,10 +280,18 @@ impl Record {
             .map(|blob| DataRequest::Blob { blob, identity: DataIdentity::Shared })
             .collect();
         let mut requests = Requests { datas, ..Requests::default() };
-        for (index, sig) in self.calls {
+        let instance = |index: u32| {
             let def = InstanceDef::Fn(*proof.callees.get(index as usize)?);
-            let instance =
-                Instance { def, args: GenericArgs::new_from_slice(&[]).store(), checked };
+            Some(Instance { def, args: GenericArgs::new_from_slice(&[]).store(), checked })
+        };
+        for index in self.inlined {
+            if !proof.bodies.contains(&index) {
+                return None;
+            }
+            requests.inlined.push(instance(index)?);
+        }
+        for (index, sig) in self.calls {
+            let instance = instance(index)?;
             requests
                 .funcs
                 .push(FuncRequest { target: FuncTarget::Instance(instance, env.store()), sig });

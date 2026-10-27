@@ -237,17 +237,22 @@ edit reaches, as it was stitched into an object. A build that finds an entry for
 instance and for everything it calls puts them in the object without asking the database
 about the instance.
 
-A fresh daemon can reuse Cranelift code for plain workspace functions over integers and
-booleans across revisions. After type checking and building MIR, it checks the function's
-source, MIR operations, direct call targets and signatures, and codegen settings. A hit
-skips Cranelift lowering and emission and rebinds relocations and debug locations to the
-current checkout. Changing an out-of-line callee's body can preserve the caller's entry.
-Generics and calls to inlineable functions use ordinary lowering. Set
-`RA_JIT_TRACE_FUNCTION_CACHE=1` to see which functions are restored and which are lowered.
+A fresh daemon can reuse Cranelift or LLVM code for plain workspace functions over
+integers and booleans across revisions. After type checking and building MIR, it checks the
+function's source, MIR operations, direct call targets and signatures, backend, and codegen
+settings. A hit skips lowering and emission and rebinds relocations and debug locations to
+the current checkout. Changing an out-of-line callee's body can preserve the caller's entry.
+
+At `-O2` and `-O3`, LLVM edit workers can inline small workspace functions marked
+`#[inline]` or `#[inline(always)]`. Reuse depends on the MIR of every body LLVM could
+inline, including transitive calls. Whole-program LLVM builds check every workspace body
+eligible for import. Generic functions and bodies with unmodeled inputs go through ordinary
+lowering. Set `RA_JIT_INLINE=0` to disable inlining or `RA_JIT_TRACE_FUNCTION_CACHE=1` to
+see which functions are restored and which are lowered.
 
 On disk the store is a set of immutable packs named by the SHA-256 of their bytes, their
 values in zstd blocks behind an index, plus one open pack per running daemon. Format,
-locking, integrity checks and size limits are in [cache.md](https://github.com/astral-experiments/blaze/blob/ccd737315672a651e2d2c7be484a5ed8690c8833/docs/cache.md).
+locking, integrity checks and size limits are in [cache.md](https://github.com/astral-experiments/blaze/blob/ceab778b050be70b896ed84c7c536b11ce8f2971/docs/cache.md).
 
 ## The remote store
 
