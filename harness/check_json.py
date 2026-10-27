@@ -54,6 +54,21 @@ CASES = {
     "tab_and_wide_chars": {
         "src/main.rs": ALLOW + "fn main() {\n\tlet s = \"h\u00e9llo\"; let _: u32 = s;\n}\n",
     },
+    "nested_projection_outlives": {
+        "src/main.rs": ALLOW + """struct State<T>(T);
+trait Buffer {
+    type Context;
+    fn state(&self) -> &State<Self::Context>;
+    fn state_mut(&mut self) -> &mut State<Self::Context>;
+}
+impl<W: Buffer<Context = C> + ?Sized, C> Buffer for &mut W {
+    type Context = C;
+    fn state(&self) -> &State<Self::Context> { (**self).state() }
+    fn state_mut(&mut self) -> &mut State<Self::Context> { (**self).state_mut() }
+}
+fn main() {}
+""",
+    },
     # The error is in a module file of a library that a binary of the same package uses: the
     # unit is the library.
     "lib_module": {
@@ -68,6 +83,21 @@ CASES = {
     # A borrow check error, which rustc gives labels and notes.
     "moved": {
         "src/main.rs": ALLOW + "fn main() {\n    let s = String::new();\n    let t = s;\n    let u = s;\n}\n",
+    },
+    "promoted_enum_array": {
+        "src/main.rs": ALLOW + """enum Element { Token(&'static str), Owned(String) }
+const OPEN: Element = Element::Token("(");
+const ALIAS: Element = OPEN;
+fn tokens() -> &'static [Element] { &[ALIAS, Element::Token(")")] }
+fn main() { assert_eq!(tokens().len(), 2); }
+""",
+    },
+    "unpromoted_enum_array": {
+        "src/main.rs": ALLOW + """enum Element { Token, Owned(String) }
+const OWNED: Element = Element::Owned(String::new());
+fn tokens() -> &'static [Element] { &[Element::Token, OWNED] }
+fn main() {}
+""",
     },
     "dyn_associated_type_outlives": {
         "src/main.rs": ALLOW + """trait Buffer { type Context; }
