@@ -127,7 +127,8 @@ impl Line {
         }
         cmd.args(&self.after).arg("-o").arg(exe);
         let start = Instant::now();
-        let ran = cmd.output().with_context(|| format!("running {cmd:?}"))?;
+        let ran = crate::trace::link_output(&mut cmd, "link executable")
+            .with_context(|| format!("running {cmd:?}"))?;
         if !ran.status.success() {
             bail!(
                 "the link of {} failed ({}):\n{:?}\n{}",

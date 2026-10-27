@@ -8,14 +8,17 @@
 //! (client 0, daemon 1, the daemon's question to the worker 2, the worker 3), and the table
 //! gives each moment to the deepest step under way. One without is detail for the trace:
 //! a rust-analyzer query or a step of code generation, from [`install`].
+//! A direct worker with `BLAZE_TRACE=<path>` writes its first build before it starts
+//! watching. `BLAZE_TRACE_CONST=crate::module::NAME` adds requests for that module
+//! constant and executions of its Salsa query, including ones that take under 200 µs.
 
 use std::{
     cell::Cell,
     fmt::Write as _,
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Mutex, OnceLock,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -154,6 +157,164 @@ const MOST: usize = 4000;
 
 static DETAIL: Mutex<Vec<Span>> = Mutex::new(Vec::new());
 static DROPPED: AtomicUsize = AtomicUsize::new(0);
+
+struct Cold {
+    path: PathBuf,
+    selected: Option<String>,
+    active: AtomicBool,
+    batch: AtomicUsize,
+    events: Mutex<ColdEvents>,
+}
+
+#[derive(Default)]
+struct ColdEvents {
+    // Keep parallel scopes, requests, and executions independently of the ordinary detail cap.
+    spans: [Vec<Span>; 3],
+    dropped: [usize; 3],
+}
+
+enum ColdEvent {
+    Parallel,
+    Request,
+    Execution,
+}
+
+static COLD: OnceLock<Cold> = OnceLock::new();
+
+/// Enables first-build tracing for a worker that was started directly.
+pub(crate) fn start_cold() {
+    let Some(path) = std::env::var_os("RA_JIT_TRACE").filter(|it| !it.is_empty()) else { return };
+    let selected = std::env::var("RA_JIT_TRACE_CONST").ok().filter(|it| !it.is_empty());
+    let has_filter = selected.is_some();
+    _ = COLD.set(Cold {
+        path: path.into(),
+        selected,
+        active: AtomicBool::new(true),
+        batch: AtomicUsize::new(1),
+        events: Mutex::default(),
+    });
+    if has_filter {
+        hir_ty::consteval::trace_consts_with(selected_const);
+    }
+}
+
+fn cold() -> Option<&'static Cold> {
+    COLD.get().filter(|it| it.active.load(Ordering::Relaxed))
+}
+
+impl Cold {
+    fn record(&self, kind: ColdEvent, start: Instant, name: impl FnOnce() -> String) {
+        let end = Instant::now();
+        let mut events = self.events.lock().unwrap_or_else(|it| it.into_inner());
+        let index = kind as usize;
+        if events.spans[index].len() < MOST {
+            events.spans[index].push(span(name(), None, start, end));
+        } else {
+            events.dropped[index] += 1;
+        }
+    }
+}
+
+/// The number of a parallel dispatch and its item count, shared by all of its lanes.
+pub(crate) fn cold_batch(count: usize) -> Option<(usize, usize)> {
+    Some((cold()?.batch.fetch_add(1, Ordering::Relaxed), count))
+}
+
+/// A first-build phase. Each batch gets one interval per participating thread.
+pub(crate) fn cold_span(name: &'static str, batch: Option<(usize, usize)>) -> Option<impl Drop> {
+    struct Phase(&'static Cold, &'static str, usize, usize, Instant);
+    impl Drop for Phase {
+        fn drop(&mut self) {
+            let Self(cold, name, id, count, start) = *self;
+            cold.record(ColdEvent::Parallel, start, || {
+                format!("parallel {id} {name} ({count} items)")
+            });
+        }
+    }
+    let (id, count) = batch?;
+    Some(Phase(cold()?, name, id, count, Instant::now()))
+}
+
+/// Times the linker subprocess itself, including each failed attempt in a retry.
+pub(crate) fn link_output(
+    command: &mut std::process::Command,
+    name: &str,
+) -> std::io::Result<std::process::Output> {
+    let start = cold().map(|_| Instant::now());
+    let output = command.output();
+    if let Some(start) = start {
+        let end = Instant::now();
+        let name = match &output {
+            Ok(it) if it.status.success() => name.to_owned(),
+            Ok(it) => format!("{name} ({})", it.status),
+            Err(e) => format!("{name} ({e})"),
+        };
+        noted().push(span(name, Some(1), start, end));
+    }
+    output
+}
+
+/// Matches the declared crate and every named module. Associated and block constants
+/// have different owners, even when their leaf names are identical.
+fn selected_const(
+    db: &dyn hir_ty::db::HirDatabase,
+    def: hir_def::ConstId,
+    executing: bool,
+) -> Option<fn(Instant)> {
+    use hir_def::{HasModule, ItemContainerId, Lookup, signatures::ConstSignature};
+    let filter = cold()?.selected.as_deref()?;
+    let mut path = filter.rsplit("::");
+    if ConstSignature::of(db, def).name.as_ref()?.as_str() != path.next()? {
+        return None;
+    }
+    let ItemContainerId::ModuleId(mut module) = def.lookup(db).container else { return None };
+    while let Some(parent) = module.containing_module(db) {
+        // A block module has no name. A constant inside a block cannot match a module item.
+        if module.name(db)?.as_str() != path.next()? {
+            return None;
+        }
+        module = parent;
+    }
+    let krate = def.krate(db).extra_data(db).display_name.as_ref()?.crate_name();
+    if krate.as_str() != path.next()? || path.next().is_some() {
+        return None;
+    }
+    Some(if executing {
+        |start| record_const(ColdEvent::Execution, "eval", start)
+    } else {
+        |start| record_const(ColdEvent::Request, "request", start)
+    })
+}
+
+fn record_const(kind: ColdEvent, name: &str, start: Instant) {
+    if let Some(cold) = cold()
+        && let Some(selected) = &cold.selected
+    {
+        cold.record(kind, start, || format!("const {name} {selected}"));
+    }
+}
+
+/// Writes once, before a direct worker starts watching or when its initial build returns.
+pub(crate) fn finish_cold(outcome: &str) {
+    let Some(cold) = COLD.get() else { return };
+    if !cold.active.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    let root = span("worker startup", Some(CLIENT), began(), Instant::now());
+    let (start, end) = (root.start_us, root.start_us + root.dur_us);
+    let mut spans = vec![root];
+    spans.append(&mut *noted());
+    let detail_dropped = DROPPED.load(Ordering::Relaxed);
+    spans.extend(take_detail(began()));
+    let events = std::mem::take(&mut *cold.events.lock().unwrap_or_else(|it| it.into_inner()));
+    spans.extend(events.spans.into_iter().flatten());
+    let [parallel, requests, executions] = events.dropped;
+    let info = serde_json::json!({"outcome":outcome, "constFilter":cold.selected, "dropped":{
+        "detail":detail_dropped, "parallel":parallel, "constRequests":requests, "constExecutions":executions}});
+    if let Err(why) = write_trace(&cold.path, &spans, start, end, Some(info)) {
+        eprintln!("ra-jit: the trace is not written to {}: {why:#}", cold.path.display());
+    }
+}
 
 /// The detail spans that ended since `since`, taken; older ones are dropped.
 pub(crate) fn take_detail(since: Instant) -> Vec<Span> {
@@ -310,7 +471,7 @@ pub(crate) fn finish() {
         eprint!("{}", table(&spans, start, end));
     }
     if let Some(trace) = trace {
-        let written = write_trace(Path::new(&trace), &spans, start, end);
+        let written = write_trace(Path::new(&trace), &spans, start, end, None);
         if let Err(why) = written {
             eprintln!(
                 "ra-jit: the trace is not written to {}: {why:#}",
@@ -344,7 +505,13 @@ pub(crate) fn table(spans: &[Span], start: u64, end: u64) -> String {
 
 /// Writes `spans` as a Chrome trace: to `path` when it ends in `.json`, else to a file of
 /// its own in the directory `path`.
-fn write_trace(path: &Path, spans: &[Span], start: u64, end: u64) -> anyhow::Result<()> {
+fn write_trace(
+    path: &Path,
+    spans: &[Span],
+    start: u64,
+    end: u64,
+    cold: Option<serde_json::Value>,
+) -> anyhow::Result<()> {
     let path = if path.extension().is_some_and(|it| it == "json") {
         path.to_owned()
     } else {
@@ -352,19 +519,20 @@ fn write_trace(path: &Path, spans: &[Span], start: u64, end: u64) -> anyhow::Res
         let now = epoch_us(Instant::now());
         path.join(format!("ra-jit-{now}-{}.json", std::process::id()))
     };
-    std::fs::write(&path, chrome(spans, start, end))?;
+    std::fs::write(&path, chrome(spans, start, end, cold))?;
     eprintln!("ra-jit: trace written to {}", path.display());
     Ok(())
 }
 
 /// The Chrome trace event format: complete events, with names for the processes and
 /// threads. Key `raJit` has the client's wall time and [`breakdown`] of it, for a harness.
-fn chrome(spans: &[Span], start: u64, end: u64) -> String {
+fn chrome(spans: &[Span], start: u64, end: u64, cold: Option<serde_json::Value>) -> String {
     use serde_json::json;
     let mut events = Vec::new();
     let mut named = rustc_hash::FxHashSet::default();
     for it in spans {
         let process = match it.level {
+            Some(_) if cold.is_some() => Some("worker"),
             Some(CLIENT) => Some("client"),
             Some(DAEMON | ASKED) => Some("daemon"),
             Some(_) => Some("worker"),
@@ -388,7 +556,10 @@ fn chrome(spans: &[Span], start: u64, end: u64) -> String {
     }
     let rows = breakdown(spans, start, end);
     let breakdown: Vec<_> = rows.iter().map(|(name, us)| json!([name, us])).collect();
-    let ours = json!({"start_us": start, "total_us": end - start, "breakdown": breakdown});
+    let mut ours = json!({"start_us": start, "total_us": end - start, "breakdown": breakdown});
+    if let Some(cold) = cold {
+        ours["startup"] = cold;
+    }
     json!({"traceEvents": events, "displayTimeUnit": "ms", "raJit": ours}).to_string()
 }
 
@@ -435,5 +606,39 @@ mod tests {
         let joined = with_spans("ok patch=x ms=3".to_owned(), &spans);
         let (line, back) = split(&joined);
         assert_eq!((line, back.as_slice()), ("ok patch=x ms=3", &spans[..]));
+    }
+
+    #[test]
+    fn a_direct_trace_labels_the_worker_and_keeps_overlapping_detail_out_of_its_total() {
+        use serde_json::json;
+        let mut query = at("const eval lib::TABLE", CLIENT, 20, 60);
+        query.level = None;
+        let spans = [at("worker startup", CLIENT, 0, 100), query, at("link", 1, 80, 20)];
+        let trace: serde_json::Value =
+            serde_json::from_str(&chrome(&spans, 0, 100, Some(json!({"outcome":"watch ready"}))))
+                .unwrap();
+        assert_eq!(trace["raJit"]["breakdown"], json!([["worker startup", 80], ["link", 20]]));
+        assert_eq!(trace["raJit"]["startup"]["outcome"], "watch ready");
+        assert_eq!(trace["traceEvents"][0]["args"]["name"], "ra-jit worker (1)");
+    }
+
+    #[test]
+    fn a_full_request_buffer_still_records_actual_const_evaluations() {
+        let cold = Cold {
+            path: PathBuf::new(),
+            selected: None,
+            active: AtomicBool::new(true),
+            batch: AtomicUsize::new(1),
+            events: Mutex::default(),
+        };
+        let req = ColdEvent::Request as usize;
+        cold.events.lock().unwrap().spans[req].resize(MOST, at("const request", CLIENT, 0, 10));
+        cold.record(ColdEvent::Request, Instant::now(), || {
+            panic!("a dropped request needs no name")
+        });
+        cold.record(ColdEvent::Execution, Instant::now(), || "const eval".into());
+        let kept = cold.events.into_inner().unwrap();
+        assert_eq!(kept.dropped[req], 1);
+        assert_eq!(kept.spans[ColdEvent::Execution as usize][0].name, "const eval");
     }
 }

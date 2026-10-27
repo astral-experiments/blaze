@@ -171,7 +171,7 @@ writes them again.
 | `storecorrupts.py` | Packs damaged on disk, and stores of other formats |
 | `storefull.py` | A store on a disk with no room |
 | `storeshared.py` | Several daemons and `ra-jit cache` commands on one store at once |
-| `storerevisions.py` | Fresh daemons sharing a store across edits. Compares Cranelift and LLVM cache reuse after changes to a body, inlined helper, match pattern constant, signature, call target or getter’s field layout with fresh Cargo builds. On LLVM, it also inspects the caller’s machine code and edits its helper in a running daemon |
+| `storerevisions.py` | Fresh daemons sharing a store across edits. Compares Cranelift and LLVM cache reuse after changes to a body, inlined helper, match pattern constant, signature, call target or getter’s field layout with fresh Cargo builds. The `property-child` case edits a character range behind a named table and checks an undo against a store seeded only with the edit. On LLVM, it also inspects the caller’s machine code and edits its helper in a running daemon |
 | `storebuilds.py` | A store one build of ra-jit wrote serves another build of the same sources: the store keys by what ra-jit was built from, not by the bytes of its executable ([#105](https://github.com/indexable-inc/blaze/issues/105)). Linux and macOS |
 | `deepnames.py` | Closures nested 20 deep keep the store under 64 MB, and a second daemon finds their entries again: a type spelled out longer than 1 KB is named by its hash (issue #29) |
 | `expansions.py` | A second daemon on one store finds every derive and attribute expansion the first kept, and after an edit, with `RA_JIT_PROC_MACRO_CACHE=check`, none expands otherwise than it was kept (issue #38) |
@@ -185,6 +185,17 @@ Run `abbench.py` to compare two compiler builds on the same edits, or
 `live_latency.py` to measure how quickly edits reach a running program. Each script
 documents its inputs and how to reproduce a run. The correctness suites also use
 `bench.py` for project setup and `runbench.py` for whole-program builds.
+
+Set `BLAZE_TRACE=/tmp/startup.json` on a direct worker command to capture its first
+build. A worker started with `--watch` writes the file before reporting that it is
+watching. The `raJit.startup.outcome` field records watch readiness, one-shot
+completion or failure. Pass a directory to keep a separate file for each run.
+
+To follow one module-level constant, also set
+`BLAZE_TRACE_CONST=regex_syntax::unicode_tables::property_bool::BY_NAME`.
+In Perfetto, a `const request` covers the caller’s wait for the value. A nested
+`const eval` shows when the worker actually computed it. Compare that interval
+with the other threads in the same parallel batch, its join, and the worker’s link.
 
 ## The fuzzer
 
