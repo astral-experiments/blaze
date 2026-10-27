@@ -386,7 +386,8 @@ def round_of(seed, cases, steps, backend, work, out, budget):
     """One program and its edits under one backend. Returns what each step came to."""
     editor = Editor(seed, cases)
     edition = edition_of(seed)
-    daemon = Daemon(tempfile.mkdtemp(prefix=f"{seed}-{backend}-", dir=work), edition, backend, editor.text())
+    # The seed names the result files. Keep it out of the daemon's Unix socket path.
+    daemon = Daemon(tempfile.mkdtemp(prefix=f"{backend}-", dir=work), edition, backend, editor.text())
     rows = []
     try:
         expected = daemon.cargo(editor.text())
