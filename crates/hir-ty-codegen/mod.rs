@@ -6733,14 +6733,16 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         {
             compiled_static(db, id).as_ref().map_err(Clone::clone)?;
         }
-        let uses_native = linked_static && (stateful() || self.own_statics.native_may_read(db, id));
+        let native_may_read = linked_static && self.own_statics.native_may_read(db, id);
+        let uses_native = native_may_read || (linked_static && stateful());
         let shared = in_base.map_or_else(
             || uses_native && self.rustc_values.kept(db, id),
             |it| linked_static && it.shared,
         );
-        if uses_native && !shared && in_base.is_none() && !stateful() {
+        if native_may_read && !shared && in_base.is_none() {
             let name = StaticSignature::of(db, id).name.as_str().to_owned();
-            unsupported!("the linked read-only static `{name}` is from before the edit");
+            let kind = if stateful() { "stateful" } else { "read-only" };
+            unsupported!("the linked {kind} static `{name}` is from before the edit");
         }
         // The program has the base's copy, and what it wrote there.
         let base_owns = linked_static && in_base.is_some_and(|it| !it.shared);
