@@ -864,6 +864,7 @@ def daemon(work):
     abuse(work, ws, tree, env, check, status, alive)
     in_place(work, check)
     through_link(work, check)
+    cached_type_ids(work, check)
     pinned(work, check)
     own_toolchain(work, check)
     return checks
@@ -881,6 +882,38 @@ def fake_toolchain(dir, version):
         script.write(f'#!/bin/sh\ncase "$1" in --version|-V) echo "rustc {version} (0000000 2026-01-01)"; exit 0;; esac\n'
                      'echo "error: the toolchain the project pins was asked to compile: $*" >&2\nexit 1\n')
     os.chmod(rustc, 0o755)
+
+
+def cached_type_ids(work, check):
+    """A cached lookup must agree with a rustc-built registration after crate metadata changes."""
+    ws = os.path.join(work, "type-ids")
+    os.makedirs(os.path.join(ws, "src"))
+    open(os.path.join(ws, "Cargo.toml"), "w").write('[package]\nname = "ids"\nversion = "0.1.0"\nedition = "2021"\n')
+    open(os.path.join(ws, "src/main.rs"), "w").write("""#![feature(f128)]
+use std::any::TypeId;
+struct Root;
+struct Jar<T>(T);
+fn lookup<T: 'static>() -> TypeId { TypeId::of::<Jar<T>>() }
+#[unsafe(no_mangle)]
+pub extern "Rust" fn register_native() -> TypeId {
+    std::hint::black_box(1.0f128);
+    TypeId::of::<Jar<Root>>()
+}
+fn main() {
+    extern "Rust" { #[link_name = "register_native"] fn registered() -> TypeId; }
+    println!("{}", std::hint::black_box(lookup::<Root>()) == unsafe { registered() });
+}
+""")
+    env = base_env(os.path.join(work, "home-type-ids"))
+    for metadata in ("first", "second", "first"):
+        side = Side(ws, dict(env, RUSTFLAGS=f"-Cmetadata={metadata}", RA_JIT_RUSTC_BASE="0"), True)
+        try:
+            _, ran = side.cargo("run")
+            check(f"cached TypeId matches rustc with metadata {metadata}",
+                  ran.returncode == 0 and ran.stdout.strip() == "true" and how_built(ran.stderr) == "daemon",
+                  f"{how_built(ran.stderr)}, printed {ran.stdout.strip()!r}")
+        finally:
+            side.cargo("stop")
 
 
 def pinned(work, check):

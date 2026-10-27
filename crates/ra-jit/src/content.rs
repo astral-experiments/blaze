@@ -116,7 +116,12 @@ impl Contents {
             hasher.update((bytes.len() as u64).to_le_bytes());
             hasher.update(bytes);
         };
-        field(b"ra-jit crate 3");
+        field(b"ra-jit crate 4");
+        // A cached TypeId can contain this crate's stable ID even when its source is unchanged.
+        match stable_crate_id(krate) {
+            Some(id) => field(&id.to_le_bytes()),
+            None => field(&[]),
+        }
         let name = krate.extra_data(db).display_name.as_ref().map(|it| it.to_string());
         field(name.unwrap_or_default().as_bytes());
         field(format!("{:?} {}", data.edition, data.target_kind.is_proc_macro()).as_bytes());
