@@ -255,19 +255,31 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
             AdtId::EnumId(it) => &EnumSignature::of(db, it).name,
         };
         let module = adt.module(db);
-        let parent = if module.is_block_module(db) && !self.ours {
-            match self.symbols.declared_in(adt) {
-                Some(func) => self.body_path(func)?,
-                None => self.local_adt_parent(adt, module.block(db)?, name)?,
-            }
-        } else {
-            self.module(module)?
-        };
-        Some(parent.child(DefPathData::TypeNs(name.as_str())))
+        if module.is_block_module(db) && !self.ours {
+            return match self.symbols.declared_in(adt) {
+                Some(func) => self.function_adt_path(func, name),
+                None => self.local_adt_path(adt, module.block(db)?, name),
+            };
+        }
+        Some(self.module(module)?.child(DefPathData::TypeNs(name.as_str())))
     }
 
-    /// The function or anonymous constant containing an ADT whose name is unique in that body.
-    fn local_adt_parent(
+    /// rustc assigns a function's type parameters their paths before the items in its body.
+    fn function_adt_path(
+        &mut self,
+        func: FunctionId,
+        name: &hir_expand::name::Name,
+    ) -> Option<Fingerprint> {
+        let earlier = FunctionSignature::of(self.db, func)
+            .generic_params
+            .iter_type_or_consts()
+            .filter_map(|(_, param)| param.type_param()?.name.as_ref())
+            .any(|param| param.as_str() == name.as_str());
+        Some(self.body_path(func)?.child_at(DefPathData::TypeNs(name.as_str()), u32::from(earlier)))
+    }
+
+    /// An ADT whose name is unique in the body of a function or anonymous constant.
+    fn local_adt_path(
         &mut self,
         adt: AdtId,
         block: hir_def::BlockIdLt<'db>,
@@ -294,7 +306,7 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
         }
         let id = match owner {
             DefWithBodyId::FunctionId(func) if !FunctionSignature::of(db, func).is_async() => {
-                return self.body_path(func);
+                return self.function_adt_path(func, name);
             }
             DefWithBodyId::ConstId(id) if ConstSignature::of(db, id).name.is_none() => id,
             _ => return None,
@@ -333,7 +345,11 @@ impl<'a, 'db> TypeIdHasher<'a, 'db> {
             }
             place
         };
-        Some(parent.child_at(DefPathData::ValueNs("_"), place))
+        Some(
+            parent
+                .child_at(DefPathData::ValueNs("_"), place)
+                .child(DefPathData::TypeNs(name.as_str())),
+        )
     }
 
     /// An `impl`, which rustc tells from the others of its module by how many come before it.
