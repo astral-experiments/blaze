@@ -419,6 +419,55 @@ SCENARIOS["termination-unit"] = ([[edit(M, TERMINATION_FILES[M], UNIT_MAIN)],
                                   [edit(M, UNIT_MAIN, TERMINATION_FILES[M])]],
                                  [None, None], 0, {"RA_JIT_SPARE": "0"})
 
+# A native main keeps its source name distinct from the C symbol the first Rust main takes over.
+NATIVE_MAIN = """\
+#![no_main]
+#[unsafe(export_name = "main")]
+pub extern "C" fn native_entry(argc: i32, _argv: *const *const std::ffi::c_char) -> i32 {
+    if argc > 1 { 23 } else { 17 }
+}
+"""
+NATIVE_HELPER = "#[inline(never)]\nfn main() { std::hint::black_box(11); }\n"
+# The optimized C program never linked `dep`. The default dev one already calls a Rust
+# function named `main`; removing the C entry promotes that same helper to program entry.
+FIRST_MAIN_CASES = {
+    "termination-first-main": (TERMINATION_FILES, NATIVE_MAIN, TERMINATION_FILES[M]),
+    "termination-first-main-rustc": ({**TERMINATION_FILES, "Cargo.toml": FILES["Cargo.toml"]},
+                                     NATIVE_MAIN.replace("    if argc", "    main();\n    if argc") + NATIVE_HELPER,
+                                     NATIVE_HELPER),
+}
+if sys.platform == "linux":
+    # Only the library the new Rust entry reaches contributes its .init_array callback.
+    INIT_ARRAY = """#[used]
+#[unsafe(link_section = ".init_array")]
+static INITIALIZE: extern "C" fn() = initialize;
+"""
+    FIRST_MAIN_CASES["termination-first-main-initializers"] = ({
+        **TERMINATION_FILES,
+        "app/Cargo.toml": FILES["app/Cargo.toml"] + 'hook = { package = "unused", path = "../unused" }\n',
+        "unused/Cargo.toml": FILES["dep/Cargo.toml"].replace('"dep"', '"unused"'),
+        "unused/src/lib.rs": 'extern "C" fn initialize() { std::process::exit(71); }\n' + INIT_ARRAY,
+        D: """use std::process::{ExitCode, Termination};
+use std::sync::atomic::{AtomicU8, Ordering};
+
+pub struct Status(pub bool);
+static CODE: AtomicU8 = AtomicU8::new(3);
+extern "C" fn initialize() { CODE.store(67, Ordering::Relaxed); }
+impl Termination for Status {
+    fn report(self) -> ExitCode { ExitCode::from(CODE.load(Ordering::Relaxed) + self.0 as u8) }
+}
+""" + INIT_ARRAY,
+    }, NATIVE_MAIN, "fn main() -> dep::Status { let hook = std::env::args().len() > 1; dep::Status(hook) }\n")
+for name, (_, native, rust) in FIRST_MAIN_CASES.items():
+    sources = [native, rust]
+    if name == "termination-first-main-initializers":
+        # Either active import runs hook's initializer. The disabled import and local name do not.
+        disabled = "#[cfg(any())]\nuse hook as _;\n" + rust
+        sources = [native, disabled, "use hook as _;\n" + disabled, disabled, "extern crate hook as _;\n" + rust]
+    sources.append(native)
+    edits = [[edit(M, old, new)] for old, new in zip(sources, sources[1:])]
+    SCENARIOS[name] = (edits, [None] * len(edits), 0, {"RA_JIT_SPARE": "0"})
+
 # Only the runtime's concrete Termination::report reaches the helpers, including startup_leaf::<u8>.
 STARTUP_FILES = {
     **TERMINATION_FILES,
@@ -466,6 +515,7 @@ for name, (target_name, _, changes) in STARTUP_EDITS.items():
 RUSTC_BASE_INVALIDATION = {
     "termination-inline": "no patch: an edit of a generic, inline or default trait function",
     "termination-unit": "no patch: an edit that is more than the bodies of functions",
+    "termination-first-main-rustc": "no patch: an edit that is more than the bodies of functions",
 }
 
 # An optional dependency only a dev-dependency's feature turns on, which cargo does not build for
@@ -809,6 +859,9 @@ def main():
             files = TERMINATION_FILES
         elif name == "termination-unit":
             files = UNIT_TERMINATION_FILES
+        elif name in FIRST_MAIN_CASES:
+            base_files, native, _ = FIRST_MAIN_CASES[name]
+            files = {**base_files, M: native}
         elif name in STARTUP_EDITS:
             files = STARTUP_FILES
             if name == "termination-inline":
@@ -875,6 +928,12 @@ def main():
         try:
             if invalidation and not rustcs:
                 raise RuntimeError("the first edit did not start from the rustc executable")
+            if name in FIRST_MAIN_CASES:
+                if rustcs and not invalidation:
+                    raise RuntimeError("the optimized native entry did not start from the daemon's own executable")
+                cold = outputs(os.path.join(target, "debug", "app"), ws)
+                if [code for code, _, _ in cold] != [17, 23]:
+                    raise RuntimeError(f"the cold executable did not run the native entry: {cold}")
             if name == "termination-inline":
                 # Check what rustc put in the base before this edit: the caller needs both
                 # black_box operations, but only the out-of-line helper has its own symbol.
@@ -906,6 +965,10 @@ def main():
                 theirs = outputs(os.path.join(reference, "debug", "app"), ws)
                 how = how_built(lines)
                 same = ours == theirs
+                if name == "termination-first-main-initializers":
+                    expected_codes = ([67, 68], [71, 71], [67, 68], [71, 71], [17, 23])[step - 1]
+                    if [it[0] for it in theirs] != expected_codes:
+                        failed.append(f"{name} edit {step}: expected Cargo exit codes {expected_codes}, got {theirs}")
                 if step == 1 and invalidation and (how == "patch" or not any(
                         it.startswith(invalidation) for it in lines)):
                     failed.append(f"{name}: expected a rebuild of the rustc base ({invalidation}), got {how}")

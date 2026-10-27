@@ -589,7 +589,8 @@ pub(crate) struct Linked {
     /// Its functions and statics of symbols private to the object they were in, by their
     /// paths as [`SymbolTable`] spells them, with their addresses: none for a path that two
     /// have, or a symbol that two copies have, which a patch would replace one of.
-    private: FxHashMap<String, Option<(String, u64)>>,
+    private_functions: FxHashMap<String, Option<(String, u64)>>,
+    private_statics: FxHashMap<String, Option<(String, u64)>>,
     /// The symbol of each function rustc compiled from Rust (or C++), a line each:
     /// demangled when asked, for a few.
     functions: String,
@@ -624,13 +625,14 @@ impl Linked {
         let own = defined_in(by_symbol);
         let mut linked = Linked {
             names: FxHashSet::default(),
-            private: FxHashMap::default(),
+            private_functions: FxHashMap::default(),
+            private_statics: FxHashMap::default(),
             functions: String::new(),
             unkept: String::new(),
             named: FxHashSet::default(),
             own_thread_locals: false,
         };
-        let mut local = Vec::new();
+        let (mut functions, mut statics) = (Vec::new(), Vec::new());
         for symbol in object.symbols().chain(object.dynamic_symbols()) {
             let Ok(name) = symbol.name() else { continue };
             let name = match object.format() {
@@ -671,9 +673,11 @@ impl Linked {
                 continue;
             }
             let Some((with_ids, path)) = Named::new(name, true).demangled else { continue };
-            local.push((with_ids, path, name.to_owned(), symbol.address()));
+            let symbols = if function { &mut functions } else { &mut statics };
+            symbols.push((with_ids, path, name.to_owned(), symbol.address()));
         }
-        linked.private = by_path(local, shared);
+        linked.private_functions = by_path(functions, shared);
+        linked.private_statics = by_path(statics, shared);
         let read = start.elapsed();
         linked.named = names_in_symbols(&[&linked.functions, &linked.unkept]);
         if std::env::var_os("RA_JIT_STATS").is_some() {
@@ -694,9 +698,14 @@ impl Linked {
         self.own_thread_locals
     }
 
-    /// The one private symbol of the function or static at `path`.
-    pub(crate) fn private(&self, path: &str) -> Option<&str> {
-        self.private.get(path)?.as_ref().map(|it| &*it.0)
+    /// The one private function at `path`. A test descriptor can have the same path.
+    pub(crate) fn private_function(&self, path: &str) -> Option<&str> {
+        self.private_functions.get(path)?.as_ref().map(|it| &*it.0)
+    }
+
+    /// The one private data symbol at `path`.
+    pub(crate) fn private_static(&self, path: &str) -> Option<&str> {
+        self.private_statics.get(path)?.as_ref().map(|it| &*it.0)
     }
 
     /// Whether no function in the executable has `name` anywhere in its symbol: it then has
@@ -1593,6 +1602,18 @@ mod tests {
                     },
                 });
             }
+            let data = object.section_id(object::write::StandardSection::Data);
+            let value = object.append_section_data(data, &[0], 1);
+            object.add_symbol(Symbol {
+                name: b"_RNvCs1234_3app7library".to_vec(),
+                value,
+                size: 1,
+                kind: SymbolKind::Data,
+                scope: SymbolScope::Compilation,
+                weak: false,
+                section: SymbolSection::Section(data),
+                flags: SymbolFlags::None,
+            });
             let path = dir.join(file);
             std::fs::write(&path, object.write().unwrap()).unwrap();
             path
@@ -1614,9 +1635,11 @@ mod tests {
         assert!(linked.has("exported"));
         assert!(linked.has("made_local"));
         assert!(linked.has("_RNvCs1234_3app6helper"));
-        assert_eq!(linked.private("app::helper"), Some("_RNvCs1234_3app6helper"));
+        assert_eq!(linked.private_function("app::helper"), Some("_RNvCs1234_3app6helper"));
         assert!(!linked.has("_RNvCs5678_3dep6helper"));
-        assert_eq!(linked.private("dep::helper"), None);
+        assert_eq!(linked.private_function("dep::helper"), None);
+        assert_eq!(linked.private_function("app::library"), None);
+        assert_eq!(linked.private_static("app::library"), Some("_RNvCs1234_3app7library"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -1634,7 +1657,8 @@ mod tests {
         let named = names_in_symbols(&[&functions, "_RNvCs1234_3app6unkept"]);
         let linked = Linked {
             names: FxHashSet::default(),
-            private: FxHashMap::default(),
+            private_functions: FxHashMap::default(),
+            private_statics: FxHashMap::default(),
             functions,
             unkept: String::new(),
             named,

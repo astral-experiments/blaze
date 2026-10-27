@@ -316,25 +316,46 @@ def unchanged_instances(root, env):
     ws = os.path.join(root, "unchanged")
     files = {
         "Cargo.toml": '[package]\nname = "unchanged"\nversion = "0.1.0"\nedition = "2021"\n'
+                      '[dependencies]\nunchanged-native = { path = "native" }\n'
                       '[profile.dev]\nopt-level = 1\n',
-        "src/lib.rs": """#![feature(f128)]
+        "build.rs": """fn main() {
+    let dir = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    for name in ["first", "second"] {
+        std::fs::write(dir.join(format!("{name}.expr")), "0_u32").unwrap();
+    }
+}
+""",
+        "native/Cargo.toml": '[package]\nname = "unchanged-native"\nversion = "0.1.0"\nedition = "2021"\n',
+        "native/src/lib.rs": """#![feature(f128)]
 #[inline(never)]
 pub fn half<T: Into<f64>>(value: T) -> f64 {
     let wide = std::hint::black_box(value.into() as f128);
     (wide / 2.0) as f64
 }
+""",
+        "src/lib.rs": """pub use unchanged_native::half;
 #[test]
 fn library() { assert_eq!(half(8_u32), 4.0); }
 """,
     }
     for name in ("first", "second"):
-        files[f"tests/{name}.rs"] = f"#[test]\nfn {name}() {{ assert_eq!(unchanged::half(8_u32), 4.0); }}\n"
+        files[f"cargo-home/registry/{name}.data"] = "const VALUE: u32 = 8;\n"
+        files[f"tests/{name}.rs"] = (
+            f'include!(concat!(env!("CARGO_HOME"), "/registry/{name}.data"));\n'
+            f'#[test]\nfn {name}() {{\n'
+            f'    let extra = include!(concat!(env!("OUT_DIR"), "/{name}.expr"));\n'
+            f'    assert_eq!(unchanged::half(VALUE + extra), 4.0);\n}}\n'
+        )
+        # Each disabled crate still needs a libtest entry point after it joins the worker.
+        files[f"tests/{name}_disabled.rs"] = '#![cfg(any())]\n#[test]\nfn hidden() { panic!("disabled test ran"); }\n'
     for path, text in files.items():
         path = os.path.join(ws, path)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as out:
             out.write(text)
-    code, said = test(ws, dict(env, RUSTC_BOOTSTRAP="1"), "all --tests")
+    # With incremental compilation off rustc can keep only the descriptor for the test.
+    env = dict(env, CARGO_HOME=os.path.join(ws, "cargo-home"), RUSTC_BOOTSTRAP="1", CARGO_INCREMENTAL="0")
+    code, said = test(ws, env, "all --tests")
     if code or "[ra-jit]" not in said or set(RAN.findall(said)) != {
         ("library", "ok"), ("first", "ok"), ("second", "ok")
     }:
