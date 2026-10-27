@@ -1,112 +1,70 @@
-name: Verify the native symbol fix with generated includes
+name: Run the merged macOS test-selection harness
 on:
   push:
     branches: [charlie/ci-control-pr-7]
 permissions:
   contents: read
+  actions: read
 jobs:
-  build:
+  testselect:
+    runs-on: macos-15
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - platform: linux
-            runner: namespace-profile-ubuntu-24-04-16
-          - platform: macos
-            runner: nscloud-macos-sequoia-arm64-6x14
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+        backend: [cranelift, llvm]
     env:
-      CARGO_INCREMENTAL: 0
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_GHA_RW_MODE: READ_ONLY
+      RA_JIT_BACKEND: ${{ matrix.backend }}
+      RA_JIT_OPT: 2
+      RA_JIT_EMIT: fast
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ce9b9fd5d9096e34c7bfeab13015272209424f9e
-          fetch-depth: 0
+          ref: 097e074391eefd9bb8f8935d9c53d63cba212cde
           persist-credentials: false
-      - name: Apply the candidate to the current main
-        run: |
-          git -c user.name=CI -c user.email=ci@users.noreply.github.com merge --no-ff --no-commit 1a4dad4435d682603736262b03c2bfa1160b1fa7
-          git status --short
-      - uses: ./.github/actions/toolchain
-        with:
-          llvm: build
-      - uses: Swatinem/rust-cache@v2
-        with:
-          shared-key: build
-          save-if: false
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - run: nix develop --command cargo build -p ra-jit --release --features llvm --locked
-        env:
-          RUSTC_WRAPPER: sccache
-      - run: tar -cf probe.tar ra-jit cargo-ra-jit ra-jit-rustc ra-jit-rustc-first
-        working-directory: target/release
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: probe-${{ matrix.platform }}
-          path: target/release/probe.tar
-          retention-days: 1
-  fixture:
-    needs: build
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - platform: linux
-            os: ubuntu-24.04
-          - platform: macos
-            os: macos-15
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          ref: ce9b9fd5d9096e34c7bfeab13015272209424f9e
-          fetch-depth: 0
-          persist-credentials: false
-      - name: Apply the candidate to the current main
-        run: |
-          git -c user.name=CI -c user.email=ci@users.noreply.github.com merge --no-ff --no-commit 1a4dad4435d682603736262b03c2bfa1160b1fa7
-          git status --short
       - uses: ./.github/actions/toolchain
         with:
           llvm: run
       - uses: actions/download-artifact@v8
         with:
-          name: probe-${{ matrix.platform }}
+          name: probe-macos
+          run-id: 40460066029
+          github-token: ${{ github.token }}
           path: target/release
-      - run: tar -xf probe.tar
-        working-directory: target/release
-      - name: Run the original and expanded fixtures under both CI backends
-        working-directory: harness
-        shell: bash
+      - working-directory: target/release
         run: |
-          git show 9bc237eddb96020ceecd24a92f1fa5e96226a792:harness/testselect.py > testselect_original.py
+          tar -xf probe.tar
+          echo "RA_JIT_BIN=$PWD/ra-jit" >> "$GITHUB_ENV"
+      - name: Run the test-selection harness
+        run: $PYTHON harness/testselect.py
+      - name: Compare canonical and symlinked temporary paths after a failure
+        if: failure()
+        working-directory: harness
+        run: |
           python3 - <<'PY'
           import os
-          import pathlib
           import subprocess
           import tempfile
+          from pathlib import Path
           import testselect
-          import testselect_original
 
-          binary = pathlib.Path("../target/release").resolve()
-          failures = 0
-          for name, module in (("original", testselect_original), ("expanded", testselect)):
-              for backend in ("cranelift", "llvm"):
-                  with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory(dir="/tmp") as home:
-                      env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", RA_JIT_HOME=home,
-                                 RA_JIT_BIN=str(binary/"ra-jit"), RA_JIT_BACKEND=backend,
-                                 RA_JIT_OPT="2", RA_JIT_EMIT="fast", RUST_BACKTRACE="0", CARGO_TERM_COLOR="never",
-                                 CARGO_INCREMENTAL="0")
-                      try:
-                          result = module.unchanged_instances(root, env)
-                          print(f"{name} / {backend}: {result}", flush=True)
-                          failures += result != "ok"
-                      finally:
-                          subprocess.run(["cargo","ra-jit","stop"], cwd=pathlib.Path(root)/"unchanged",
-                                         env=env, capture_output=True)
-          raise SystemExit(bool(failures))
+          binary = Path(os.environ["RA_JIT_BIN"]).parent
+          for name in ("default", "canonical", "runner-temp"):
+              parent = os.environ["RUNNER_TEMP"] if name == "runner-temp" else None
+              with tempfile.TemporaryDirectory(dir=parent) as root, tempfile.TemporaryDirectory(dir="/tmp") as home:
+                  work = os.path.realpath(root) if name == "canonical" else root
+                  print(f"{name}: {work} (physical: {os.path.realpath(work)})", flush=True)
+                  env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", RA_JIT_HOME=home, RUST_BACKTRACE="0")
+                  try:
+                      print(f"{name}: {testselect.unchanged_instances(work, env)}", flush=True)
+                  finally:
+                      subprocess.run(["cargo", "ra-jit", "stop"], cwd=Path(work)/"unchanged", env=env, capture_output=True)
           PY
+      - name: Daemon logs
+        if: failure()
+        run: |
+          find /tmp -maxdepth 3 -name daemon.log 2>/dev/null | sort -u | while read -r log; do
+            echo "::group::$log"
+            tail -n 60 "$log"
+            echo "::endgroup::"
+          done
