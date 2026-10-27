@@ -95,6 +95,7 @@ cases![
     negative_literal_token,
     constructor_as_pointer,
     nested_binder_type_id,
+    refined_future_error,
     if_let_outlives,
     foreign_of_dependency,
     macro_defined_by_foreign_macro,
