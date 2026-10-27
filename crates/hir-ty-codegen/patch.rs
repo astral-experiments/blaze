@@ -2415,13 +2415,9 @@ impl Base {
                 return stale.declined("a static changed, and rustc's copy is the program's");
             }
             let writable = probe(|| compiled_static(db, id).as_ref().ok().map(|it| it.writable));
-            // A shared mutable static has live state, and a thread-local has linker
-            // assigned storage. Only an immutable static can be replaced at its base symbol.
-            if was.shared
-                && writable
-                    .flatten()
-                    .is_some_and(|now| was.writable || now || is_thread_local(db, id))
-            {
+            // A patch that allocates a replacement gives the same static two addresses. When
+            // the edit removed the static or its value, no newly compiled code addresses it.
+            if was.shared && matches!(writable, Some(Some(_))) {
                 return stale
                     .declined("the initializer changed for a static shared with rustc's code");
             }
