@@ -942,7 +942,14 @@ use std::any::TypeId;
 pub struct Model;
 pub struct Jar<T>(T);
 macro_rules! make {
-    () => { impl Model { pub fn key() -> impl Copy { #[derive(Copy, Clone)] struct Key; Key } } }
+    () => { impl Model {
+        #[inline(never)]
+        pub fn key() -> impl Copy {
+            std::hint::black_box(17u8);
+            #[derive(Copy, Clone)] struct Key;
+            Key
+        }
+    } }
 }
 make!();
 #[unsafe(no_mangle)]
