@@ -1,20 +1,27 @@
-name: Native macOS 15 Namespace comparison
+name: Compare macOS splicing on the merged compiler
 on:
   push:
     branches: [charlie/ci-control-pr-7]
 permissions:
   contents: read
+  actions: read
 jobs:
-  native:
-    runs-on: nscloud-macos-sequoia-arm64-6x14
-    timeout-minutes: 60
+  quick:
+    name: Repeated splicing on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, nscloud-macos-sequoia-arm64-6x14]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
     env:
       CARGO_INCREMENTAL: 0
       CARGO_NET_RETRY: 10
       CARGO_TERM_COLOR: always
       RA_JIT_SANDBOX: ''
+      PYTHON: python3
       SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_GHA_RW_MODE: READ_ONLY
+      SCCACHE_GHA_RW_MODE: READ_WRITE
       RA_JIT_BACKEND: cranelift
       RA_JIT_OPT: 2
       RA_JIT_EMIT: fast
@@ -24,22 +31,43 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ea109290eb43c92af26408c96f7e3ac672c4d8b3
+          ref: cf2ad1a05b577fe2d74fbac88968113a71f721b4
           persist-credentials: false
       - uses: ./.github/actions/toolchain
         with:
-          llvm: build
-      - uses: Swatinem/rust-cache@v2
+          llvm: run
+      - uses: actions/download-artifact@v8
         with:
-          shared-key: build
-          save-if: "false"
-      - uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Build on Sequoia
-        env:
-          RUSTC_WRAPPER: sccache
+          name: ra-jit-macos-arm64
+          path: target/release
+          github-token: ${{ github.token }}
+          run-id: 40437279211
+      - name: Unpack the compiler from the main run
+        working-directory: target/release
         run: |
+          tar -xf ra-jit.tar
+          echo "RA_JIT_BIN=$PWD/ra-jit" >> "$GITHUB_ENV"
+          shasum -a 256 ra-jit
           sw_vers
-          nix develop --command cargo build -p ra-jit --release --features llvm --locked
-          echo "RA_JIT_BIN=$PWD/target/release/ra-jit" >> "$GITHUB_ENV"
-      - name: Run the complete shard on Sequoia
-        run: python3 harness/ci.py quick-2
+          sysctl -n hw.logicalcpu
+          xcodebuild -version
+      - name: Repeat the splicing test with the main artifact
+        working-directory: harness
+        run: |
+          failed=0
+          for round in {1..10}; do
+            echo "::group::splicing round $round"
+            if python3 storetracked.py > "$RUNNER_TEMP/storetracked-$round.txt" 2>&1; then
+              tail -1 "$RUNNER_TEMP/storetracked-$round.txt"
+            else
+              failed=$((failed + 1))
+              grep -E 'NOT SPLICED|wrong; under|Traceback' "$RUNNER_TEMP/storetracked-$round.txt" || true
+              root=$(sed -n 's/.*wrong; under \(\/private\/tmp\/ra-jit-tracked-[[:alnum:]_-]*\)$/\1/p' "$RUNNER_TEMP/storetracked-$round.txt" | tail -1)
+              if [[ -n "$root" && -d "$root" ]]; then
+                find "$root" -name log -type f -exec grep -hE 'not spliced: the static' {} + | sort -u || true
+              fi
+            fi
+            echo "::endgroup::"
+          done
+          echo "$failed of 10 splicing runs failed" | tee -a "$GITHUB_STEP_SUMMARY"
+          [[ "$failed" == 0 ]]
