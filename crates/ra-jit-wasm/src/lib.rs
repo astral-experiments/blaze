@@ -400,6 +400,7 @@ impl Compiler {
                 shared: false,
                 whole: false,
                 kept: &[],
+                kept_if_used: &[],
                 offered: &[],
             };
             let unit = hir::attach_db(db, || {

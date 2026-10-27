@@ -383,6 +383,8 @@ struct Resolver<'a> {
     /// The symbols of the functions asked about, for every thread of the build: the threads
     /// that compile find them ahead of the one that puts the functions in the object.
     named: Arc<std::sync::Mutex<FxHashMap<FunctionId, Option<String>>>>,
+    /// The runtime entry of a program whose original executable had a custom C entry.
+    new_main: Option<FunctionId>,
     /// The places of the closures and statics of the definitions gone through, for every
     /// thread of the build.
     places: Places,
@@ -419,6 +421,7 @@ struct ResolverParts<'a> {
     listed: &'a Listed,
     shared_paths: SharedPaths,
     named: Arc<std::sync::Mutex<FxHashMap<FunctionId, Option<String>>>>,
+    new_main: Option<FunctionId>,
     places: Places,
     linked: Option<Arc<symbols::Linked>>,
     in_full: Arc<std::sync::atomic::AtomicBool>,
@@ -441,6 +444,7 @@ impl<'a> Resolver<'a> {
             listed: self.listed,
             shared_paths: self.shared_paths.clone(),
             named: self.named.clone(),
+            new_main: self.new_main,
             places: self.places.clone(),
             linked: self.linked.clone(),
             in_full: self.in_full.clone(),
@@ -468,6 +472,7 @@ impl<'a> ResolverParts<'a> {
             listed,
             shared_paths,
             named,
+            new_main,
             places,
             linked,
             in_full,
@@ -488,6 +493,7 @@ impl<'a> ResolverParts<'a> {
             listed,
             shared_paths,
             named,
+            new_main,
             places,
             linked,
             in_full,
@@ -648,6 +654,7 @@ impl<'a> Resolver<'a> {
             listed,
             shared_paths: Default::default(),
             named: Default::default(),
+            new_main: None,
             places: Places::default(),
             linked,
             in_full: Arc::default(),
@@ -801,7 +808,7 @@ impl Resolver<'_> {
             return None;
         }
         if self.rustc_built(krate) {
-            if !self.rustc_has_none(func) {
+            if self.new_main != Some(func) && !self.rustc_has_none(func) {
                 return None;
             }
             return self.function_named_in(func, self.stable_crate_id(krate)?);
@@ -1367,6 +1374,10 @@ impl SymbolResolver for Resolver<'_> {
 
     fn onto_rustcs(&self) -> bool {
         self.onto && self.linked.is_some()
+    }
+
+    fn needs_new_start(&self, main: FunctionId) -> bool {
+        self.new_main == Some(main)
     }
 
     fn in_full(&self) {
@@ -2410,6 +2421,37 @@ fn deps_of(
     krate: ide_db::base_db::Crate,
 ) -> FxHashSet<ide_db::base_db::Crate> {
     krate.transitive_deps(db).into_iter().collect()
+}
+
+/// Finds dependencies whose linker-kept statics the program requests through source alone.
+/// A dependency import can run a constructor even when no emitted code refers to the crate.
+fn source_dependencies_with_kept(
+    db: &RootDatabase,
+    main: FunctionId,
+    statics: &[StaticId],
+) -> FxHashSet<ide_db::base_db::Crate> {
+    let candidates: FxHashSet<_> =
+        statics.iter().map(|id| hir_def::HasModule::krate(id, db)).collect();
+    let sema = hir::Semantics::new(db);
+    let mut reached = FxHashSet::default();
+    let mut pending = vec![hir_def::HasModule::krate(&main, db)];
+    while let Some(krate) = pending.pop() {
+        if !reached.insert(krate) {
+            continue;
+        }
+        let from = Crate::from(krate);
+        let scope = ide_db::search::SearchScope::module_and_children(db, from.root_module(db));
+        for dep in &krate.data(db).dependencies {
+            if reached.contains(&dep.crate_id) || deps_of(db, dep.crate_id).is_disjoint(&candidates)
+            {
+                continue;
+            }
+            if scope.loads_dependency(&sema, from, dep) {
+                pending.push(dep.crate_id);
+            }
+        }
+    }
+    reached
 }
 
 /// The crates called `krate` to build: the ones rustc built into this program, when it built
@@ -4589,10 +4631,11 @@ fn build(
 ) -> anyhow::Result<Option<Build>> {
     let start = Instant::now();
     let contents = &content::Contents::default();
-    let resolver = Resolver::of(db, table, args, known, contents, listed);
+    let mut resolver = Resolver::of(db, table, args, known, contents, listed);
     let hir_db: &dyn HirDatabase = db;
     let mut functions = Vec::new();
     let mut kept = Vec::new();
+    let mut kept_if_used = Vec::new();
     let mut every_static: Vec<StaticId> = Vec::new();
     // The `main` of the crate asked for: another program of the workspace among the crates
     // is only here for what this one uses of it.
@@ -4627,14 +4670,23 @@ fn build(
             every_static.extend(&listed.statics);
         }
     }
-    // With nothing of rustc's every crate the program links is ra-jit's to compile; the
-    // standard library is built apart ([`std_unit`]) or asked for by name.
-    if table.is_empty() {
+    // A custom C entry may never have linked the Rust startup runtime. Use the full link
+    // inputs when the first Rust entry is added, including for a main that returns unit.
+    let non_unit_main = main.map(|it| !hir::Function::from(it).ret_type(db).is_unit());
+    if !of_tests(args) && !args.library && !args.shared && known.introduced_main(non_unit_main) {
+        resolver.new_main = main;
+        resolver.onto = false;
+        resolver.in_full();
+    }
+    // Compile dependencies absent from the original link on demand. A first Rust main
+    // can reach one of them solely through its return type's Termination::report.
+    if table.is_empty() || resolver.new_main.is_some() {
         let asked: FxHashSet<Crate> = local.iter().copied().collect();
         let linked: FxHashSet<Crate> = local
             .iter()
             .flat_map(|&it| ide_db::base_db::Crate::from(it).transitive_deps(db))
             .filter(|it| !it.data(db).origin.is_lang() && !resolver.prebuilt(*it))
+            .filter(|&it| table.is_empty() || !resolver.rustc_built(it))
             .map(Crate::from)
             .filter(|it| !asked.contains(it))
             .collect();
@@ -4642,11 +4694,26 @@ fn build(
         for krate in linked {
             local.push(krate);
             let listed = listed.of(db, krate);
-            functions.extend(listed.functions.iter().copied().zip(listed.exported.iter().copied()));
+            // An unused dependency may export its own C main. Only a whole-program build
+            // takes exports and kept statics from these crates without a Rust reference.
+            let exported = listed.exported.iter().map(|&it| table.is_empty() && it);
+            functions.extend(listed.functions.iter().copied().zip(exported));
             functions.extend(listed.in_provided.iter().map(|&it| (it, false)));
-            kept.extend(&listed.kept);
-            every_static.extend(&listed.statics);
+            if table.is_empty() {
+                kept.extend(&listed.kept);
+                every_static.extend(&listed.statics);
+            } else {
+                kept_if_used.extend(&listed.kept);
+            }
         }
+    }
+    if let Some(main) = resolver.new_main
+        && !kept_if_used.is_empty()
+    {
+        let used = source_dependencies_with_kept(db, main, &kept_if_used);
+        kept.extend(
+            kept_if_used.iter().filter(|id| used.contains(&hir_def::HasModule::krate(*id, db))),
+        );
     }
     // A library built before the programs that use it has every static a generic function
     // of it uses, for the instances they compile.
@@ -4670,8 +4737,9 @@ fn build(
     let start_main = main.filter(|&it| {
         resolver.own_crate_id(hir_def::HasModule::krate(&it, db)).is_some()
             || in_harness(db, it)
+            || resolver.needs_new_start(it)
             || known.owns_start()
-            || !hir::Function::from(it).ret_type(db).is_unit()
+            || non_unit_main == Some(true)
     });
     let roots = Roots {
         entries: &entries,
@@ -4680,6 +4748,7 @@ fn build(
         shared: args.shared,
         whole: local.iter().all(|&krate| resolver.own_crate_id(krate.into()).is_some()),
         kept: &kept,
+        kept_if_used: &kept_if_used,
         offered: &offered,
     };
     let setup = start.elapsed();
@@ -4805,6 +4874,7 @@ fn build(
                     shared: false,
                     whole: false,
                     kept: &[],
+                    kept_if_used: &[],
                     offered: &[],
                 };
                 CodegenUnit::compile(hir_db, &resolver, roots, &Default::default(), known)
@@ -8261,7 +8331,7 @@ fn run_holding(
                     }
                 }
             }
-            let non_unit = main.is_some_and(|it| !hir::Function::from(it).ret_type(&db).is_unit());
+            let non_unit = main.map(|it| !hir::Function::from(it).ret_type(&db).is_unit());
             known.start_from_rustc(args.debug.level != plan::Level::Nothing, non_unit);
             eprintln!(
                 "cold: none, the first edits patch what rustc linked ({:.1?})",
