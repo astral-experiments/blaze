@@ -1201,17 +1201,18 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                                     .pattern_match_linked(current, cond_place, *pat)
                                     .map(|(then, otherwise)| (then, Some(otherwise))),
                             };
-                            let moves = std::mem::replace(&mut self.guarded_moves, outer);
+                            let moves = std::mem::replace(&mut self.guarded_moves, outer)
+                                .unwrap_or_default();
                             self.or_choices.clear();
                             let (then, otherwise) = matched?;
                             let otherwise = otherwise.unwrap_or_else(|| self.new_basic_block());
                             let bound = self.drop_scopes.last().map_or(0, |it| it.locals.len());
                             let guarded = self.lower_guard(guard, then, expr_id.into());
-                            self.guard_refs.clear();
+                            self.clear_guard_refs(&moves);
                             if let Some((held, failed)) = guarded? {
                                 let failed = self.guard_failed(failed, bound, guard.into());
                                 self.set_goto(failed, otherwise, expr_id.into());
-                                self.guard_held(held, moves.unwrap_or_default(), bound)?;
+                                self.guard_held(held, moves, bound)?;
                                 self.set_goto(held, body, expr_id.into());
                             }
                             current = otherwise;
@@ -1236,18 +1237,19 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
                             .pattern_match_linked(current, cond_place, *pat)
                             .map(|(then, otherwise)| (then, Some(otherwise))),
                     };
-                    let moves = std::mem::replace(&mut self.guarded_moves, outer);
+                    let moves =
+                        std::mem::replace(&mut self.guarded_moves, outer).unwrap_or_default();
                     let (then, mut otherwise) = matched?;
                     let then = if let &Some(guard) = guard {
                         let next = self.new_basic_block();
                         let o = *otherwise.get_or_insert_with(|| self.new_basic_block());
                         let bound = self.drop_scopes.last().map_or(0, |it| it.locals.len());
                         let guarded = self.lower_guard(guard, then, expr_id.into());
-                        self.guard_refs.clear();
+                        self.clear_guard_refs(&moves);
                         if let Some((held, failed)) = guarded? {
                             let failed = self.guard_failed(failed, bound, guard.into());
                             self.set_goto(failed, o, expr_id.into());
-                            self.guard_held(held, moves.unwrap_or_default(), bound)?;
+                            self.guard_held(held, moves, bound)?;
                             self.set_goto(held, next, expr_id.into());
                         }
                         next
@@ -4090,6 +4092,13 @@ impl<'a, 'db> MirLowerCtx<'a, 'db> {
             self.emit_drop_and_storage_dead_for_scope(&by_guard, &mut current, span);
         }
         current
+    }
+
+    /// End this guard's borrows while keeping the enclosing guard's bindings available.
+    fn clear_guard_refs(&mut self, moves: &[GuardedMove<'db>]) {
+        for guarded in moves {
+            self.guard_refs.remove(&guarded.binding);
+        }
     }
 
     /// Where the guard of an arm held: what the arm binds by value is moved into its bindings.
