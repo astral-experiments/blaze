@@ -1016,6 +1016,13 @@ pub fn anchor() -> u64 { located(1u32) }
     row.stop()
     in_place(data, "B")
     row.both("edit the included byte before loading", want="located 66")
+    row.stop()
+    os.unlink(data)
+    _, missing = Side(row.ws, row.env, True).cargo("build")
+    if missing.returncode == 0 or "value byte.txt" not in missing.stderr:
+        raise Wrong("the build did not diagnose the deleted input")
+    in_place(data, "C")
+    row.both("restore the deleted input", want="located 67")
 
 
 def statics_one_unit_uses(row):

@@ -112,7 +112,7 @@ impl Source {
     fn written_since(&self, built: SystemTime) -> bool {
         match self.generated {
             Some(generated) => content(&self.path) != Some(generated),
-            None => written(&self.path).is_some_and(|it| it > built),
+            None => written(&self.path).is_none_or(|it| it > built),
         }
     }
 }
