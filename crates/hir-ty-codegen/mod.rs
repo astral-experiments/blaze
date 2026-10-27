@@ -1236,6 +1236,8 @@ struct OwnStatics {
     unknown: FxHashSet<Crate>,
     /// The crates of the program rustc built nothing of, whose statics have no copy but ours.
     unbuilt: FxHashSet<Crate>,
+    /// A rustc allocator shim may inline code and static addresses from its dependencies.
+    native_allocator: FxHashSet<Crate>,
 }
 
 impl OwnStatics {
@@ -1247,6 +1249,7 @@ impl OwnStatics {
             theirs: FxHashSet::default(),
             unknown: FxHashSet::default(),
             unbuilt: FxHashSet::default(),
+            native_allocator: FxHashSet::default(),
         }
     }
 
@@ -1289,7 +1292,14 @@ impl OwnStatics {
         let shared = crates.iter().copied().filter(is_shared).collect();
         let unbuilt =
             program.iter().copied().filter(|&krate| !symbols.rustc_built(krate)).collect();
-        OwnStatics { crates, shared, theirs, unknown, unbuilt }
+        let mut native_allocator = FxHashSet::default();
+        for &krate in &crates {
+            if symbols.rustc_built(krate) && declares_global_allocator(db, krate) {
+                native_allocator.insert(krate);
+                native_allocator.extend(krate.transitive_deps(db));
+            }
+        }
+        OwnStatics { crates, shared, theirs, unknown, unbuilt, native_allocator }
     }
 
     fn owns(&self, db: &dyn HirDatabase, id: StaticId) -> bool {
@@ -1298,6 +1308,16 @@ impl OwnStatics {
             return true;
         }
         self.crates.contains(&krate) && !self.theirs.contains(&id) && !self.unknown.contains(&krate)
+    }
+
+    /// Whether native code can observe this static's address or inline its initializer.
+    /// A rustc allocator shim is an implicit caller. An opaque native function may also
+    /// inline code from a dependency that reads the static.
+    fn native_may_read(&self, db: &dyn HirDatabase, id: StaticId) -> bool {
+        let krate = id.krate(db);
+        !self.replaces(db, id)
+            || self.native_allocator.contains(&krate)
+            || self.unknown.iter().any(|other| other.transitive_deps(db).contains(&krate))
     }
 
     /// Whether our copy of the static stands in for the one rustc exports. rustc's is what the
@@ -6629,8 +6649,15 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         // address rustc took with one we take, even when neither side writes to the static.
         let linked_static = !self.symbols.nothing_of_rustc()
             && symbol.as_ref().is_some_and(|it| self.symbols.linked(it));
-        let shared =
-            linked_static && in_base.map_or_else(|| self.rustc_values.kept(db, id), |it| it.shared);
+        let uses_native = linked_static && (stateful() || self.own_statics.native_may_read(db, id));
+        let shared = in_base.map_or_else(
+            || uses_native && self.rustc_values.kept(db, id),
+            |it| linked_static && it.shared,
+        );
+        if uses_native && !shared && in_base.is_none() && !stateful() {
+            let name = StaticSignature::of(db, id).name.as_str().to_owned();
+            unsupported!("the linked read-only static `{name}` is from before the edit");
+        }
         // The program has the base's copy, and what it wrote there.
         let base_owns = linked_static && in_base.is_some_and(|it| !it.shared);
         let ours = !shared

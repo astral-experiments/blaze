@@ -2,7 +2,8 @@
 """renamedstatics.py: a static with state that LLVM renamed in rustc's object at opt-level 1
 (`SERVING` to `SERVING.0`) is one static for rustc's code and the daemon's. Linux and macOS: on
 Windows `cargo ra-jit` hands builds to cargo. The allocator also registers the address of a
-read-only static. The daemon-built caller must see the same address.
+read-only static and can inline its length. The edited program must see both the same
+address and the current length.
 
 usage: renamedstatics.py [--not-incremental]    (RA_JIT_BIN names the ra-jit built;
                                                  cargo-ra-jit and ra-jit-rustc are found next
@@ -41,9 +42,10 @@ FILES = {
     "ws/Cargo.toml": '[workspace]\nmembers = ["app"]\nresolver = "2"\n\n[profile.dev]\nopt-level = 1\n',
     "ws/app/Cargo.toml": '[package]\nname = "rapp"\nversion = "0.1.0"\nedition = "2021"\n',
     "ws/app/src/main.rs": """use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicUsize, Ordering};
 
 static SERVING: AtomicBool = AtomicBool::new(false);
+static REGISTERED_LEN: AtomicUsize = AtomicUsize::new(0);
 static RULE: &str = "invalid-assignment";
 static REGISTERED: AtomicPtr<&str> = AtomicPtr::new(std::ptr::null_mut());
 
@@ -52,6 +54,7 @@ struct Serving;
 unsafe impl GlobalAlloc for Serving {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         SERVING.store(true, Ordering::Relaxed);
+        REGISTERED_LEN.store(RULE.len(), Ordering::Relaxed);
         REGISTERED.store(std::ptr::from_ref(&RULE).cast_mut(), Ordering::Relaxed);
         unsafe { System.alloc(layout) }
     }
@@ -76,14 +79,22 @@ fn serving() -> bool {
 fn main() {
     let numbers: Vec<usize> = (0..std::env::args().count() + 3).collect();
     assert!(std::ptr::eq(REGISTERED.load(Ordering::Relaxed), &RULE));
-    println!("{} {}", serving(), numbers.len() + value());
+    let registered = unsafe { *REGISTERED.load(Ordering::Relaxed) };
+    assert_eq!(registered, RULE);
+    assert_eq!(REGISTERED_LEN.load(Ordering::Relaxed), RULE.len());
+    println!("{} {} {}", serving(), numbers.len() + value(), registered);
 }
 """,
 }
 # (what the step is, (old, new) in app/src/main.rs, what the program prints after it)
 STEPS = [
-    ("a value `serving()` inlines", ("    1\n", "    2\n"), "true 6"),
-    ("and again", ("    2\n", "    5\n"), "true 9"),
+    ("a value `serving()` inlines", ("    1\n", "    2\n"), "true 6 invalid-assignment", "daemon"),
+    ("and again", ("    2\n", "    5\n"), "true 9 invalid-assignment", "daemon"),
+    ("change a shared readonly initializer", ('= "invalid-assignment";', '= "changed rule";'), "true 9 changed rule", "either"),
+    ("change code alongside the new value", ("    5\n", "    6\n"), "true 10 changed rule", "either"),
+    ("restore its initializer", ('= "changed rule";', '= "invalid-assignment";'), "true 10 invalid-assignment", "either"),
+    ("change the initializer before a restart", ('= "invalid-assignment";', '= "cold rule";'), "true 10 cold rule", "either"),
+    ("a later edit with a fresh worker", ("    6\n", "    7\n"), "true 11 cold rule", "restart"),
 ]
 
 
@@ -134,16 +145,20 @@ def main():
             time.sleep(0.5)
         else:
             raise SystemExit(f"no build said `[ra-jit]`; the daemon's log is in {home}")
-        for what, (old, new), expected in STEPS:
+        for what, (old, new), expected, mode in STEPS:
             text = open(source).read()
             assert old in text, (what, old)
             open(source, "w").write(text.replace(old, new, 1))
+            if mode == "restart":
+                subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, check=True,
+                               capture_output=True, timeout=120)
             said = build(ws, env, what)
             printed = subprocess.run([program], capture_output=True, text=True, timeout=60).stdout.strip()
             verdict = "ok"
             if printed != expected:
                 verdict = f"PRINTED {printed!r}, NOT {expected!r}"
-            elif "[ra-jit]" not in said:
+            # Editing RULE can require Cargo to rebuild the inlined allocator code.
+            elif mode == "daemon" and "[ra-jit]" not in said:
                 why = [line for line in said.splitlines() if "ra-jit" in line]
                 verdict = "NOT SERVED BY THE DAEMON: " + " | ".join(why)[-600:]
             wrong += verdict != "ok"
