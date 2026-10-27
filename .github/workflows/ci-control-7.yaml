@@ -14,6 +14,11 @@ jobs:
       matrix:
         backend: [cranelift, llvm]
     env:
+      CARGO_INCREMENTAL: 0
+      CARGO_NET_RETRY: 10
+      CARGO_TERM_COLOR: always
+      RA_JIT_SANDBOX: ""
+      PYTHON: python3
       RA_JIT_BACKEND: ${{ matrix.backend }}
       RA_JIT_OPT: 2
       RA_JIT_EMIT: fast
@@ -36,30 +41,8 @@ jobs:
           tar -xf probe.tar
           echo "RA_JIT_BIN=$PWD/ra-jit" >> "$GITHUB_ENV"
       - name: Run the test-selection harness
-        run: $PYTHON harness/testselect.py
-      - name: Compare canonical and symlinked temporary paths after a failure
-        if: failure()
         working-directory: harness
-        run: |
-          python3 - <<'PY'
-          import os
-          import subprocess
-          import tempfile
-          from pathlib import Path
-          import testselect
-
-          binary = Path(os.environ["RA_JIT_BIN"]).parent
-          for name in ("default", "canonical", "runner-temp"):
-              parent = os.environ["RUNNER_TEMP"] if name == "runner-temp" else None
-              with tempfile.TemporaryDirectory(dir=parent) as root, tempfile.TemporaryDirectory(dir="/tmp") as home:
-                  work = os.path.realpath(root) if name == "canonical" else root
-                  print(f"{name}: {work} (physical: {os.path.realpath(work)})", flush=True)
-                  env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", RA_JIT_HOME=home, RUST_BACKTRACE="0")
-                  try:
-                      print(f"{name}: {testselect.unchanged_instances(work, env)}", flush=True)
-                  finally:
-                      subprocess.run(["cargo", "ra-jit", "stop"], cwd=Path(work)/"unchanged", env=env, capture_output=True)
-          PY
+        run: $PYTHON testselect.py
       - name: Daemon logs
         if: failure()
         run: |
