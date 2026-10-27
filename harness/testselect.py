@@ -311,6 +311,37 @@ BENCHED_ADDED = ("src/lib.rs", "    #[test]\n    fn adds()",
                  "    #[test]\n    fn added() {\n        assert_eq!(add(2), 3);\n    }\n\n    #[test]\n    fn adds()")
 
 
+def unchanged_instances(root, env):
+    """A second integration test installs another harness while both use the same native instance."""
+    ws = os.path.join(root, "unchanged")
+    files = {
+        "Cargo.toml": '[package]\nname = "unchanged"\nversion = "0.1.0"\nedition = "2021"\n'
+                      '[profile.dev]\nopt-level = 1\n',
+        "src/lib.rs": """#![feature(f128)]
+#[inline(never)]
+pub fn half<T: Into<f64>>(value: T) -> f64 {
+    let wide = std::hint::black_box(value.into() as f128);
+    (wide / 2.0) as f64
+}
+#[test]
+fn library() { assert_eq!(half(8_u32), 4.0); }
+""",
+    }
+    for name in ("first", "second"):
+        files[f"tests/{name}.rs"] = f"#[test]\nfn {name}() {{ assert_eq!(unchanged::half(8_u32), 4.0); }}\n"
+    for path, text in files.items():
+        path = os.path.join(ws, path)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as out:
+            out.write(text)
+    code, said = test(ws, dict(env, RUSTC_BOOTSTRAP="1"), "all --tests")
+    if code or "[ra-jit]" not in said or set(RAN.findall(said)) != {
+        ("library", "ok"), ("first", "ok"), ("second", "ok")
+    }:
+        return f"FAILED\n{said[-3000:]}"
+    return "ok"
+
+
 def benched(root, env):
     """A test added to a program with a bench: what the step's line says."""
     ws, env = os.path.join(root, "benched"), dict(env, RUSTC_BOOTSTRAP="1", CARGO_UNSTABLE_CHECKSUM_FRESHNESS="false")
@@ -411,13 +442,16 @@ def main():
                 print(said[-4000:])
             if manifest:
                 served(f"after {what}")
+        verdict = unchanged_instances(root, env)
+        wrong += verdict != "ok"
+        print(f"{'unchanged native instance across harnesses':34} {verdict}", flush=True)
         verdict = benched(root, env)
         wrong += verdict != "ok"
         print(f"{'a test added beside a bench':34} {verdict}", flush=True)
     finally:
         subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, capture_output=True, timeout=120)
         shutil.rmtree(OUTSIDE, ignore_errors=True)
-    print(f"{len(STEPS) + 1 - wrong} of {len(STEPS) + 1} right; under {root}, the daemon's home {home}")
+    print(f"{len(STEPS) + 2 - wrong} of {len(STEPS) + 2} right; under {root}, the daemon's home {home}")
     if wrong:
         sys.exit(1)
     shutil.rmtree(root, ignore_errors=True)
