@@ -1,17 +1,16 @@
-name: Check the native symbol fix against both test fixtures
+name: Verify disambiguated test calls on hosted Linux and macOS
 on:
   push:
     branches: [charlie/ci-control-pr-7]
 permissions:
   contents: read
+  actions: read
 jobs:
   build:
     strategy:
       fail-fast: false
       matrix:
         include:
-          - platform: linux
-            runner: namespace-profile-ubuntu-24-04-16
           - platform: macos
             runner: nscloud-macos-sequoia-arm64-6x14
     runs-on: ${{ matrix.runner }}
@@ -23,13 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 065f3bd3f0355d86aab63b423c0ae97b131c3800
+          ref: 1a4dad4435d682603736262b03c2bfa1160b1fa7
           fetch-depth: 0
           persist-credentials: false
-      - name: Apply the candidate to the current main
-        run: |
-          git -c user.name=CI -c user.email=ci@users.noreply.github.com merge --no-ff --no-commit 4bb212d8d615838d0ebee46c6644a1de62e534c1
-          git status --short
       - uses: ./.github/actions/toolchain
         with:
           llvm: build
@@ -63,17 +58,35 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 065f3bd3f0355d86aab63b423c0ae97b131c3800
+          ref: 1a4dad4435d682603736262b03c2bfa1160b1fa7
           fetch-depth: 0
           persist-credentials: false
       - uses: ./.github/actions/toolchain
         with:
           llvm: run
+      - if: matrix.platform == 'linux'
+        name: Wait for the PR's Linux build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for attempt in {1..24}; do
+            if [[ "$(gh api 'repos/${{ github.repository }}/actions/runs/40457448806/artifacts?name=ra-jit-linux-x64' --jq .total_count)" -gt 0 ]]; then exit 0; fi
+            sleep 15
+          done
+          exit 1
       - uses: actions/download-artifact@v8
+        if: matrix.platform == 'linux'
         with:
-          name: probe-${{ matrix.platform }}
+          name: ra-jit-linux-x64
+          run-id: 40457448806
+          github-token: ${{ github.token }}
           path: target/release
-      - run: tar -xf probe.tar
+      - uses: actions/download-artifact@v8
+        if: matrix.platform == 'macos'
+        with:
+          name: probe-macos
+          path: target/release
+      - run: tar -xf ${{ matrix.platform == 'linux' && 'ra-jit.tar' || 'probe.tar' }}
         working-directory: target/release
       - name: Run the original and expanded fixtures under both CI backends
         working-directory: harness
@@ -95,7 +108,8 @@ jobs:
                   with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory(dir="/tmp") as home:
                       env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", RA_JIT_HOME=home,
                                  RA_JIT_BIN=str(binary/"ra-jit"), RA_JIT_BACKEND=backend,
-                                 RA_JIT_OPT="2", RA_JIT_EMIT="fast", RUST_BACKTRACE="0", CARGO_TERM_COLOR="never")
+                                 RA_JIT_OPT="2", RA_JIT_EMIT="fast", RUST_BACKTRACE="0", CARGO_TERM_COLOR="never",
+                                 CARGO_INCREMENTAL="0")
                       try:
                           result = module.unchanged_instances(root, env)
                           print(f"{name} / {backend}: {result}", flush=True)
