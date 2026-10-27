@@ -8,7 +8,7 @@
 //! read snap_output_len(h) bytes at snap_output_ptr(h); snap_drop(h)
 //! ```
 //!
-//! The input is JSON: `{scripts: [{name, code}], bakes: {<entity path>: {highlighted?, baked?, audio?}}}`, the scripts in run
+//! The input is JSON: `{scripts: [{name, code}], bakes: {<entity path>: {highlighted?, audio?}}}`, the scripts in run
 //! order (schema.flecs, refs.flecs, then the rest by path).
 
 use std::collections::BTreeMap;
@@ -31,7 +31,6 @@ struct ScriptJson {
 #[derive(Deserialize)]
 struct BakeJson {
     highlighted: Option<String>,
-    baked: Option<String>,
     audio: Option<String>,
 }
 
@@ -43,7 +42,7 @@ pub fn build(input: &[u8]) -> Result<Vec<u8>, String> {
     let bakes = i
         .bakes
         .into_iter()
-        .map(|(k, b)| (k, Bake { highlighted: b.highlighted, baked: b.baked, audio: b.audio }))
+        .map(|(k, b)| (k, Bake { highlighted: b.highlighted, audio: b.audio }))
         .collect();
     scripts::snapshot(&scripts, &bakes)
 }

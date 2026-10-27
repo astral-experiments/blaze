@@ -102,7 +102,7 @@ Filed, not fixed (read, the issues):
 
 `bench.py bun --backend cranelift --runs 3` on macOS arm64 (Apple M5 Max, 18 cores, 128 GiB),
 ra-jit `1645168dc4`, 2026-10-21; the machine was shared, load average 28 to 45 while it ran, so
-every number is noisy (read, [docs/benchmarks/bun-macos-arm64.json](../benchmarks/bun-macos-arm64.json)).
+every number is noisy (read, [docs/benchmarks/bun-macos-arm64.json](https://github.com/indexable-inc/blaze/blob/4d632738b6aacd5bcb936fa968f18712e33797f4/docs/benchmarks/bun-macos-arm64.json)).
 Median of three edits, warm, incremental `cargo build` → `cargo ra-jit build`:
 
 | Edit | cargo | ra-jit | How ra-jit built it |
@@ -125,7 +125,7 @@ Median of three edits, warm, incremental `cargo build` → `cargo ra-jit build`:
   before it).
 - Linux x86-64, `bench.py bun --runs 3` pinned to 16 cores of an AWS c8a.24xlarge (AMD EPYC
   9R45), ra-jit `7dcfe73922`, 2026-10-22, Cranelift (read,
-  [docs/benchmarks/bun-linux-x86-64.json](../benchmarks/bun-linux-x86-64.json) as it was before
+  [docs/benchmarks/bun-linux-x86-64.json](https://github.com/indexable-inc/blaze/blob/4d632738b6aacd5bcb936fa968f18712e33797f4/docs/benchmarks/bun-linux-x86-64.json) as it was before
   2026-10-23): a body 9.1 s →
   0.49 s, a widely used function 16.5 s → 0.49 s, a generic function 16.7 s → 0.52 s, all
   spliced; a signature 9.2 s → 0.64 s, the object written again, where macOS's went to cargo;
@@ -141,7 +141,7 @@ Median of three edits, warm, incremental `cargo build` → `cargo ra-jit build`:
   `Bun.Transpiler` run takes 2.31 s against 0.39 s for cargo's release build (5.9x), 77 MB
   against 56 MB at most (read, `runbench.py`'s result). Pinned to 16 cores (`bench.py --runtime
   bun`, `7dcfe73922`): built in 86.9 s against 135.2 s, and 5.80x (read,
-  [docs/benchmarks/runtime-bun-linux-x86-64.json](../benchmarks/runtime-bun-linux-x86-64.json)
+  [docs/benchmarks/runtime-bun-linux-x86-64.json](https://github.com/indexable-inc/blaze/blob/4d632738b6aacd5bcb936fa968f18712e33797f4/docs/benchmarks/runtime-bun-linux-x86-64.json)
   as it was before 2026-10-23). That the gap is mostly inlining across crates LLVM did not get
   to do was confirmed on 2026-10-23 (below).
 
@@ -160,7 +160,7 @@ EPYC 9R45) unless said otherwise.
   (`edfa181e49`, test `harness/wholeprogram`'s `c_main`), and the discriminants are compared
   first (`3419d66b0e`, a unit test).
 - **After** (`bench.py --runtime bun --runs 5`, read,
-  [docs/benchmarks/runtime-bun-linux-x86-64.json](../benchmarks/runtime-bun-linux-x86-64.json)):
+  [docs/benchmarks/runtime-bun-linux-x86-64.json](https://github.com/indexable-inc/blaze/blob/4d632738b6aacd5bcb936fa968f18712e33797f4/docs/benchmarks/runtime-bun-linux-x86-64.json)):
   0.495 s against 0.387 s for cargo's release build, 1.28x (was 5.80x), and 1.10x for cargo's
   release build with overflow checks; 54 MB against 57 MB at most. All 68,315 functions are
   ra-jit's. The build takes 565 s against 139 s for cargo's (was 87 s): every compile of a
@@ -184,7 +184,7 @@ EPYC 9R45) unless said otherwise.
   listed it again patched 13,002 functions, and every later patch redirected about 1,940
   (`d59b7ca2cf`, `harness/latelisted.py`).
 - **After** (`bench.py bun --runs 3`, read,
-  [docs/benchmarks/bun-linux-x86-64.json](../benchmarks/bun-linux-x86-64.json)): a new function
+  [docs/benchmarks/bun-linux-x86-64.json](https://github.com/indexable-inc/blaze/blob/4d632738b6aacd5bcb936fa968f18712e33797f4/docs/benchmarks/bun-linux-x86-64.json)): a new function
   0.64 s against cargo's 14.7 s (was 19.8 s), spliced; a body 0.44 s, a signature 0.57 s, a
   widely used function 0.41 s, a generic function 0.44 s, nothing changed 18 ms; cold to
   ready 73.0 s against cargo's 73.0 s. The daemon's memory is in
@@ -197,13 +197,13 @@ EPYC 9R45) unless said otherwise.
   symbol"; `108d569721`, a unit test). The run's "checked" build (cargo's release build with
   overflow checks) fails on bun's own overflow, so the Mac compares release and ra-jit only.
   After (`bench.py --runtime bun --runs 5 --builds release,ra-jit`, `948d54e375`, read,
-  [docs/benchmarks/runtime-bun-macos-arm64.json](../benchmarks/runtime-bun-macos-arm64.json)):
+  [docs/benchmarks/runtime-bun-macos-arm64.json](https://github.com/indexable-inc/blaze/blob/4d632738b6aacd5bcb936fa968f18712e33797f4/docs/benchmarks/runtime-bun-macos-arm64.json)):
   62,031 functions by ra-jit and none left, built in 983 s against 177 s for cargo's release
   build; the run takes 0.415 s against 0.333 s, 1.25x, 46 MB against 43 MB at most. This closed
   [#35](https://github.com/indexable-inc/ra-jit/issues/35).
 - **macOS arm64 edits** (`bench.py bun --backend cranelift --runs 3`, `27077156cc`, the code of
   `948d54e375`, load average about 26 from other work, read,
-  [docs/benchmarks/bun-macos-arm64.json](../benchmarks/bun-macos-arm64.json)), median, cargo →
+  [docs/benchmarks/bun-macos-arm64.json](https://github.com/indexable-inc/blaze/blob/4d632738b6aacd5bcb936fa968f18712e33797f4/docs/benchmarks/bun-macos-arm64.json)), median, cargo →
   ra-jit: a body 7.5 s → 0.36 s, a widely used function 16.0 s → 0.46 s, a generic function
   14.9 s → 0.57 s (was 72.5 s), a new function 11.1 s → 0.56 s (was 50.5 s), all spliced; a
   signature 7.3 s → 0.82 s (was 126 s, cargo's); nothing changed 199 ms → 122 ms; cold to ready

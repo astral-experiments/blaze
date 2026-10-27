@@ -34,23 +34,17 @@ daemon load the workspace again.
     cd harness
     python3 bench.py ripgrep cargo nushell --out result.json        # both backends
     python3 bench.py cargo --backend llvm --work DIR --reference DIR2
-    python3 bench.py --compare bench-baseline.json result.json --threshold 25
+    python3 bench.py --compare previous-result.json result.json --threshold 25
 
 `--compare` exits 1 when a phase is slower, holds more memory or compiles more functions than
 the baseline by more than the threshold, when the daemon built something in the baseline and
 cargo builds it now, when a spliced edit is no longer spliced, when a phase is missing, or
 when a program printed something else than cargo's.
 
-`harness/bench-baseline.json` is ripgrep under both backends on the machine above. The CI job
-`bench (ripgrep)` runs the same and compares at 200%, with `continue-on-error`; it has not
-run yet at the time of writing. The runner is not this machine, so only the counts and the
-splice/full-link/refusal fields mean something there until a baseline is taken on a runner.
-
 How steady it is, measured: ripgrep's edits were within 20% over three separate runs of the
 harness (body 0.124, 0.161, 0.154 s under Cranelift). The cold phase is not steady: 17.1,
 19.8 and 27.1 s for ripgrep under Cranelift in three runs with nothing changed between them.
-Cargo and nushell need about 12 GB of disk each per backend and 25 to 40 minutes, which is
-why CI has ripgrep alone.
+Cargo and nushell need about 12 GB of disk each per backend and 25 to 40 minutes.
 
 ## What the harness measured
 

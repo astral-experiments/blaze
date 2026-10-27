@@ -8,7 +8,7 @@
 
 `--runtime` is how fast programs run rather than how fast they build: it runs runbench.py on
 its programs (NAME..., its defaults without), `--runs` rounds each (default 5), and writes its
-result with the machine, the commit and the date, for benchreport.py's runtime table.
+result with the machine, the commit and the date.
 
 Each project is one pinned checkout (cloned into `RA_JIT_PROJECTS` as cargo_ra_jit.py does, and
 copied; the clone is never written to). A project with `prepare` (bun) is copied from the tree
@@ -35,12 +35,11 @@ test`, is written down in `wrong`. A build that fails ends its project (what was
 kept, with the error in `failed`) and the run goes on. Either way the run ends with exit code 3
 after writing the result.
 The result also names the commit of ra-jit, the date and the machine
-(`RA_JIT_BENCH_MACHINE` names it, for example the instance type); `benchreport.py` turns it
-into docs/benchmarks.md's tables and the README's numbers.
+(`RA_JIT_BENCH_MACHINE` names it, for example the instance type).
 
 For every phase the result has the wall time of the command, cargo's time for the same
 step, the memory of both sides (`memory`: the most every process doing the work held at once,
-and the largest of them; harness/memory.py, docs/benchmarks.md "Memory and disk"), the most
+and the largest of them; see harness/memory.py), the most
 the daemon's workers have held so far (`rss_mb`), who built it (the daemon, or
 cargo and why), whether the daemon added the change to the linked program or linked again
 (and why), how many functions it compiled, and what it timed itself: the steps of the build
@@ -554,7 +553,7 @@ def disk(ws, ours, theirs):
 
 
 # The keys the projects measured so far in this run stored: what one store on the machine would
-# have before the next project (docs/benchmarks.md, "Fairness").
+# have before the next project.
 STORED = {}
 
 

@@ -98,60 +98,6 @@ li > .c-thread { margin: 0.5em 0 0.8em; }
 .c-form .error { font-size: 13.5px; }
 .c-empty { margin: 0; color: var(--ink-3); font-size: 13.5px; }
 
-/* /bench (the BenchHistory widget, gen/bench/view.ts; was routes/bench and lib/bench/{Chart,Choice}.svelte). */
-.bench .note { font-size: 14px; line-height: 1.55; }
-.bench .run { margin: 4px 0 0; font-size: 14px; font-variant-numeric: tabular-nums; }
-.bench .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0 0 1.3em; }
-.bench .ref th, .bench .ref td { white-space: nowrap; }
-.bench .ref .num { text-align: right; }
-/* With the setups the table scrolls sideways; the edit stays in view. */
-.bench .sticky th:first-child, .bench .sticky td:first-child { position: sticky; left: 0; z-index: 1; background: var(--bg); box-shadow: inset -1px 0 0 var(--line); }
-.bench .sticky th:first-child { background: color-mix(in srgb, var(--ink-1) 6%, var(--bg)); }
-.bench .ref td.best { color: var(--ink-1); font-weight: 600; }
-.bench .ref td.ratio { color: var(--ink-3); }
-.bench .ref abbr { text-decoration: none; cursor: help; }
-.bench .mark { color: var(--ink-3); font-weight: 400; }
-@media (max-width: 620px) {
-	.bench .charts { grid-template-columns: minmax(0, 1fr); }
-	.bench .ref td:first-child { white-space: normal; min-width: 8.5em; }
-	.bench .sticky td:first-child { max-width: 9.5em; }
-	.bench .ref th, .bench .ref td { padding-left: 10px; padding-right: 10px; }
-}
-.bench .choice { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 12px; }
-.bench .choice button { padding: 5px 12px; border: 0; border-radius: 999px; background: transparent; box-shadow: inset 0 0 0 1px var(--line); color: var(--ink-2); font: inherit; font-size: 14px; line-height: 1.4; text-align: left; cursor: pointer; transition: background 0.15s, color 0.15s, box-shadow 0.15s; }
-.bench .choice button:hover { box-shadow: inset 0 0 0 1px var(--line-2); color: var(--ink-1); }
-.bench .choice button[aria-pressed='true'] { background: var(--ink-1); box-shadow: none; color: var(--bg); font-weight: 500; }
-.chart { margin: 0; padding: 12px 12px 6px; border-radius: 12px; background: var(--code-bg); box-shadow: inset 0 0 0 1px var(--line); min-width: 0; }
-.chart figcaption { display: flex; flex-direction: column; gap: 2px; margin: 0 2px 6px; }
-.chart .title { color: var(--ink-1); font-size: 14px; font-weight: 600; line-height: 1.35; }
-.chart .values { display: flex; flex-wrap: wrap; gap: 2px 14px; font-size: 13px; line-height: 1.5; color: var(--ink-3); font-variant-numeric: tabular-nums; }
-.chart .value { white-space: nowrap; }
-.chart .value b { font-weight: 500; }
-.chart .value b.ours { color: var(--ink-1); }
-.chart .value b.other { color: var(--ink-2); }
-.chart .key { display: inline-block; width: 14px; height: 6px; margin-right: 3px; vertical-align: middle; overflow: visible; }
-.chart svg[role='slider'] { display: block; width: 100%; height: auto; touch-action: pan-y; cursor: crosshair; border-radius: 6px; }
-.chart svg[role='slider']:focus-visible { outline-offset: 4px; }
-.chart .gridline { stroke: var(--line); stroke-width: 1; }
-.chart .tick { fill: var(--ink-3); font-size: 11px; font-variant-numeric: tabular-nums; }
-.chart .guide { stroke: var(--line-2); stroke-width: 1; }
-.chart .line, .chart .key line { fill: none; stroke-width: 1.75; stroke-linejoin: round; stroke-linecap: round; }
-.chart .dashed { stroke-dasharray: 4 3; }
-.chart .line.ours, .chart .key .ours { stroke: var(--ink-1); }
-.chart .line.other, .chart .key .other { stroke: var(--ink-3); }
-.chart .band { stroke: none; }
-.chart .band.ours { fill: color-mix(in srgb, var(--ink-1) 13%, transparent); }
-.chart .band.other { fill: color-mix(in srgb, var(--ink-3) 18%, transparent); }
-.chart .whisker { stroke-width: 1; }
-.chart .whisker.ours { stroke: color-mix(in srgb, var(--ink-1) 55%, transparent); }
-.chart .whisker.other { stroke: color-mix(in srgb, var(--ink-3) 70%, transparent); }
-.chart .dot { stroke: var(--code-bg); stroke-width: 1.25; }
-.chart .dot.ours { fill: var(--ink-1); }
-.chart .dot.other { fill: var(--ink-3); }
-.chart .dot.on { stroke-width: 2; }
-.chart a { cursor: pointer; }
-.chart .empty { display: grid; place-items: center; aspect-ratio: 340 / 168; margin: 0; color: var(--ink-3); font-size: 14px; }
-
 /* The top bar (render/render.ts topbar): the site's name, then pages with Nav and nav's Links. */
 .topbar { position: sticky; top: 0; z-index: 10; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: inset 0 -1px 0 var(--line); }
 .topbar nav { display: flex; align-items: center; gap: 20px; max-width: 960px; margin: 0 auto; padding: 0 20px; height: 52px; font-size: 14px; }

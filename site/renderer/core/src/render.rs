@@ -261,7 +261,7 @@ fn status(e: &Entity) -> String {
 const REFERENCES: &str = "<!--references-->";
 
 /// The tags that render through a widget (render/widgets.ts), in the order the TS object lists them.
-const WIDGETS: [&str; 4] = ["RfcIndex", "References", "SignupForm", "BenchHistory"];
+const WIDGETS: [&str; 3] = ["RfcIndex", "References", "SignupForm"];
 
 const SIGNUP_FORM: &str = r#"<form method="POST" class="signup">
 <input type="hidden" name="ref" value="" />
@@ -308,14 +308,6 @@ fn widget(tag: &str, n: Id, ctx: &mut Ctx) -> Result<String, String> {
         "SignupForm" => {
             ctx.script("updates");
             Ok(SIGNUP_FORM.into())
-        }
-        "BenchHistory" => {
-            ctx.script("bench");
-            // gen/bench/ (TS, at build time) renders the charts; the build stores the HTML as the node's Baked value.
-            match ctx.e(n).value("Baked").and_then(|v| v.get("html")) {
-                Some(crate::world::Scalar::Str(h)) => Ok(h.clone()),
-                _ => Err(format!("{}: not baked (run the build)", ctx.e(n).path)),
-            }
         }
         _ => unreachable!("WIDGETS lists the tags"),
     }

@@ -8,7 +8,7 @@ headers, and the browser scripts.
 ## Architecture: Rust core, TS host
 
 ```
-content/*.flecs ─┬─ gen/tree.ts (flecs-doc.wasm) ── bake: highlight.js, bench widget ──┐
+content/*.flecs ─┬─ gen/tree.ts (flecs-doc.wasm) ── bake: highlight.js               ──┐
                  └───────────────────────────────── site-snapshot.wasm ◀────────────────┘
                                                             │ snapshot (.gen/site.cbor)
                                                             ▼
@@ -21,7 +21,7 @@ content/*.flecs ─┬─ gen/tree.ts (flecs-doc.wasm) ── bake: highlight.js
   `site.wasm` (the renderer) and `site-snapshot.wasm` (the content scripts run in Flecs, compiled in, to the snapshot;
   build time only). Both are platform-independent build outputs, never checked in.
 - `gen/build.ts`: the build, under Bun, with no native code. It runs the scripts under `flecs/flecs-doc.wasm` to bake
-  what the renderer leaves to TS (highlighted code, the bench widget), gets the snapshot from `site-snapshot.wasm`,
+  highlighted code, gets the snapshot from `site-snapshot.wasm`,
   renders every page with `site.wasm` into `dist/`, bundles `client/*.ts`, concatenates `styles/` and copies `static/`.
   For the worker it writes `.gen/`: `site.wasm`, `site.cbor` (the snapshot), `pages.json`, `discussable.json` and
   `build.json` (a hash of the module, the snapshot and the client scripts).
@@ -33,7 +33,7 @@ content/*.flecs ─┬─ gen/tree.ts (flecs-doc.wasm) ── bake: highlight.js
 - `flecs/`: Flecs compiled to wasm (`flecs-doc.wasm`, checked in; `python3 flecs/build.py <flecs checkout>` rebuilds it
   with zig). The build's bake step and the editor's `.flecs` type checking (`content/tsconfig.json`) read the scripts
   with it.
-- `client/`: browser scripts (comment enhancements, the signup form, /bench, copy buttons).
+- `client/`: browser scripts (comment enhancements, the signup form, copy buttons).
 
 The flecs skill (`.claude/skills/flecs/`) has the script syntax and its traps.
 
@@ -74,16 +74,6 @@ reference lists skipped, tables read row by row, figures by their alt text), and
 `Say: {"..."}`, or nothing with `Silent`. `audio/generate.py` voices it on a Mac (Fish Audio Drama 3 on MLX); the build
 adds the player only to pages whose audio matches their current text. [audio/README.md](audio/README.md) has the
 details, and the steps for serving the files from R2.
-
-## Benchmark history (`/bench`)
-
-Prerendered from `docs/benchmarks/history/*.jsonl` at the repo root, one line per benchmark run, appended by CI with
-`harness/benchhistory.py` (its docstring describes a line). `gen/bench/index.ts` reads the files when the site is
-built, so a new line shows after the next deploy; the `site` workflow deploys on a
-change under `docs/benchmarks/`. Lines are grouped by machine, and the charts keep each machine's last 120 runs.
-
-To look at the page with other data, point `BENCH_HISTORY` at a directory of `.jsonl` files:
-`BENCH_HISTORY=/tmp/history bun run build`.
 
 ## Worker (`worker/`)
 

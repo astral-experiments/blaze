@@ -221,38 +221,21 @@ a first checkout on an empty store, a second on the store it filled, that daemon
 started, and once more, each followed by a body edit and its undoing; it keeps what each worker
 said in `WORK/said-STEP.txt` and exits 1 when a program's output is not cargo's
 ([research/warm-start.md](research/warm-start.md)). Their docstrings say how to run them.
-`bench.py` on real projects, with `benchreport.py`, is also what writes the benchmark
-tables and the README's numbers: [benchmarks.md](benchmarks.md). Besides the edits `bench.py` times repeated cold builds
-against fresh cargo with an empty and with a warm store (`--cold-runs`), the same steps under
-the fastest cargo setups (`--setups`: mold, wild, `-Zthreads=8`, cg_clif and `cargo check`) and
-the test suites under both (`--tests`). `bench.py --runtime` runs `runbench.py`, which times
-programs ra-jit builds whole with LLVM against `cargo build --release`, and `benchreport.py`
-writes that result to the runtime table in benchmarks.md, refusing it when any program's output differs
-from cargo's. `abbench.py` runs two or more builds of ra-jit against each other on `bench.py`'s
+
+`abbench.py` runs two or more builds of ra-jit against each other on `bench.py`'s
 edits, in interleaved rounds: an edit's wall time, the daemon's own time and (macOS) its
 workers' cycles, the cold start, and the workers' peak memory. It is how the release build's
 profile was chosen ([reports/RELEASE-BUILD.md](reports/RELEASE-BUILD.md)), and with `--train` it
 is the training of its PGO. `hotpatch.py` times an edit of a running program under Dioxus's
 subsecond against `cargo ra-jit build` and `cargo build` with a restart; its program is
-`harness/hotpatch`. `benchhistory.py` appends a run to `docs/benchmarks/history/` (what the
-site's /bench page charts) and, with `check`, fails when a median moved past its noise band.
+`harness/hotpatch`.
 `memory.py` is how every harness measures memory: `memory.run` runs a command and returns its
 time with the exact peak of its largest process (`wait4`) and the peak of its whole tree
 (sampled), `memory.Sampler` follows a long-lived process such as the daemon with its workers,
-and `memory.in_child` measures a function that runs commands itself
-([benchmarks.md](benchmarks.md#memory-and-disk)); a harness that reports memory uses it rather
-than a way of its own. Every published benchmark is a matrix over the platforms of
-`benchplatforms.py` (macOS arm64, Linux aarch64, Linux x86-64): it names a result's platform from
-its host, files it as `docs/benchmarks/<platform>.json`, and gives the workflows the platforms
-whose runner is registered. `benchreport.py` writes each table from the newest stored result of
-every platform, so one that did not run keeps its last numbers. `benchcharts.py` draws the
-benchmark charts (SVG, a light and a dark version, a bar per platform) from the same results;
-`benchreport.py` regenerates them whenever it writes a table, `--charts` on its own, and
-`--render` every table and chart.
+and `memory.in_child` measures a function that runs commands itself.
 `live_latency.py` times live edits on macOS on AArch64, per keystroke under typing (`replay`,
 `burst`) as well as one edit at a time (`socket`, or `cargo` through `cargo ra-jit build`), and
-the restarts of a session against `cargo run` (`restart`); its JSON goes to `benchhistory.py
-live`, and the numbers measured on a MacBook are in [live.md](live.md#latency-under-typing).
+the restarts of a session against `cargo run` (`restart`).
 `nix develop .#bench` has everything `bench.py` and `hotpatch.py` need (the nightly, mold, wild,
 `dx`, bevy's libraries; zed's are in `.#bench-zed`, since every library directory slows each
 link cargo makes), and `live_latency.py` runs under it as under rustup's copy of the pinned nightly. Under another
@@ -332,7 +315,7 @@ regressions by platform and backend. For a cache identity change it can run
 `test:cached-type-ids` on LLVM and Cranelift against the same compiler artifact. Each
 selection runs the checked-in harness command and fails the required `ci` check if it fails.
 The Linux borrow-check, pinned run-pass and Bun jobs are separate choices, as are `fork`,
-`bench`, `nix` and `install`. Documentation can select nothing. For a change that needs
+`nix` and `install`. Documentation can select nothing. For a change that needs
 the whole nightly matrix, Luna can select `full` and record why. The **Resolve CI plan**
 summary and `luna-ci-plan-<attempt>` artifact show the tier, selections and reasons.
 Only the comparison enters Luna's workspace. The job holding the `automations` environment
@@ -340,7 +323,7 @@ key runs on a fresh GitHub-hosted runner.
 
 Forks, Dependabot, merge groups and unavailable or invalid Luna plans use path rules.
 Compiler and harness changes get a Linux build, unit tests and the Cranelift corpus
-comparison against rustc. Subtree, benchmark, Nix and installer changes select their
+comparison against rustc. Subtree, Nix and installer changes select their
 corresponding checks. Without a usable comparison or model plan, CI runs the fast matrix
 and auxiliary suites. Main finishes its active run and compares from the last successful
 main run so replaced or failed pushes are covered.
@@ -369,7 +352,7 @@ tier=full`). It runs every part
 of `ci.py --parts` (`keys.py`, `buildmodel.py`, the store and the daemon harnesses,
 `debuginfo.py`), `cargo_ra_jit.py` on its checks, on ripgrep and hyperfine and on fd (Linux
 x86-64 and macOS), and on ripgrep, fd, bat, hyperfine, just, axum and nushell with each
-project's tests (Linux AArch64), and the ripgrep bench. A failed nightly opens an issue named
+project's tests (Linux AArch64). A failed nightly opens an issue named
 "Nightly ra-jit failed", or comments on it while it is open
 (`.github/actions/nightly-issue`).
 
@@ -402,10 +385,9 @@ pushed, the branch can't be deleted, and it can't be force-pushed. The queue mer
 merge commit, builds up to five entries at once, merges up to five together, needs every entry
 green, and counts an entry failed after 60 minutes without `ci`. Repository admins bypass the
 rules (`bypass_actors`), for repairs; work lands through the queue. A ruleset can't exempt the
-token a workflow runs with, so the workflows that commit to main (`pgo.yaml`'s pin,
-`bench-readme.yaml`, `bench-bun.yaml`, `live-latency.yaml`) check out with the secret
+token a workflow runs with, so `pgo.yaml` checks out with the secret
 `RA_JIT_BOT_TOKEN`, a fine-grained token of a repository admin (Contents read and write on
-ra-jit alone) that the admin bypass lets past; without it their push is refused. `gh api repos/indexable-inc/ra-jit/rulesets/25516056` shows the rules, and Insights,
+ra-jit alone) that the admin bypass lets past; without it the workflow cannot push its pin. `gh api repos/indexable-inc/ra-jit/rulesets/25516056` shows the rules, and Insights,
 Rule insights what they refused.
 
 What is known to be wrong is written down, says why, and does not fail the run. Once it comes
@@ -417,15 +399,11 @@ out right, it fails the run until it is taken off the list:
 - `"open"` in a `buildmodel/*/case.json`: a case that comes out WRONG, on every host or by
   host (`{"linux": "why"}`).
 
-The other workflows: `bench-readme.yaml` measures real projects on each platform's dedicated
-benchmark machine and commits the tables and the README's numbers to main. It runs a platform only once the
-repository variable `BENCH_RUNNERS` names it ([benchmarks.md](benchmarks.md#the-machines)). `bench.yaml` (the store's
-microbenchmarks, two minutes) runs on pull requests and pushes too. `claims.yaml` (all of
+`claims.yaml` (all of
 rustc's `tests/ui`, both backends, and the scoreboard) and `nix-live.yaml` (the flake, the demo
 and live edits, 40 minutes; also on a change to the flake, `nix/` or the dependencies) run
 nightly and open an issue when they fail, like ra-jit.yaml's full tier. `fork-sync.yaml` runs
-on pushes to main that touch `vendor/`, `fuzz.yaml` nightly, and `live-*.yaml` on their own
-branches. None of them is part of `ci`; the few `tests/ui` programs that once differed from
+on pushes to main that touch `vendor/`, `fuzz.yaml` nightly, and `live-debug.yaml` on its own branch. None of them is part of `ci`; the few `tests/ui` programs that once differed from
 rustc (`harness/ui-pinned.txt`, `uitest.py --tests`) run in ra-jit.yaml's `pinned-ui` job,
 on Linux x86-64 and macOS, which is. `site.yaml` deploys the
 site, and `release.yaml` builds releases from tags, each target through

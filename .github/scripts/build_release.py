@@ -19,7 +19,7 @@ build has no network).
 A profile is trained by `--train`, in three steps:
 
   1. the same build instrumented (`-Cprofile-generate`), into target/pgo-instrumented;
-  2. that ra-jit run on edits of projects the README's benchmarks do not measure (fd, bat,
+  2. that ra-jit run on edits of real projects (fd, bat,
      just and hyperfine, at the commits harness/bench.py pins: a cold start and every kind of
      edit, twice, through harness/abbench.py --train);
   3. what it counted merged with the toolchain's llvm-profdata (`rustup component add

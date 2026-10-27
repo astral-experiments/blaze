@@ -1,8 +1,7 @@
 """memory.py: how much memory a process tree holds, the same way on Linux and macOS.
 
 The one helper the benchmarks measure memory with (bench.py, runbench.py, apps.py); a
-harness that measures memory imports this rather than reading /proc or `ps` itself. What it
-measures, and how far off it can be, is docs/benchmarks.md, "Memory and disk". In short:
+harness that measures memory imports this rather than reading /proc or `ps` itself.
 
 - `run` starts a command and waits for it with `wait4`. The kernel keeps the peak resident
   set of every process of the command's tree it waited for, and hands back the largest one

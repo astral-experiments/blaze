@@ -7,7 +7,7 @@ module. TS is the host: the build's bake step, routing, auth, D1, the cache and 
 
 ```
 content/*.flecs ──▶ site-snapshot.wasm (Flecs inside) ──▶ snapshot (.gen/site.cbor) ──▶ site.wasm ──▶ HTML
-   gen/build.ts bake: highlight.js, bench widget ──┘                                       ▲
+   gen/build.ts bake: highlight.js               ──┘                                       ▲
                                               comments (CBOR) + viewer (CBOR) ─────────────┘
 ```
 
@@ -83,14 +83,12 @@ instance and makes a new one on the next request.
 
 `site-snapshot.wasm`: `snap_new`, `snap_alloc`, `snap_free`, `snap_build(h, input, len)` (0 with the snapshot, or 1 with
 the error), `snap_output_ptr`, `snap_output_len`, `snap_drop`. The input is JSON
-`{scripts: [{name, code}], bakes: {<entity path>: {highlighted?, baked?, audio?}}}`, the scripts in run order (`schema.flecs`,
+`{scripts: [{name, code}], bakes: {<entity path>: {highlighted?, audio?}}}`, the scripts in run order (`schema.flecs`,
 `refs.flecs`, then the rest by path).
 
-## Highlighting and the bench stay in TS, embedded as-is
+## Code highlighting
 
-`gen/build.ts` pre-renders highlighted code (highlight.js) and the BenchHistory widget, by entity path, and the
-snapshot step sets that HTML on the entities as `Highlighted {html}` (Code, Command) and `Baked {html}` (BenchHistory).
-The core embeds it unchanged, so the core has no highlighter and the CSS is unchanged.
+`gen/build.ts` highlights Code and Command blocks with highlight.js. The snapshot stores the resulting HTML as `Highlighted {html}` on each block for the renderer.
 
 ## wasi:http host
 
@@ -119,7 +117,7 @@ The fixtures stay: `serve` seeds its store from `fixtures/comments.json`.
 ## Flecs, and what is left
 
 The core never touches Flecs; only `core/src/scripts.rs` does, behind the `scripts` feature, through flecs-snapshot's
-`World`: `run` for the content scripts and for `bake.flecs` (which only defines `Highlighted`, `Baked` and `Audio`),
+`World`: `run` for the content scripts and for `bake.flecs` (which only defines `Highlighted` and `Audio`),
 `set` for the baked HTML (checked against each component's layout), and `roots` for the root list (sorted bytewise).
 The `world_*` C exports are behind flecs-snapshot's `ffi` feature, which the renderer leaves off, so they are not in
 `site-snapshot.wasm`. `snapshot.rs` reads documents strictly, as flecs-snapshot's own reader does: an unknown key in

@@ -1854,9 +1854,6 @@ impl New {
 #[cfg(windows)]
 mod acl;
 
-#[doc(hidden)]
-pub mod bench;
-
 /// Keeping the store to the user it is of. On Unix that is the owner and the mode of the
 /// directory and of each file. On Windows it is the owner and the access control list,
 /// see [`acl`]: a directory is made with the list it inherits, which under the user's

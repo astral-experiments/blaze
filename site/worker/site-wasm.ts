@@ -135,7 +135,7 @@ export class Site {
 export type SnapshotInput = {
 	scripts: { name: string; code: string }[];
 	/** `audio` goes on a page entity: its narration manifest's URL (the renderer then adds the player). */
-	bakes: Record<string, { highlighted?: string; baked?: string; audio?: string }>;
+	bakes: Record<string, { highlighted?: string; audio?: string }>;
 };
 
 /** Runs the content scripts in site-snapshot.wasm (a fresh instance: Flecs's world is freed with it). */

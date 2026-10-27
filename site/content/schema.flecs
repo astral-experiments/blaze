@@ -50,7 +50,6 @@ Tr { (With, flecs.core.OrderedChildren) }
 RfcIndex {}                             // the list of RFCs (children of site.rfcs)
 References {}                           // every reference the page cites, in order of first use
 SignupForm {}                           // the /updates form (worker/updates.ts handles the POST)
-BenchHistory {}                         // /bench's charts, from docs/benchmarks/history
 
 // The spoken version (renderer core spoken.rs; audio/README.md). Each block has a line derived from it by default:
 // prose without its markup, section titles as transitions, tables read row by row, code skipped. Say replaces a

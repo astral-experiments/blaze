@@ -101,22 +101,19 @@ next release. How it works, and how fast from a keystroke to the running program
 
 ## What works and what doesn't yet
 
-- **Platforms.** macOS on Apple silicon, Linux x86-64 and Linux ARM64 are measured in
-  [benchmarks.md](benchmarks.md). On Windows every build is cargo's. Intel Macs are not supported.
+- **Platforms.** Blaze runs on macOS on Apple silicon, Linux x86-64 and Linux ARM64. On Windows every build is cargo's. Intel Macs are not supported.
 - **One Rust version, the latest nightly.** blaze builds with the dated nightly it pins
   (`nightly-2026-10-25`) whatever toolchain the project pins. Stable code and `#![feature(...)]`
   code both build; code that needs what that nightly lacks, such as a feature it removed, fails
   with rustc's error (see [install.md](install.md#what-you-need) and
   [support.md](support.md#toolchain)).
 - **Not every build is blaze's.** The changes listed above go to cargo, and so does code blaze
-  can't compile yet. `cargo blaze status` counts both; in the benchmark tables, `(c)` marks an
-  edit that went to cargo.
+  can't compile yet. `cargo blaze status` counts both.
 - **Errors.** An edit with a type error fails to build, as it would under cargo. The borrow checker
   is new: 0.1.0 has none, so an edit with a borrow error builds and runs; the one on `main` finds
   about two thirds of rustc's borrow errors. Keep `cargo check` or your CI as the final word.
 - **Memory and disk.** The daemon holds several times the memory cargo uses while building, and a
-  project's build keeps more on disk than cargo's does
-  ([numbers](benchmarks.md#how-much-memory-and-disk-it-takes)).
+  project's build keeps more on disk than cargo's does.
 - **Correctness.** Every change to blaze is checked by comparing what it builds with what rustc
   builds, on rustc's own tests and on real projects, but it is young: if a program behaves
   differently under blaze, that's a bug, and an

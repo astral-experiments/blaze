@@ -25,8 +25,7 @@
         rust = pkgs.rust-bin.nightly.${pin}.default.override {
           extensions = [ "rust-src" ];
         };
-        # The same nightly with rustc_codegen_cranelift, for the setups bench.py compares with
-        # (`--setups`, docs/benchmarks.md).
+        # The same nightly with rustc_codegen_cranelift for bench.py --setups.
         nightly = pkgs.rust-bin.nightly.${pin}.default.override {
           extensions = [ "rust-src" "rustc-codegen-cranelift-preview" ];
         };
@@ -36,7 +35,7 @@
         # crates/hir-ty-codegen/build.rs links what it names and refuses any other.
         llvm = pkgs.llvmPackages_20.llvm;
         llvmEnv = { LLVM_SYS_201_PREFIX = "${llvm.dev}"; };
-        # What harness/bench.py runs in on the benchmark machine (docs/benchmarks.md): the
+        # What harness/bench.py runs in locally: the
         # pinned toolchain, LLVM 20 for `--features llvm`, and the C side the projects' build
         # scripts use. Nothing here wraps rustc (no sccache) or replaces the default linker:
         # mold and wild are on PATH for the setups that ask for them with `-fuse-ld`. Every

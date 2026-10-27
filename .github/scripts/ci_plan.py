@@ -12,7 +12,7 @@ from ci import focused
 
 
 FAST = ["fmt", "linux-x64", "linux-arm64", "macos", "fork"]
-SUITES = FAST + ["bench", "nix", "install"]
+SUITES = FAST + ["nix", "install"]
 LINUX_CHECKS = ["borrowck", "pinned-ui", "bun-e2e"]
 PLATFORMS = {"linux-x64": ("linux", "x86_64"), "linux-arm64": ("linux", "aarch64"),
              "macos": ("macos", "aarch64")}
@@ -43,8 +43,6 @@ def defaults(paths):
         suites.append("linux-x64")
     if any(p.startswith("vendor/rust-analyzer/") and not p.endswith(".md") for p in paths):
         suites.append("fork")
-    if any(p.startswith(("harness/bench", ".github/workflows/bench.yaml")) for p in paths):
-        suites.append("bench")
     if any(p in {"Cargo.lock", "Cargo.toml", "flake.nix", "flake.lock", ".github/workflows/nix-live.yaml"}
            or p.startswith("nix/") or p.endswith("/Cargo.toml") for p in paths):
         suites.append("nix")

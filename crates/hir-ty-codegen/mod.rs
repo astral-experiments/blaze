@@ -128,18 +128,6 @@ pub use target::{Arch, Calls, ObjectFormat, Target, UnwindFormat, VariableArgume
 pub mod tier;
 
 pub use patch::{OutOfDate, Stale, StaleSteps};
-/// For `crates/ra-jit-bench` alone.
-#[doc(hidden)]
-pub mod bench {
-    use ra_jit_store::KEY;
-
-    /// The key of the entry for `name`, as a build asks for it: one that tells a debugger of
-    /// its variables when `debug`.
-    pub fn entry_key(name: &str, debug: bool, program: &[u8; KEY]) -> Option<[u8; KEY]> {
-        let told = super::cached::Told::of(debug, debug);
-        super::cached::Entry::key(name, told, Some(program))
-    }
-}
 mod type_id;
 mod unwind;
 mod vtable;

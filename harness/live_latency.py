@@ -74,7 +74,7 @@ The tables (median, p90, p95, p99, min, max) go to stdout and to $GITHUB_STEP_SU
 set. $LATENCY_JSON, when set, gets every edit's numbers with what was measured where:
 {"program", "date", "commit", "run_url", "host": {"name", "cpu", "cores", "memory_gib", "os",
 "battery"}, "modes": {mode: [row, ...]}, "counts": {mode: {...}}}, a row having at least
-"total" in ms; harness/benchhistory.py `live` reads it. A mode that fails leaves the modes
+"total" in ms. A mode that fails leaves the modes
 before it in the JSON, and its error under counts.failed. The host's name is $RA_JIT_BENCH_MACHINE
 or the Mac's model; "battery" is what `pmset -g batt` says ("AC" or "battery 87%").
 LATENCY_TARGET_DIR keeps the programs' target directory across runs (bevy's dependencies take
@@ -427,7 +427,7 @@ def breakdown(t0: int, reply: int, applied_line: str, worker: list[str]) -> dict
 
 
 def percentile(values: list[float], p: float) -> float:
-    """The value `p` percent of the way up `values`, sorted (as benchhistory.py takes it)."""
+    """The value `p` percent of the way up `values`, sorted."""
     values = sorted(values)
     return values[min(len(values) - 1, int(p / 100 * len(values)))]
 

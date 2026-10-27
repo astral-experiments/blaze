@@ -1,5 +1,5 @@
 // The site's pages. Each page is an entity under `site`; its path is its URL (site.index is /).
-// RFCs live in rfcs/, the charter in charter.flecs, /bench in bench.flecs.
+// RFCs live in rfcs/, the charter in charter.flecs.
 site {
   OrderedChildren
 
@@ -27,17 +27,6 @@ site {
         Li fast("**Fast builds.** After the first build, an edit rebuilds only the functions you changed. No `rustc`, no waiting.")
         Li cargo("**Same cargo.** `cargo ra-jit build|run|test|check` in any project.")
       }
-    }
-
-    Section speed(title: "How fast") {
-      Say: {"[curious] How fast? [breath] Take a workspace of two hundred crates, edit one function, and build. [matter-of-fact] In the main crate, cargo takes about one point eight seconds. ra-jit, four tenths. [pause] In a crate everything depends on, the painful case, cargo takes over six seconds. [excited] ra-jit, six tenths. [calm] The benchmark history page has every run, next to plain cargo."}
-      Dim setup("Edit one function, then build. 200-crate workspace, median of three.")
-      Table numbers {
-        Tr head { Th a("Edit"); Th b("cargo"); Th c("ra-jit") }
-        Tr main_crate { Td a("Function in the main crate"); Td b("1.76 s"); Td c("0.42 s") }
-        Tr deep_crate { Td a("Function in a crate everything depends on"); Td b("6.33 s"); Td c("0.60 s") }
-      }
-      Dim history("[Benchmark history](/bench): every run on real projects, next to plain cargo.")
     }
 
     Section start(title: "Try it") {
