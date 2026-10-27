@@ -2483,7 +2483,13 @@ impl Base {
     }
 
     /// Whether a root still refers to the node, directly or through others.
-    fn reaches(&self, db: &dyn HirDatabase, node: &Node, unchanged: &Unchanged) -> bool {
+    fn reaches(
+        &self,
+        db: &dyn HirDatabase,
+        node: &Node,
+        unchanged: &Unchanged,
+        revisit: &mut FxHashSet<Node>,
+    ) -> bool {
         let mut seen = FxHashSet::default();
         let mut stack = vec![node];
         while let Some(node) = stack.pop() {
@@ -2502,6 +2508,9 @@ impl Base {
                 }
             }
         }
+        // A new caller may reach one of these old parents by an edge the base did not have.
+        // Compile it on demand so that its calls also pick up the changed or broken node.
+        revisit.extend(seen.into_iter().cloned());
         false
     }
 
@@ -2676,18 +2685,17 @@ impl Base {
                 unchanged.changed.insert(Node::Start(was));
             }
         }
+        let mut revisit = FxHashSet::default();
+        let mut reaches = |node: &Node| self.reaches(db, node, &unchanged, &mut revisit);
         // Nothing tells what in rustc's code refers to what.
-        if let Some((_, why)) =
-            broken.iter().find(|it| self.rustc || self.reaches(db, &it.0, &unchanged))
-        {
+        if let Some((_, why)) = broken.iter().find(|it| self.rustc || reaches(&it.0)) {
             return Ok(Err(why));
         }
-        // rustc's code may call any of them still.
         if !self.rustc {
-            changed_instances
-                .retain(|it| self.reaches(db, &Node::Instance(it.clone()), &unchanged));
-            changed_statics.retain(|&it| self.reaches(db, &Node::Static(it), &unchanged));
+            changed_instances.retain(|it| reaches(&Node::Instance(it.clone())));
+            changed_statics.retain(|&it| reaches(&Node::Static(it)));
         }
+        unchanged.changed.extend(revisit);
         let verify = start.elapsed();
 
         let mut cg = ObjectCodegen::new(
