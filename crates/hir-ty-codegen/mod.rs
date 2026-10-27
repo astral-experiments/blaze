@@ -1035,15 +1035,27 @@ impl CodegenUnit {
             let from_rustc: FxHashSet<FunctionId> = left_to_rustc(db, symbols, &skipped).collect();
             // A function left to rustc keeps using rustc's copy of a private static, so we
             // can't bring our own.
-            let found = TheirStatics::of(db, from_rustc.iter().copied());
-            let mut split: Vec<StaticId> =
-                found.statics.iter().copied().filter(|it| cg.statics.contains_key(it)).collect();
-            own_statics.theirs.extend(found.statics);
+            let mut found = TheirStatics::of(db, from_rustc.iter().copied());
+            // A native static can contain a callback, such as a LazyLock initializer.
+            // Its native code can inline readers whose copy of an address we must preserve.
+            for &id in cg.shared_statics.keys() {
+                if !compiled_static(db, id).as_ref().is_ok_and(|it| it.requests.funcs.is_empty()) {
+                    found.unknown.insert(id.krate(db));
+                }
+            }
             let before = own_statics.unknown.len();
             own_statics.unknown.extend(found.unknown.iter().copied());
-            if own_statics.unknown.len() != before {
-                split.extend(cg.statics.keys().copied().filter(|&it| !own_statics.owns(db, it)));
-            }
+            let new_unknown = own_statics.unknown.len() != before;
+            let split: Vec<_> = cg
+                .own_static_order
+                .iter()
+                .copied()
+                .filter(|&id| {
+                    found.statics.contains(&id) && !own_statics.theirs.contains(&id)
+                        || new_unknown && own_statics.native_may_read(db, id)
+                })
+                .collect();
+            own_statics.theirs.extend(found.statics);
             if !split.is_empty() {
                 let named = split.iter().take(4).map(|&it| {
                     let name = StaticSignature::of(db, it).name.as_str().to_owned();
@@ -1294,7 +1306,7 @@ impl OwnStatics {
             program.iter().copied().filter(|&krate| !symbols.rustc_built(krate)).collect();
         let mut native_allocator = FxHashSet::default();
         for &krate in &crates {
-            if symbols.rustc_built(krate) && declares_global_allocator(db, krate) {
+            if declares_global_allocator(db, krate) {
                 native_allocator.insert(krate);
                 native_allocator.extend(krate.transitive_deps(db));
             }
@@ -1316,7 +1328,9 @@ impl OwnStatics {
     fn native_may_read(&self, db: &dyn HirDatabase, id: StaticId) -> bool {
         let krate = id.krate(db);
         !self.replaces(db, id)
+            || self.theirs.contains(&id)
             || self.native_allocator.contains(&krate)
+            || self.unknown.contains(&krate)
             || self.unknown.iter().any(|other| other.transitive_deps(db).contains(&krate))
     }
 
