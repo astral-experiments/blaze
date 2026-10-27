@@ -6658,20 +6658,6 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         self.source_paths.entry(file).or_insert_with(spelled).clone()
     }
 
-    /// The data object of a static: rustc's when it exports one, else our own copy of its value.
-    /// The name the linker knows a static by: one of an `extern` block, or one that an
-    /// attribute exports and rustc's build defines.
-    fn linked_static(&self, id: StaticId) -> Result<Option<intern::Symbol>> {
-        let db = self.db;
-        let signature = StaticSignature::of(db, id);
-        if !signature.flags.contains(StaticFlags::EXTERN) {
-            let exported = exported_static(db, id);
-            return Ok(exported.filter(|name| self.symbols.defines(name.as_str())));
-        }
-        let name = AttrFlags::link_name(db, id.into());
-        Ok(Some(name.unwrap_or_else(|| signature.name.symbol().clone())))
-    }
-
     /// The name of a static a patch defines that the executable has no copy of: the same for
     /// the same static with the same type and value in every patch after, so that a program
     /// that took an earlier patch goes on with the one it has (its address and what was
@@ -6684,6 +6670,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         Some(format!("{LASTING_STATIC}{print:032x}"))
     }
 
+    /// Imports a native static or defines its current initializer.
     fn static_data(&mut self, id: StaticId) -> Result<DataId> {
         let db = self.db;
         let known = [&self.imported_statics, &self.statics, &self.frozen_statics];
@@ -6701,7 +6688,10 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         let stateful = || {
             is_thread_local(db, id) || compiled_static(db, id).as_ref().is_ok_and(|it| it.writable)
         };
-        let mut symbol = self.symbols.static_(id);
+        let mut symbol = exported_static(db, id)
+            .filter(|name| self.symbols.defines(name.as_str()))
+            .map(|name| name.as_str().to_owned())
+            .or_else(|| self.symbols.static_(id));
         // rustc's copy under a name LLVM gave it, or one private to its object, is shared
         // only when it is the whole static and ours can link to it. When it can't be, a static
         // with state is not ours to copy either: rustc's code that has it inlined (a function
@@ -6777,13 +6767,6 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
                 let unseen = self.want_requested(&compiled.requests);
                 self.want_all_called(&unseen);
             }
-            return Ok(data);
-        }
-        if let Some(symbol) = self.linked_static(id)? {
-            let thread_local = is_thread_local(db, id);
-            let data =
-                self.module.declare_data(symbol.as_str(), Linkage::Import, false, thread_local)?;
-            self.imported_statics.insert(id, data);
             return Ok(data);
         }
         let node = patch::Node::Static(id);
