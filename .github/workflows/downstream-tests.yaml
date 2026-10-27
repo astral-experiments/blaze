@@ -51,8 +51,8 @@ jobs:
           version: '0.13.5'
           checksum: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
           enable-cache: false
-      - name: Install uv's Linux test dependencies
-        if: inputs.suite == 'uv'
+      - name: Install uv's test dependencies
+        if: inputs.suite == 'uv' || inputs.suite == 'uv-lock-edit'
         working-directory: downstream
         env:
           UV_PYTHON_DOWNLOADS_JSON_URL: crates/uv-python-managed/download-metadata.json
@@ -60,6 +60,7 @@ jobs:
           export UV_PYTHON_CACHE_DIR="$RUNNER_TEMP/uv-python-cache"
           echo "UV_PYTHON_CACHE_DIR=$UV_PYTHON_CACHE_DIR" >> "$GITHUB_ENV"
           uv python install
+          if [[ "$SUITE" == uv-lock-edit ]]; then exit 0; fi
           uv python install 3.12d 3.13d 3.13t 3.13td
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends --allow-downgrades \
@@ -90,9 +91,6 @@ jobs:
                    -- --skip test::malformed_option::)
               ;;
             uv-lock-edit|ty-semantic-edit)
-              if [[ "$SUITE" == uv-lock-edit ]]; then
-                UV_PYTHON_DOWNLOADS_JSON_URL=crates/uv-python-managed/download-metadata.json uv python install 3.12
-              fi
               exec python3 ../blaze/.github/scripts/downstream_test_edit.py "$SUITE"
               ;;
             uv-archive-fixtures)
