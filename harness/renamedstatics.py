@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """renamedstatics.py: a static with state that LLVM renamed in rustc's object at opt-level 1
 (`SERVING` to `SERVING.0`) is one static for rustc's code and the daemon's. Linux and macOS: on
-Windows `cargo ra-jit` hands builds to cargo.
+Windows `cargo ra-jit` hands builds to cargo. The allocator also registers the address of a
+read-only static. The daemon-built caller must see the same address.
 
 usage: renamedstatics.py [--not-incremental]    (RA_JIT_BIN names the ra-jit built;
                                                  cargo-ra-jit and ra-jit-rustc are found next
@@ -40,15 +41,18 @@ FILES = {
     "ws/Cargo.toml": '[workspace]\nmembers = ["app"]\nresolver = "2"\n\n[profile.dev]\nopt-level = 1\n',
     "ws/app/Cargo.toml": '[package]\nname = "rapp"\nversion = "0.1.0"\nedition = "2021"\n',
     "ws/app/src/main.rs": """use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
 static SERVING: AtomicBool = AtomicBool::new(false);
+static RULE: &str = "invalid-assignment";
+static REGISTERED: AtomicPtr<&str> = AtomicPtr::new(std::ptr::null_mut());
 
 struct Serving;
 
 unsafe impl GlobalAlloc for Serving {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         SERVING.store(true, Ordering::Relaxed);
+        REGISTERED.store(std::ptr::from_ref(&RULE).cast_mut(), Ordering::Relaxed);
         unsafe { System.alloc(layout) }
     }
 
@@ -71,6 +75,7 @@ fn serving() -> bool {
 
 fn main() {
     let numbers: Vec<usize> = (0..std::env::args().count() + 3).collect();
+    assert!(std::ptr::eq(REGISTERED.load(Ordering::Relaxed), &RULE));
     println!("{} {}", serving(), numbers.len() + value());
 }
 """,

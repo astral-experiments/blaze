@@ -550,8 +550,7 @@ pub(super) struct BaseStatic {
     parents: Vec<Node>,
     /// The functions left to rustc reach it.
     theirs: bool,
-    /// rustc's copy, which has state that rustc's code shares with ours: a patch can't give
-    /// it another first value.
+    /// Both compilers' code uses rustc's allocation. A patch must preserve its address.
     pub(super) shared: bool,
 }
 
@@ -1372,7 +1371,7 @@ impl Base {
                 Some((id, base_static(id, data, Some(compiled), false)))
             })
             .collect::<Option<FxHashMap<_, _>>>()?;
-        // rustc's copies with state, so that an edit to a first value is seen.
+        // Track the initializer of each static that both compilers' code addresses.
         for (&id, &data) in &cg.shared_statics {
             let compiled = compiled_static(db, id).as_ref().ok();
             statics.insert(id, base_static(id, data, compiled, true));
@@ -2416,14 +2415,11 @@ impl Base {
                 return stale.declined("a static changed, and rustc's copy is the program's");
             }
             let writable = probe(|| compiled_static(db, id).as_ref().ok().map(|it| it.writable));
-            // rustc's copy holds what the program wrote, from the first value it had: one of
-            // ours beside it would split the state, and it can't start again from another. A
-            // static the edit took away (or left with no value) has no copy of ours to split
-            // it with: nothing compiled now names it.
+            // A patch that allocates a replacement gives the same static two addresses. When
+            // the edit removed the static or its value, no newly compiled code addresses it.
             if was.shared && matches!(writable, Some(Some(_))) {
-                return stale.declined(
-                    "the first value changed of a static with state that rustc's code shares",
-                );
+                return stale
+                    .declined("the initializer changed for a static shared with rustc's code");
             }
             stale.their_walk_changed |= was.theirs;
             // rustc's code has rustc's copy, and a thread's copy is laid out by the linker.
