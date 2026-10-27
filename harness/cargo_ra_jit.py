@@ -2,6 +2,7 @@
 """cargo_ra_jit.py: `cargo ra-jit` against plain cargo on real projects, unmodified.
 
     cargo_ra_jit.py [PROJECT...] [--small] [--only-projects] [--only-checks] [--ra-jit] [--plain] [--keep]
+    cargo_ra_jit.py --cached-type-ids    check cache identity across Cargo metadata changes
 
 Four parts, all of which have to pass.
 
@@ -1717,6 +1718,15 @@ def table(rows):
 
 def main():
     argv = sys.argv[1:]
+    if argv == ["--cached-type-ids"]:
+        def check(name, held, detail):
+            print(f"{name}: {detail}", flush=True)
+            if not held:
+                raise SystemExit(1)
+
+        with tempfile.TemporaryDirectory(prefix="rj-ids-", dir="/tmp" if sys.platform == "darwin" else None) as work:
+            cached_type_ids(os.path.realpath(work), check)
+        return
     names = [a for a in argv if not a.startswith("--")] or (SMALL if "--small" in argv else list(PROJECTS))
     modes = [m for m in MODES if f"--{m}" in argv] or list(MODES)
     # As the daemon names it: with no link and no short name in it.

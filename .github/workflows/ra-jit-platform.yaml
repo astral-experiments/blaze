@@ -18,9 +18,13 @@ on:
         description: Optional larger runner for the compiler build and unit tests
         type: string
       tier:
-        description: "`fast` (the quick harnesses) or `full` (every harness), as in harness/ci.py"
+        description: "focused (named tests), fast (quick shards), or full (every harness)"
         type: string
         required: true
+      tests:
+        description: Named regressions and backends for the focused tier, as a JSON array
+        type: string
+        default: "[]"
       borrowck:
         description: rustc's borrow-check tests, against this build
         type: boolean
@@ -93,7 +97,7 @@ jobs:
     runs-on: ${{ inputs.build-os || inputs.os }}
     timeout-minutes: 60
     outputs:
-      parts: ${{ steps.parts.outputs.parts }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - if: runner.os == 'Windows'
         run: git config --global core.autocrlf false
@@ -132,19 +136,28 @@ jobs:
           name: ra-jit-${{ inputs.platform }}
           path: target/release/ra-jit.tar
           retention-days: 3
-      - id: parts
-        run: echo "parts=$($PYTHON harness/ci.py --parts ${{ inputs.tier }})" >> "$GITHUB_OUTPUT"
+      - id: matrix
+        env:
+          TIER: ${{ inputs.tier }}
+          TESTS: ${{ inputs.tests }}
+        run: |
+          if [[ "$TIER" == focused ]]; then
+            matrix=$(jq -c 'select(length > 0) | {include: .}' <<< "$TESTS")
+          else
+            parts=$($PYTHON harness/ci.py --parts "$TIER")
+            matrix=$(jq -cn --argjson parts "$parts" '{backend:["cranelift","llvm"],part:$parts}')
+          fi
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
 
   harness:
     name: harness (${{ matrix.backend }}, ${{ matrix.part }})
     needs: build
+    if: needs.build.outputs.matrix != ''
     runs-on: ${{ inputs.os }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      matrix:
-        backend: [cranelift, llvm]
-        part: ${{ fromJSON(needs.build.outputs.parts) }}
+      matrix: ${{ fromJSON(needs.build.outputs.matrix) }}
     env:
       RA_JIT_BACKEND: ${{ matrix.backend }}
       RA_JIT_OPT: 2
@@ -157,16 +170,19 @@ jobs:
         with:
           llvm: run
           # What `buildmodel.py` builds for besides the host.
-          targets: ${{ matrix.part == 'buildmodel' && inputs.platform == 'linux-x64' && 'aarch64-unknown-linux-gnu x86_64-unknown-linux-musl' || '' }}
+          targets: ${{ (matrix.part == 'buildmodel' || matrix.part == 'test:buildmodel') && inputs.platform == 'linux-x64' && 'aarch64-unknown-linux-gnu x86_64-unknown-linux-musl' || '' }}
       - name: Linux tools
-        if: runner.os == 'Linux' && (matrix.part == 'core' || matrix.part == 'quick-1' || (matrix.part == 'buildmodel' && runner.arch == 'X64'))
+        if: |
+          runner.os == 'Linux' &&
+          (contains(fromJSON('["core","quick-1","test:debuginfo","test:worktrees","test:difftest"]'), matrix.part) ||
+           ((matrix.part == 'buildmodel' || matrix.part == 'test:buildmodel') && runner.arch == 'X64'))
         uses: ./.github/actions/apt
         with:
-          packages: ${{ matrix.part == 'buildmodel' && 'gcc-aarch64-linux-gnu musl-tools qemu-user' || 'valgrind gdb' }}
+          packages: ${{ (matrix.part == 'buildmodel' || matrix.part == 'test:buildmodel') && 'gcc-aarch64-linux-gnu musl-tools qemu-user' || 'valgrind gdb' }}
       # `debuginfo.py` has perf unwind what ra-jit built, which it says it did not run where
       # there is no perf or the kernel does not let this user sample.
       - name: perf
-        if: runner.os == 'Linux' && matrix.part == 'core'
+        if: runner.os == 'Linux' && (matrix.part == 'core' || matrix.part == 'test:debuginfo')
         continue-on-error: true
         run: |
           sudo apt-get install -y linux-tools-common "linux-tools-$(uname -r)" || sudo apt-get install -y linux-tools-generic
@@ -178,7 +194,7 @@ jobs:
       # published, for both architectures; the runner's docker takes a file out of it without
       # root.
       - name: MinIO
-        if: runner.os == 'Linux' && matrix.part == 'daemon'
+        if: runner.os == 'Linux' && (matrix.part == 'daemon' || matrix.part == 'test:remote')
         run: |
           image=cgr.dev/chainguard/minio@sha256:c93745c56fccdaf0e5dcb88999a96a65a136428beb045ef5d546255a80d747a7
           mkdir -p "$HOME/s3tools"
@@ -196,7 +212,9 @@ jobs:
           tar -xf ra-jit.tar
           if [ "$RUNNER_OS" = Windows ]; then bin="$(cygpath -w "$PWD")\\ra-jit.exe"; else bin="$PWD/ra-jit"; fi
           echo "RA_JIT_BIN=$bin" >> "$GITHUB_ENV"
-      - run: $PYTHON harness/ci.py ${{ matrix.part }}
+      - run: $PYTHON harness/ci.py "$PART"
+        env:
+          PART: ${{ matrix.part }}
       # What the daemons said when a harness failed (each harness keeps its daemon's log in a
       # temporary directory of its own), and the report of a process that crashed on macOS.
       - name: Daemon logs
