@@ -451,6 +451,9 @@ impl<'db> Elaborator<'_, 'db> {
         on_unset: BasicBlockId,
         unwind: Unwind,
     ) -> BasicBlockId {
+        if on_set == on_unset {
+            return on_set;
+        }
         match self.style(path, false) {
             Style::Dead => on_unset,
             Style::Static => on_set,
