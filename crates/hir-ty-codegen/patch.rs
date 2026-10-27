@@ -775,8 +775,8 @@ impl Frozen {
         // Our code calls rustc's copy of an instance that did not compile, which is of its
         // function as rustc compiled it.
         let edited = !self.edited.is_empty() || !self.edited_bodies.is_empty();
-        let mut forwarded = base.instances.iter().filter(|it| edited && it.1.forwarded);
-        forwarded.find_map(|(it, known)| {
+        let mut stale = None;
+        for (it, known) in base.instances.iter().filter(|it| edited && it.1.forwarded) {
             let (crates, files) = (mentioned_crates(db, it), known.files.as_deref());
             let untouched = match (crates, files) {
                 (Some(crates), Some(files)) => {
@@ -792,13 +792,17 @@ impl Frozen {
                 }
                 _ => false,
             };
-            (!untouched).then(|| OutOfDate {
-                func: written_in(db, it),
-                why: "an instance of it does not compile".to_owned(),
-                left_from_the_start: false,
-                calls: None,
-            })
-        })
+            if !untouched {
+                eprintln!("file-bench-stale: {}", super::backtrace_name(db, it));
+                stale.get_or_insert_with(|| OutOfDate {
+                    func: written_in(db, it),
+                    why: "an instance of it does not compile".to_owned(),
+                    left_from_the_start: false,
+                    calls: None,
+                });
+            }
+        }
+        stale
     }
 }
 
