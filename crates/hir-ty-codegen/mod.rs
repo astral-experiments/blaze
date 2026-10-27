@@ -344,6 +344,10 @@ pub trait SymbolResolver {
     fn onto_rustcs(&self) -> bool {
         false
     }
+    /// Whether this Rust entry must replace the original program's custom C entry.
+    fn needs_new_start(&self, _main: FunctionId) -> bool {
+        false
+    }
     /// The `StableCrateId` of each crate that compiled a copy of an instance of a function
     /// named `function`.
     fn makers(&self, _function: &str) -> Vec<u64> {
@@ -682,6 +686,9 @@ pub struct Roots<'a> {
     /// The statics a linker or a runtime finds though no code names them, in the crates
     /// rustc built nothing of: `#[used]` ones, and those put in a section by name.
     pub kept: &'a [StaticId],
+    /// Linker-kept statics from dependencies absent from the original link. Include them
+    /// when the edited program first reaches their crate.
+    pub kept_if_used: &'a [StaticId],
     /// Statics defined, where they can be, for objects built apart from this one: those of a
     /// library built before the programs that use it. One that cannot be is left out, and a
     /// function that uses it is refused.
@@ -852,7 +859,7 @@ impl CodegenUnit {
             futures,
             base,
             rustc,
-            rustc_start: _,
+            original_start: _,
             full,
             forgot_rustc: _,
             patching: _,
@@ -908,6 +915,7 @@ impl CodegenUnit {
             let mut compiled = Vec::new();
             let mut skipped = Vec::new();
             let mut failed = Vec::new();
+            let mut kept_if_used = roots.kept_if_used.to_vec();
             let mut queue = roots.entries.to_vec();
             let mut queued: FxHashSet<FunctionId> = queue.iter().copied().collect();
             let mut next = 0;
@@ -1015,7 +1023,7 @@ impl CodegenUnit {
                     failed.extend(cg.define_waves(ahead));
                 });
                 queue.extend(cg.wanted.drain(..).filter(|&func| queued.insert(func)));
-                if next == queue.len() {
+                if next == queue.len() && !cg.keep_reached_statics(&mut kept_if_used, &compiled)? {
                     break;
                 }
             }
@@ -1026,7 +1034,12 @@ impl CodegenUnit {
                 continue;
             }
             // The `main` the C runtime calls would call a `main` that is not in the object.
-            if start.is_some_and(|main| skipped.iter().any(|(root, _)| *root == main)) {
+            if let Some(main) = start
+                && let Some((_, why)) = skipped.iter().find(|(root, _)| *root == main)
+            {
+                if symbols.needs_new_start(main) {
+                    return Err(CodegenError::Startup(why.to_string()));
+                }
                 start = None;
                 rejected.extend(failed);
                 continue;
@@ -1153,7 +1166,9 @@ impl CodegenUnit {
                     over_rustc: false,
                     onto_rustcs: false,
                 };
-                if patching {
+                // A splice cannot remove a dependency's initializer from the linked image
+                // when an undo makes its crate unused again.
+                if patching && kept_if_used.len() == roots.kept_if_used.len() {
                     *base = patch::Base::record(db, &cg, roots.entries, start, &compiled, &skipped);
                 }
                 // The executable is linked from this object from now on.
@@ -1354,6 +1369,14 @@ pub fn empty_object() -> Result<Vec<u8>> {
     patch::empty_object()
 }
 
+/// The entry point in the source the program was first built from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OriginalStart {
+    Custom,
+    Unit,
+    NonUnit,
+}
+
 #[derive(Default, Clone)]
 pub struct Rejections {
     rejected: FxHashMap<Instance, Rejected>,
@@ -1373,8 +1396,7 @@ pub struct Rejections {
     base: Option<patch::Base>,
     /// The executable rustc linked, which an edit is a patch of until there is a `base`.
     rustc: Option<patch::Base>,
-    /// Whether the original rustc wrapper consumed a non-unit return value.
-    rustc_start: bool,
+    original_start: Option<OriginalStart>,
     /// Whether the next build is a full one though `rustc` could be patched: the one that
     /// makes a `base`, while nobody waits.
     full: bool,
@@ -1447,15 +1469,27 @@ impl Rejections {
 
     /// Has the next builds patch the executable rustc linked, until one in full makes a base
     /// of ours: rustc compiled what the daemon reads. `debug` is whether a patch says which
-    /// lines its code is of.
-    pub fn start_from_rustc(&mut self, debug: bool, non_unit_main: bool) {
+    /// lines its code is of. `non_unit_main` is absent for a custom C entry.
+    pub fn start_from_rustc(&mut self, debug: bool, non_unit_main: Option<bool>) {
         self.rustc = Some(patch::Base::of_rustc(debug));
-        self.rustc_start = non_unit_main;
+        self.introduced_main(non_unit_main);
+    }
+
+    /// Records the original entry once, so a Rust function named `main` in a
+    /// `#![no_main]` program can itself become the first Rust entry on an edit.
+    pub fn introduced_main(&mut self, non_unit_main: Option<bool>) -> bool {
+        let original = self.original_start.get_or_insert(match non_unit_main {
+            None => OriginalStart::Custom,
+            Some(false) => OriginalStart::Unit,
+            Some(true) => OriginalStart::NonUnit,
+        });
+        *original == OriginalStart::Custom && non_unit_main.is_some()
     }
 
     /// Whether an edit must replace the C wrapper even if `main` now returns unit.
     pub fn owns_start(&self) -> bool {
-        self.rustc_start || self.base.as_ref().is_some_and(|base| base.start.is_some())
+        self.original_start == Some(OriginalStart::NonUnit)
+            || self.base.as_ref().is_some_and(|base| base.start.is_some())
     }
 
     /// Whether the edits are patches of what rustc linked, which a build in full while
@@ -1489,10 +1523,10 @@ impl Rejections {
     /// rustc's copies are copies of is kept, since they are not built again: the first build
     /// takes the source as it is then for what rustc compiled, which after an edit it is not.
     pub fn start_again(&mut self) {
-        let Rejections { patching, used_by_rustc, rustc_start, .. } = *self;
+        let Rejections { patching, used_by_rustc, original_start, .. } = *self;
         let frozen = std::mem::take(&mut self.frozen);
         *self =
-            Rejections { patching, used_by_rustc, rustc_start, frozen, ..Rejections::default() };
+            Rejections { patching, used_by_rustc, original_start, frozen, ..Rejections::default() };
     }
 
     /// Puts a base taken out for a build back where it was: what rustc linked or ours.
@@ -5185,6 +5219,27 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
         }
         let elf = self.module.finish().emit().map_err(|e| CodegenError::Backend(e.to_string()))?;
         wasm_object::from_elf(&elf, &signatures).map_err(CodegenError::Backend)
+    }
+
+    /// Defines linker-kept statics from newly used crates. Their initializers can bring
+    /// further functions or statics into the object, so the caller drains the queue again.
+    fn keep_reached_statics(
+        &mut self,
+        candidates: &mut Vec<StaticId>,
+        compiled: &[(FunctionId, String)],
+    ) -> Result<bool> {
+        if candidates.is_empty() {
+            return Ok(false);
+        }
+        let db = self.db;
+        let mut used: FxHashSet<_> = compiled.iter().map(|(root, _)| root.krate(db)).collect();
+        used.extend(self.statics.keys().chain(self.frozen_statics.keys()).map(|id| id.krate(db)));
+        used.extend(self.instances.keys().filter_map(|it| home::mentioned_crates(db, it)).flatten());
+        let before = candidates.len();
+        for id in candidates.extract_if(.., |id| used.contains(&id.krate(db))) {
+            self.static_data(id)?;
+        }
+        Ok(before != candidates.len())
     }
 
     fn want(&mut self, func: FunctionId) {
