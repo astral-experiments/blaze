@@ -363,9 +363,14 @@ impl LinkLine {
             Flavor::Msvc => return Ok(()),
         };
         for arg in &mut self.args {
-            // rustc's object of names defines none.
-            if !is_symbols(arg) && copies.iter().any(|it| it == Path::new(arg)) {
-                *arg = made(Path::new(arg))?.display().to_string();
+            let path = Path::new(arg);
+            // ELF code can also name a private static in a registry or git rlib, which
+            // has no workspace record. Leave the toolchain's own archives in place.
+            let dependency = self.flavor == Flavor::Cc
+                && arg.ends_with(".rlib")
+                && !path.components().any(|part| part.as_os_str() == "rustlib");
+            if !is_symbols(arg) && (dependency || copies.iter().any(|it| it == path)) {
+                *arg = made(path)?.display().to_string();
             }
         }
         Ok(())
@@ -694,7 +699,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ra-jit-plan-symbols-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (line, copy) = (dir.join("link.line"), dir.join("symbols.o"));
-        std::fs::write(&line, LINE).unwrap();
+        let dep = dir.join("libdep.rlib");
+        std::fs::write(&dep, b"!<arch>\n").unwrap();
+        let input = LINE.replace(
+            r#""/t/deps/libb-2.rlib""#,
+            &format!(r#""{}" "/toolchain/rustlib/libstd.rlib""#, dep.display()),
+        );
+        std::fs::write(&line, input).unwrap();
         std::fs::write(&copy, b"").unwrap();
         let mut program = unit(&["--crate-type", "bin"]);
         program.link_line = Some(line);
@@ -705,6 +716,8 @@ mod tests {
         let args: Vec<String> = args.lines().flat_map(|it| shlex::split(it).unwrap()).collect();
         assert!(args.contains(&copy.display().to_string()), "{args:?}");
         assert!(plan.copies.contains(&copy));
+        assert!(dir.join(weaken::DIR).join("libdep.rlib.as-is").is_file());
+        assert!(args.iter().any(|it| it == "/toolchain/rustlib/libstd.rlib"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
