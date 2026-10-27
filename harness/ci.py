@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""ci.py: the harnesses CI runs, in parts that take about the same time on a hosted runner.
+"""ci.py: run a selected regression or a part of the CI matrix.
 
 usage: ci.py PART                 run the harnesses of PART for RA_JIT_BACKEND on this machine
+       ci.py test:NAME            run the named regression for this backend
        ci.py --parts [TIER]       the parts this machine has harnesses in, as a JSON list (CI's
                                   matrix): TIER `full` (the default) or `fast`
        ci.py --list               which harness runs in which part, on which hosts and backends
 
-The fast tier, of every pull request and push, is the harnesses that take a few minutes, in the
-parts quick-1 and quick-2 of about four minutes each on a hosted runner, and on Linux quick-3,
-the reduced programs fuzzing found built wrong. The full tier, nightly
+The fast matrix has quick-1 and quick-2, and on Linux quick-3 for the reduced programs
+fuzzing found built wrong. Ordinary PRs and pushes select individual tests. The full tier, nightly
 and by hand, is every harness, in the parts core, keys-N, buildmodel, store-kills, store and
 daemon.
 
@@ -26,7 +26,9 @@ KEYS = 3
 
 def on(*hosts, backend=None):
     """Whether a harness runs here: hosts are "linux", "macos", "windows" or "linux-aarch64"..."""
-    return lambda: (not hosts or SYSTEM in hosts or f"{SYSTEM}-{ARCH}" in hosts) and backend in (None, BACKEND)
+    return lambda system=SYSTEM, arch=ARCH, producer=BACKEND: (
+        (not hosts or system in hosts or f"{system}-{arch}" in hosts) and backend in (None, producer)
+    )
 
 
 EVERYWHERE = on()
@@ -136,11 +138,28 @@ def parts(tier="full"):
     return seen
 
 
+def focused(name, system=SYSTEM, arch=ARCH, backend=BACKEND):
+    """Use the registered arguments, environment and host restrictions for a named test."""
+    if name == "cached-type-ids" and system in ("linux", "macos"):
+        return [(["cargo_ra_jit.py", "--cached-type-ids"], {})]
+    chosen = []
+    for part, args, env, where, _ in HARNESSES:
+        test = part if args[0] == "keys.py" else os.path.basename(args[0]).removesuffix(".py")
+        if args[0].startswith("fuzz/"):
+            test += "-" + args[1]
+        if name == test and where(system, arch, backend):
+            chosen.append((args, env))
+    return chosen
+
+
 def run(part):
-    tier = "fast" if part.startswith("quick-") else "full"
-    chosen = [(h[1], h[2]) for h in HARNESSES if part_of(h, tier) == part and h[3]()]
+    if part.startswith("test:"):
+        chosen = focused(part.removeprefix("test:"))
+    else:
+        tier = "fast" if part.startswith("quick-") else "full"
+        chosen = [(h[1], h[2]) for h in HARNESSES if part_of(h, tier) == part and h[3]()]
     if not chosen:
-        sys.exit(f"ci.py: no harness of part {part!r} runs on {SYSTEM} {ARCH} with {BACKEND}; the parts here are {parts(tier)}")
+        sys.exit(f"ci.py: no harness of part {part!r} runs on {SYSTEM} {ARCH} with {BACKEND}")
     failed, times = [], []
     for args, env in chosen:
         what = " ".join(args)
