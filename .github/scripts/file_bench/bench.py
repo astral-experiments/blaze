@@ -17,7 +17,7 @@ import time
 CONFIG = {
     "ruff": ("ruff", "cli", "lint::", "lint::lint_options", "tests/cli/main.rs", ["--all-features"]),
     "uv": ("uv", "lock", "lock::", "lock::lock_validation_warning_chain", "tests/lock/main.rs",
-           ["--features", "test-python-patch,test-universal,native-auth,secret-service"]),
+           ["--features", "test-python-patch,test-universal,native-auth"]),
     "ty": ("ty_python_semantic", "mdtest", "mdtest::subscript/stepsize_zero.md",
            "mdtest::subscript/stepsize_zero.md", "tests/mdtest.rs", ["--all-features"]),
 }
