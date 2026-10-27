@@ -69,6 +69,21 @@ CASES = {
     "moved": {
         "src/main.rs": ALLOW + "fn main() {\n    let s = String::new();\n    let t = s;\n    let u = s;\n}\n",
     },
+    "promoted_enum_array": {
+        "src/main.rs": ALLOW + """enum Element { Token(&'static str), Owned(String) }
+const OPEN: Element = Element::Token("(");
+const ALIAS: Element = OPEN;
+fn tokens() -> &'static [Element] { &[ALIAS, Element::Token(")")] }
+fn main() { assert_eq!(tokens().len(), 2); }
+""",
+    },
+    "unpromoted_enum_array": {
+        "src/main.rs": ALLOW + """enum Element { Token, Owned(String) }
+const OWNED: Element = Element::Owned(String::new());
+fn tokens() -> &'static [Element] { &[Element::Token, OWNED] }
+fn main() {}
+""",
+    },
     "dyn_associated_type_outlives": {
         "src/main.rs": ALLOW + """trait Buffer { type Context; }
 struct Formatter<'buf, T>(&'buf mut dyn Buffer<Context = T>);
