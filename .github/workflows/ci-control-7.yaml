@@ -1,84 +1,66 @@
-name: Locate the generated test executable fault
+name: Trace compilation of the native test body
 on:
   push:
     branches: [charlie/ci-control-pr-7]
 permissions:
   contents: read
-  actions: read
 jobs:
-  fixture:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
+  trace:
+    runs-on: namespace-profile-ubuntu-24-04-16
+    timeout-minutes: 30
+    env:
+      CARGO_INCREMENTAL: 0
+      SCCACHE_GHA_ENABLED: "true"
+      SCCACHE_GHA_RW_MODE: READ_ONLY
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: 9bc237eddb96020ceecd24a92f1fa5e96226a792
+          ref: c8d198814f29545db3cc391e2a898ebed03ce97c
           persist-credentials: false
       - uses: ./.github/actions/toolchain
         with:
-          llvm: run
-      - uses: actions/download-artifact@v8
+          llvm: build
+      - uses: Swatinem/rust-cache@v2
         with:
-          name: ra-jit-linux-x64
-          path: target/release
-          github-token: ${{ github.token }}
-          run-id: 40450861091
-      - run: tar -xf ra-jit.tar
-        working-directory: target/release
-      - name: Record the sandboxed process core
+          shared-key: build
+          save-if: false
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - name: Trace rejected instances in this control build
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("crates/hir-ty-codegen/mod.rs")
+          data = path.read_text()
+          one = "                if let Err(e) = defined {\n                    if self.forward_to_rustc"
+          assert data.count(one) == 1
+          data = data.replace(one, '                if let Err(e) = defined {\n                    eprintln!("BLAZE_DIAG cannot compile {}: {e}", self.callee_name(instance.def));\n                    if self.forward_to_rustc')
+          two = "        let symbol = self.rustc_copy(symbol, instance.checked)?;\n        let sig = self.module"
+          assert data.count(two) == 1
+          data = data.replace(two, '        let symbol = self.rustc_copy(symbol, instance.checked)?;\n        eprintln!("BLAZE_DIAG candidate {} -> {symbol}", self.callee_name(instance.def));\n        if symbol.contains("9unchanged7library") { return None; }\n        let sig = self.module')
+          path.write_text(data)
+          PY
+      - run: nix develop --command cargo build -p ra-jit --release --features llvm --locked
+        env:
+          RUSTC_WRAPPER: sccache
+      - name: Trace the original regression fixture
         working-directory: harness
         shell: bash
         run: |
-          command -v gdb || { sudo apt-get update -qq && sudo apt-get install -y gdb; }
-          sudo sysctl -w 'kernel.core_pattern=|/bin/dd of=/tmp/blaze-ci-fixture.core status=none'
-          sudo sysctl -w kernel.core_pipe_limit=1
-          ulimit -c unlimited
           python3 - <<'PY'
-          import os
-          import pathlib
-          import re
-          import shutil
-          import subprocess
-          import tempfile
-
+          from pathlib import Path
+          import os, subprocess, tempfile
           import testselect
-
-          binaries = pathlib.Path("../target/release").resolve()
-          evidence = pathlib.Path(os.environ["RUNNER_TEMP"]) / "fixture-evidence"
-          evidence.mkdir()
-          root = tempfile.mkdtemp()
-          ws = pathlib.Path(root) / "unchanged"
-          env = dict(os.environ, PATH=f"{binaries}:{os.environ['PATH']}", RA_JIT_BIN=str(binaries/"ra-jit"),
-                     RA_JIT_BACKEND="cranelift", RA_JIT_OPT="2", RA_JIT_EMIT="fast",
-                     RA_JIT_HOME=tempfile.mkdtemp(dir="/tmp"), RUST_BACKTRACE="0", CARGO_TERM_COLOR="never")
+          binary = Path("../target/release").resolve()
+          home, root = tempfile.mkdtemp(dir="/tmp"), tempfile.mkdtemp()
+          env = dict(os.environ, PATH=f"{binary}:{os.environ['PATH']}", RA_JIT_HOME=home,
+                     RA_JIT_BIN=str(binary/"ra-jit"), RA_JIT_BACKEND="cranelift",
+                     RA_JIT_OPT="2", RA_JIT_EMIT="fast", CARGO_TERM_COLOR="never")
           result = testselect.unchanged_instances(root, env)
-          print(result, flush=True)
-          match = re.search(r"Running unittests src/lib.rs \(([^)]+)\)", result)
-          if not match:
-              raise SystemExit("failed to identify the emitted test executable")
-          shutil.copy2(ws/match.group(1), evidence/"blaze-unchanged")
-          native = subprocess.run(["cargo","test","--lib","--target-dir",str(ws/"oracle"),"--message-format=json"],
-                                  cwd=ws, env=dict(env, RUSTC_BOOTSTRAP="1"), text=True, capture_output=True, check=True)
-          import json
-          for line in native.stdout.splitlines():
-              if line.startswith("{") and (exe := json.loads(line).get("executable")):
-                  shutil.copy2(exe, evidence/"rustc-unchanged")
-          subprocess.run(["cargo","ra-jit","stop"], env=env, cwd=ws, capture_output=True)
-          for log in pathlib.Path(env["RA_JIT_HOME"]).rglob("log"):
-              if log.is_file() and log.stat().st_size < 4_000_000:
-                  shutil.copy2(log,evidence/("worker-" + log.parent.name + ".log"))
+          print("FIXTURE", result, flush=True)
+          subprocess.run(["cargo", "ra-jit", "stop"], cwd=Path(root)/"unchanged", env=env, capture_output=True)
+          for path in Path(home).rglob("log"):
+              if path.is_file():
+                  print(path)
+                  print("\n".join(l for l in path.read_text(errors="replace").splitlines()
+                        if "BLAZE_DIAG" in l or "left to rustc" in l or "unsupported" in l)[:12000])
           PY
-          dir="$RUNNER_TEMP/fixture-evidence"
-          sudo cp /tmp/blaze-ci-fixture.core "$dir/core"
-          sudo chown "$(id -u):$(id -g)" "$dir/core"
-          gdb --batch -q "$dir/blaze-unchanged" "$dir/core" \
-            -ex 'set pagination off' -ex 'bt 16' -ex 'info registers rip rsp' \
-            -ex 'info symbol $pc' -ex 'info symbol *(void**)$rsp' \
-            -ex 'x/8gx $rsp' -ex 'x/12i *(void**)$rsp-24' -ex 'info proc mappings' \
-            2>&1 | tee "$dir/gdb.txt"
-          ls -lh "$dir"
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
-        with:
-          name: native-fixture-evidence
-          path: ${{ runner.temp }}/fixture-evidence
-          retention-days: 2
