@@ -2441,13 +2441,15 @@ impl<'db> InferenceContext<'db> {
                 while let Some(current_segment) = remaining_segments.first() {
                     // If we can resolve to an enum variant, it takes priority over associated type
                     // of the same name.
-                    if let TyKind::Adt(adt_def, _) = ty.kind()
+                    let enum_ty =
+                        path_ctx.expect_table().try_structurally_resolve_type(node.into(), ty);
+                    if let TyKind::Adt(adt_def, _) = enum_ty.kind()
                         && let AdtId::EnumId(id) = adt_def.def_id()
                     {
                         let enum_data = id.enum_variants(self.db);
                         if let Some(variant) = enum_data.variant(current_segment.name) {
                             return if remaining_segments.len() == 1 {
-                                (ty, Some(variant.into()))
+                                (enum_ty, Some(variant.into()))
                             } else {
                                 // We still have unresolved paths, but enum variants never have
                                 // associated types!

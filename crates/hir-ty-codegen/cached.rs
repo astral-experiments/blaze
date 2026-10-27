@@ -177,7 +177,7 @@ impl CachedCode {
     /// Whether every relocation is inside the code and against one of the first
     /// `count(namespace)` things of its namespace, which code read from the store is not
     /// known to be.
-    fn sound(&self, count: impl Fn(u32) -> usize) -> bool {
+    pub(super) fn sound(&self, count: impl Fn(u32) -> usize) -> bool {
         (self.align == 0 || self.align.is_power_of_two())
             && self.relocs.iter().all(|it| {
                 let known = match it.name {

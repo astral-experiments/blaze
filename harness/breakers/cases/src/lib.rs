@@ -158,6 +158,7 @@ cases![
     const_black_box,
     frame_of_tables,
     backtrace_line,
+    projected_self_variant,
     static_enum_slice,
     const_none_niche,
     late_import_macro,
