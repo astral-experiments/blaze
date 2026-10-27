@@ -6072,7 +6072,10 @@ impl WatchPaths {
         let mut as_rustc_read = true;
         for (file, path) in &added {
             let now = self.file(Watched::Source(*file), path, &db.on_disk(path));
-            as_rustc_read &= now.as_ref().is_some_and(|it| was.get(path) == Some(&it.mtime));
+            as_rustc_read &= match &now {
+                Some(file) => was.get(path) == Some(&file.mtime),
+                None => self.immutable(path),
+            };
             files.extend(now);
         }
         if as_rustc_read { Loaded::AsRustcRead } else { Loaded::New }
