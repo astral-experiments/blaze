@@ -3564,6 +3564,16 @@ fn input_lifetimes(
         }
         TypeRef::Array(it) => input_lifetimes(db, resolver, store, it.ty, found, self_references),
         TypeRef::Never | TypeRef::TypeParam(_) => Some(()),
+        TypeRef::DynTrait(bounds) => bounds.iter().try_for_each(|bound| match bound {
+            TypeBound::Path(path, _) => {
+                input_lifetimes(db, resolver, store, path.type_ref(), found, self_references)
+            }
+            TypeBound::Lifetime(it) => {
+                found.push(lifetime(Some(*it))?);
+                Some(())
+            }
+            _ => None,
+        }),
         TypeRef::Path(path) => {
             if path.type_anchor().is_some() {
                 return None;
@@ -3571,6 +3581,7 @@ fn input_lifetimes(
             let params = match resolver.resolve_path_in_type_ns_fully(db, path)? {
                 TypeNs::AdtId(it) => GenericParams::of(db, it.into()).len_lifetimes(),
                 TypeNs::TypeAliasId(it) => GenericParams::of(db, it.into()).len_lifetimes(),
+                TypeNs::TraitId(it) => GenericParams::of(db, it.into()).len_lifetimes(),
                 TypeNs::BuiltinType(_)
                 | TypeNs::GenericParam(_)
                 | TypeNs::SelfType(_)

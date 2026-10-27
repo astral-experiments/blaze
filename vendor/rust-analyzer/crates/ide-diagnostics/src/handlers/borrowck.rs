@@ -61,6 +61,26 @@ mod tests {
     use crate::tests::check_diagnostics;
 
     #[test]
+    fn borrow_through_a_trait_object_with_a_static_supertrait() {
+        check_diagnostics(
+            r#"
+//- minicore: sized
+trait Database: 'static {
+    fn get(&self) -> &u32;
+    fn get_mut(&mut self) -> &mut u32;
+}
+fn read(db: &dyn Database) -> &u32 { db.get() }
+fn write(db: &mut dyn Database) -> &mut u32 { db.get_mut() }
+fn named<'db>(db: &'db dyn Database) -> &u32 { db.get() }
+fn escape(db: &dyn Database) -> &'static u32 {
+    db.get()
+  //^^^^^^^^ error: lifetime may not live long enough
+}
+"#,
+        );
+    }
+
+    #[test]
     fn impl_trait_captures_elided_lifetime_2024() {
         check_diagnostics(
             r#"
