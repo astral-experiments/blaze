@@ -77,6 +77,29 @@ fn source<'buf, 'ast>(_: Formatter<'buf, &'ast str>, text: &'ast str) -> &'buf s
 fn main() {}
 """,
     },
+    "dependency_named_by_derive": {
+        "Cargo.toml": MANIFEST.format(name="probe") + """
+[dependencies]
+derive = { path = "derive" }
+support = { path = "support" }
+""",
+        "support/Cargo.toml": MANIFEST.format(name="support"),
+        "support/src/lib.rs": """pub struct Value;
+pub trait Measure { fn measure(&self) -> u8; }
+impl Measure for Value { fn measure(&self) -> u8 { 42 } }
+""",
+        "derive/Cargo.toml": MANIFEST.format(name="derive") + "\n[lib]\nproc-macro = true\n",
+        "derive/src/lib.rs": """use proc_macro::TokenStream;
+#[proc_macro_derive(Measure)]
+pub fn measure(_: TokenStream) -> TokenStream {
+    "impl Meter { fn total() -> u8 { use support::Measure; support::Value.measure() } }".parse().unwrap()
+}
+""",
+        "src/main.rs": ALLOW + """#[derive(derive::Measure)]
+struct Meter;
+fn main() { assert_eq!(Meter::total(), 42); }
+""",
+    },
     # Nothing wrong.
     "fine": {
         "src/main.rs": ALLOW + "fn main() {\n    let _ = 1;\n}\n",

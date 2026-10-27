@@ -579,8 +579,8 @@ pub(crate) fn find_matching_impl<'db>(
 /// .unwrap())` parses an `f64` until serde_json's `impl PartialEq<Value> for f64` is seen, and
 /// a test of a crate whose benches use criterion depends on serde_json.
 ///
-/// Named is by the identifiers of `krate`'s files, which is more than rustc resolves (a local
-/// of the same name does) and less where a macro of another crate alone names the dependency.
+/// A dependency's name can appear in source or in an item macro's expansion. An identifier
+/// with the same spelling as a dependency also counts when it names a local.
 #[salsa::tracked(returns(deref))]
 pub fn loaded_crates(db: &dyn HirDatabase, krate: Crate) -> Box<[Crate]> {
     let _p = tracing::info_span!("loaded_crates").entered();
@@ -597,18 +597,26 @@ pub fn loaded_crates(db: &dyn HirDatabase, krate: Crate) -> Box<[Crate]> {
     // `include!` puts among the items is one of the crate's as well: a root that is only
     // `include!("../../app/main.rs");` names its dependencies there.
     let included = hir_def::include_macro_invoc(db, krate);
-    let mut files = crate_def_map(db, krate)
+    let def_map = crate_def_map(db, krate);
+    let mut files = def_map
         .modules(db)
         .filter_map(|(_, module)| module.origin.file_id())
         .chain(included.iter().map(|&(_, file)| file));
-    while !unnamed.is_empty()
-        && let Some(file) = files.next()
-    {
-        let text = db.file_text(file.file_id(db)).text(db);
-        if !unnamed.iter().any(|dep| text.contains(dep.name.symbol().as_str())) {
-            continue;
-        }
-        let root = file.parse(db).syntax_node().to_flat();
+    let mut expansions =
+        def_map.modules(db).flat_map(|(_, module)| module.scope(db).all_macro_calls());
+    while !unnamed.is_empty() {
+        let root = if let Some(file) = files.next() {
+            let text = db.file_text(file.file_id(db)).text(db);
+            if !unnamed.iter().any(|dep| text.contains(dep.name.symbol().as_str())) {
+                continue;
+            }
+            file.parse(db).syntax_node()
+        } else if let Some(call) = expansions.next() {
+            call.parse_macro_expansion(db).value.0.syntax_node()
+        } else {
+            break;
+        };
+        let root = root.to_flat();
         let (tree, at) = root.flat().expect("a flat tree");
         let identifiers: FxHashSet<&str> = (at..tree.end(at))
             .filter(|&it| tree.is_token(it) && tree.kind(it).0 == SyntaxKind::IDENT as u16)
