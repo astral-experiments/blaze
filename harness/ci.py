@@ -71,6 +71,7 @@ HARNESSES = [
     ("core", ["rustcbase.py", "termination-first-main-initializers"], {}, on("linux"), 1),
     ("core", ["anonstatics.py"], {}, on("linux", "macos"), 1),
     ("core", ["exportedstatics.py"], {}, on("linux", "macos"), 1),
+    ("core", ["staticcallbacks.py"], {}, on("linux", "macos"), 1),
     # A static with state LLVM renamed (`SERVING.0`) at opt-level 1 is rustc's copy for both.
     ("core", ["allocatorstatics.py"], {}, on("linux", "macos"), 1),
     ("core", ["renamedstatics.py"], {}, on("linux", "macos"), 1),

@@ -577,6 +577,7 @@ pub(super) struct BaseStatic {
     theirs: bool,
     /// Both compilers' code uses rustc's allocation. A patch must preserve its address.
     pub(super) shared: bool,
+    shared_callback: bool,
 }
 
 /// What a function left to rustc keeps the rest of the build from doing.
@@ -648,6 +649,29 @@ pub(crate) struct RustcValues {
     /// The crates an edit since the start can have changed a value of: those edited and
     /// what depends on them, and those rustc compiled from other source.
     touched: Arc<FxHashSet<Crate>>,
+    edited: bool,
+}
+
+/// Whether borrowing these initial bytes also borrows native code, through a function
+/// pointer here or in another static. An opaque initializer may contain such a pointer.
+#[salsa::tracked(returns(copy))]
+fn static_has_callbacks(db: &dyn HirDatabase, id: StaticId) -> bool {
+    let mut pending = vec![id];
+    let mut seen = FxHashSet::default();
+    while let Some(id) = pending.pop() {
+        if !seen.insert(id) {
+            continue;
+        }
+        let Ok(value) = compiled_static(db, id).as_ref() else { return true };
+        if !value.requests.funcs.is_empty() {
+            return true;
+        }
+        pending.extend(value.requests.datas.iter().filter_map(|data| match data {
+            DataRequest::Static(id) => Some(*id),
+            _ => None,
+        }));
+    }
+    false
 }
 
 impl RustcValues {
@@ -659,10 +683,13 @@ impl RustcValues {
     /// Whether rustc's copy of `id` still starts from the value the source gives it now. One
     /// that does not compile has nothing of ours to tell by, and is rustc's.
     ///
-    /// An edit of bodies alone is no edit of a value: those are bodies of functions that are
-    /// not `const` ([`Rejections::touch_bodies`]), which no value is evaluated through.
+    /// A non-const body edit leaves initial bytes alone, but a function pointer can still
+    /// call native code that inlined the old body.
     pub(crate) fn kept(&self, db: &dyn HirDatabase, id: StaticId) -> bool {
         let Ok(compiled) = compiled_static(db, id).as_ref() else { return true };
+        if self.edited && static_has_callbacks(db, id) {
+            return false;
+        }
         let now = Mark::new(db, static_serial(db, id), &compiled.requests);
         let touched = self.touched(db, id);
         let mut known = self.known.lock().unwrap_or_else(|e| e.into_inner());
@@ -676,7 +703,10 @@ impl Frozen {
     /// edits as they are now.
     pub(crate) fn rustc_values(&self) -> RustcValues {
         let touched = self.edited.iter().chain(&self.distrusted).copied().collect();
-        RustcValues { known: self.statics.clone(), touched: Arc::new(touched) }
+        let edited = !self.edited_bodies.is_empty()
+            || !self.edited.is_empty()
+            || !self.distrusted.is_empty();
+        RustcValues { known: self.statics.clone(), touched: Arc::new(touched), edited }
     }
 
     pub(crate) fn distrust(&mut self, crates: impl IntoIterator<Item = Crate>) {
@@ -1387,6 +1417,7 @@ impl Base {
             parents: Vec::new(),
             theirs: false,
             shared,
+            shared_callback: shared && static_has_callbacks(db, id),
         };
         let mut statics = cg
             .statics
@@ -1676,6 +1707,7 @@ impl Base {
                 theirs: false,
                 // rustc's copy, which rustc's code writes when the static has state.
                 shared: is_thread_local(db, id) || compiled.is_some_and(|it| it.writable),
+                shared_callback: static_has_callbacks(db, id),
             };
             self.statics.insert(id, known);
         }
@@ -2434,6 +2466,9 @@ impl Base {
         }
         stale.steps.instances = start.elapsed() - stale.steps.roots;
         for (&id, was) in self.statics.iter().skip(part).step_by(parts) {
+            if was.shared_callback && self.touched.edited() {
+                return stale.declined("native code in a static initializer may have changed");
+            }
             let touched = self.touched.reaches(was.krate)
                 || self.touched.reaches_bodies(Some(&[was.file]))
                 || self.touched.statics.contains(&id);
