@@ -125,14 +125,14 @@ mod startup;
 use ra_jit_store as store;
 pub use stable::{block_place, lower_declared, static_place};
 mod target;
-pub use target::{Arch, Calls, ObjectFormat, Target, UnwindFormat, VariableArguments};
+pub use target::{Arch, ObjectFormat, Target, UnwindFormat, VariableArguments};
 pub mod tier;
 
 pub use patch::{OutOfDate, Stale, StaleSteps};
 mod type_id;
 mod unwind;
 mod vtable;
-pub mod wasm;
+mod wasm;
 mod wasm_object;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -4945,7 +4945,7 @@ impl cranelift_codegen::incremental_cache::CacheKvStore for IncrementalCache {
 /// (i128 corners, for one); that must cost us one function, not the process.
 fn emit(ctx: &mut cranelift_codegen::Context) -> Result<Code> {
     if Target::current().is_wasm() {
-        return emit_wasm(&ctx.func, Target::current().calls());
+        return emit_wasm(&ctx.func);
     }
     let large = ctx.func.dfg.num_insts() > SINGLE_PASS;
     let mut isa = &**if large { target_for_large()? } else { target()? };
@@ -5009,8 +5009,8 @@ fn emit(ctx: &mut cranelift_codegen::Context) -> Result<Code> {
 
 /// Lowers a finished function to WebAssembly. The bytes are a [`wasm::WasmFunction`], which
 /// goes through the object like machine code and is made a module of by a linker.
-fn emit_wasm(func: &cranelift_codegen::ir::Function, calls: Calls) -> Result<Code> {
-    let (function, mut relocs) = wasm::lower(func, calls).map_err(CodegenError::Unsupported)?;
+fn emit_wasm(func: &cranelift_codegen::ir::Function) -> Result<Code> {
+    let (function, mut relocs) = wasm::lower(func).map_err(CodegenError::Unsupported)?;
     let (bytes, body) = function.encode().map_err(CodegenError::Backend)?;
     for reloc in &mut relocs {
         reloc.offset += body;
@@ -5223,7 +5223,7 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
     /// The object, and the files of what a debugger reads that is kept apart from it.
     fn finish(mut self) -> Result<(Vec<u8>, Vec<Sidecar>)> {
         self.make_later();
-        if Target::current().writes_wasm_objects() {
+        if Target::current().is_wasm() {
             return Ok((self.finish_wasm()?, Vec::new()));
         }
         self.unwind.name_personality(&mut self.module).map_err(CodegenError::Backend)?;
@@ -5251,13 +5251,9 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             None => Vec::new(),
         };
         // Freeing every type told of, and every entry read from the store, takes as long as
-        // writing the object: another thread does it, where there is one to start.
+        // writing the object, so another thread does it.
         let freed = (std::mem::take(&mut self.told), self.entries.take());
-        if cfg!(target_family = "wasm") {
-            drop(freed);
-        } else {
-            std::thread::spawn(move || drop(freed));
-        }
+        std::thread::spawn(move || drop(freed));
         let macho = product.object.format() == cranelift_object::object::BinaryFormat::MachO;
         let mut object = product.emit().map_err(|e| CodegenError::Backend(e.to_string()))?;
         if macho {
@@ -6833,12 +6829,8 @@ impl<'a, 'db> ObjectCodegen<'a, 'db> {
             // Nothing rustc built defines it: what finds it by name finds ours.
             self.module.declare_data(&name, Linkage::Export, compiled.writable, thread_local)?
         } else if self.patching || thread_local {
-            // Nothing else defines the statics of a program compiled to WebAssembly, and
-            // under its own name a static is the same one after a build in full.
-            let own = if cfg!(feature = "wasm") { self.symbols.static_(id) } else { None };
             let prefix = if self.base.is_some() { "ra_jit.patch" } else { "ra_jit" };
-            let name =
-                own.unwrap_or_else(|| format!("{prefix}::static::{}", self.location_counter));
+            let name = format!("{prefix}::static::{}", self.location_counter);
             self.location_counter += 1;
             let linkage = if self.patching { Linkage::Hidden } else { Linkage::Local };
             self.module.declare_data(&name, linkage, compiled.writable, thread_local)?
@@ -8032,10 +8024,7 @@ impl<'cx, 'db> FunctionCx<'cx, 'db> {
             BackendRepr::Scalar(scalar) => PassMode::Direct(self.scalar(scalar)?),
             BackendRepr::ScalarPair { a, b, b_offset: offset } => {
                 let (a, b) = (self.scalar(a)?, self.scalar(b)?);
-                // LLVM has a WebAssembly function return one value: of a pair it makes a
-                // pointer to where the pair goes, the first parameter.
-                let one_result = cfg!(feature = "wasm");
-                if is_ret && (wide || one_result || a.ty == types::I128 || b.ty == types::I128) {
+                if is_ret && (wide || a.ty == types::I128 || b.ty == types::I128) {
                     // More than the two return registers hold, so LLVM returns it in memory.
                     PassMode::Indirect
                 } else {

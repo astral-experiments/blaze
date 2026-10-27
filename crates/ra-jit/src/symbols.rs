@@ -227,7 +227,6 @@ static READ_AHEAD: std::sync::LazyLock<Mutex<ReadAhead>> = std::sync::LazyLock::
 
 /// Reads the symbols of a library cargo just built, while it builds the rest of what links
 /// with it, on a quarter of the cores: the others are cargo's.
-#[allow(dead_code)] // `ra-jit-wasm` builds this file too, and reads nothing ahead.
 pub(crate) fn read_ahead(file: PathBuf) {
     static READERS: std::sync::LazyLock<Mutex<std::sync::mpsc::Sender<PathBuf>>> =
         std::sync::LazyLock::new(|| {
@@ -959,7 +958,7 @@ impl SymbolTable {
     }
 
     /// The table of the symbols named, for a link that is not read from files.
-    #[allow(dead_code)] // `ra-jit-wasm` builds this file too, and has no files to read.
+    #[cfg(test)]
     pub(crate) fn of_names<'a>(names: impl IntoIterator<Item = &'a str>) -> SymbolTable {
         let mut table = SymbolTable::default();
         let mut symbols = Vec::new();

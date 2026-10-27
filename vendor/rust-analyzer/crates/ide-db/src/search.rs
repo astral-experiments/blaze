@@ -774,7 +774,6 @@ impl<'a, 'db> FindUsages<'a, 'db> {
                                     alias.syntax().text_range(),
                                 )) {
                                     tracing::debug!("found alias: {alias}");
-                                    cov_mark::hit!(container_use_rename);
                                     // FIXME: `use`s have no easy way to determine their search scope, but they are rare.
                                     to_process.push((
                                         alias.text().to_smolstr(),
@@ -786,18 +785,14 @@ impl<'a, 'db> FindUsages<'a, 'db> {
                                 && let Some(name) = alias.name()
                                 && seen
                                     .insert(InFileWrapper::new(file_id, name.syntax().text_range()))
+                                && let Some(def) = is_alias(&alias)
                             {
-                                if let Some(def) = is_alias(&alias) {
-                                    cov_mark::hit!(container_type_alias);
-                                    insert_type_alias(
-                                        sema.db,
-                                        &mut to_process,
-                                        name.text(),
-                                        def.into(),
-                                    );
-                                } else {
-                                    cov_mark::hit!(same_name_different_def_type_alias);
-                                }
+                                insert_type_alias(
+                                    sema.db,
+                                    &mut to_process,
+                                    name.text(),
+                                    def.into(),
+                                );
                             }
 
                             // We need to account for `Self`. It can only refer to our type inside an impl.
@@ -849,18 +844,14 @@ impl<'a, 'db> FindUsages<'a, 'db> {
                                     if seen.insert(InFileWrapper::new(
                                         file_id,
                                         name.syntax().text_range(),
-                                    )) {
-                                        if let Some(def) = is_alias(&type_alias) {
-                                            cov_mark::hit!(self_type_alias);
-                                            insert_type_alias(
-                                                sema.db,
-                                                &mut to_process,
-                                                name.text(),
-                                                def.into(),
-                                            );
-                                        } else {
-                                            cov_mark::hit!(same_name_different_def_type_alias);
-                                        }
+                                    )) && let Some(def) = is_alias(&type_alias)
+                                    {
+                                        insert_type_alias(
+                                            sema.db,
+                                            &mut to_process,
+                                            name.text(),
+                                            def.into(),
+                                        );
                                     }
                                 }
                                 Some(())
@@ -940,8 +931,6 @@ impl<'a, 'db> FindUsages<'a, 'db> {
         else {
             return false;
         };
-
-        cov_mark::hit!(short_associated_function_fast_search);
 
         // FIXME: If Rust ever gains the ability to `use Struct::method` we'll also need to account for free
         // functions.

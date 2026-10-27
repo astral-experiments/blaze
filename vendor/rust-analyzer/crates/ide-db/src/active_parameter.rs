@@ -44,7 +44,6 @@ impl<'db> ActiveParameter<'db> {
         let idx = active_parameter?;
         let mut params = signature.params();
         if idx >= params.len() {
-            cov_mark::hit!(too_many_arguments);
             return None;
         }
         let original = signature.as_function().map(|func| {

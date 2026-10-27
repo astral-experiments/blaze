@@ -92,7 +92,9 @@ pub(super) fn promote(func: &mut ir::Function, kept: impl Iterator<Item = StackS
             let InstructionData::Store { args: [stored, _], .. } = func.dfg.insts[store] else {
                 continue;
             };
-            let dominators = dominators.get_or_insert_with(|| dominator_tree(func));
+            let dominators = dominators.get_or_insert_with(|| {
+                DominatorTree::with_function(func, &ControlFlowGraph::with_function(func))
+            });
             let mut read = false;
             for load in part.loads {
                 if !dominators.dominates(store, load, &func.layout) {
@@ -109,22 +111,4 @@ pub(super) fn promote(func: &mut ir::Function, kept: impl Iterator<Item = StackS
             }
         }
     }
-}
-
-/// What dominates what in `func`. Cranelift times working it out, and `wasm32-unknown-unknown`
-/// has no clock to read: there, the thread is given a profiler that does not look at one.
-fn dominator_tree(func: &ir::Function) -> DominatorTree {
-    #[cfg(all(target_family = "wasm", target_os = "unknown"))]
-    {
-        use cranelift_codegen::timing::{Pass, Profiler, set_thread_profiler};
-        struct Untimed;
-        impl Profiler for Untimed {
-            fn start_pass(&self, _: Pass) -> Box<dyn std::any::Any> {
-                Box::new(())
-            }
-        }
-        thread_local!(static UNTIMED: () = drop(set_thread_profiler(Box::new(Untimed))));
-        UNTIMED.with(|_| ());
-    }
-    DominatorTree::with_function(func, &ControlFlowGraph::with_function(func))
 }

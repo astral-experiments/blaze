@@ -1140,7 +1140,7 @@ pub(super) fn empty_object() -> Result<Vec<u8>> {
         .finish()
         .emit()
         .map_err(|e| CodegenError::Backend(e.to_string()))?;
-    if super::Target::current().writes_wasm_objects() {
+    if super::Target::current().is_wasm() {
         return super::wasm_object::from_elf(&object, &Default::default())
             .map_err(CodegenError::Backend);
     }

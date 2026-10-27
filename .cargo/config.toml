@@ -1,10 +1,9 @@
 [alias]
-xtask = "run --package xtask --bin xtask --"
+xtask = "run --manifest-path vendor/rust-analyzer/Cargo.toml --package xtask --bin xtask --"
 tq = "test -- -q"
 qt = "tq"
 lint = "clippy --all-targets -- --cap-lints warn"
-codegen = "run --package xtask --bin xtask -- codegen"
-dist = "run --package xtask --bin xtask -- dist"
+codegen = "run --manifest-path vendor/rust-analyzer/Cargo.toml --package xtask --bin xtask -- codegen"
 
 [target.x86_64-pc-windows-msvc]
 linker = "rust-lld"
@@ -14,7 +13,3 @@ linker = "arm-linux-gnueabihf-gcc-8"
 
 [env]
 CARGO_WORKSPACE_DIR = { value = "", relative = true }
-
-# The compiler in a browser, `crates/ra-jit-wasm`: there are no threads to drop syntax trees on.
-[target.wasm32-unknown-unknown]
-rustflags = ["--cfg", "no_salsa_async_drops"]

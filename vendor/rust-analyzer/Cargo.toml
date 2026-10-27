@@ -1,8 +1,6 @@
 [workspace]
 members = ["xtask/", "lib/*", "lib/ungrammar/ungrammar2json", "crates/*"]
-# `rustd-wasm` turns on a feature of `hir-ty` that swaps the code generator's output, which
-# must not be unified into a build of the native crates.
-exclude = ["crates/proc-macro-srv/proc-macro-test/imp", "crates/rustd-wasm"]
+exclude = ["crates/proc-macro-srv/proc-macro-test/imp"]
 resolver = "2"
 
 [workspace.package]
@@ -24,9 +22,6 @@ text-size.opt-level = 3
 serde.opt-level = 3
 salsa.opt-level = 3
 dissimilar.opt-level = 3
-
-# This speeds up `cargo xtask dist`.
-miniz_oxide.opt-level = 3
 
 [profile.release]
 # Set this to 1 or 2 to get more useful backtraces in debugger.
@@ -54,7 +49,6 @@ salsa-macro-rules = { path = "../salsa-macro-rules" }
 
 # line-index = { path = "lib/line-index" }
 # la-arena = { path = "lib/la-arena" }
-# lsp-server = { path = "lib/lsp-server" }
 
 
 # ungrammar = { path = "lib/ungrammar" }
@@ -71,12 +65,8 @@ hir-ty = { path = "./crates/hir-ty", version = "0.0.0" }
 hir-ty-borrowck = { path = "./crates/hir-ty-borrowck", version = "0.0.0" }
 hir-ty-wfcheck = { path = "./crates/hir-ty-wfcheck", version = "0.0.0" }
 hir-ide = { path = "./crates/hir-ide", version = "0.0.0" }
-ide = { path = "./crates/ide", version = "0.0.0" }
-ide-assists = { path = "./crates/ide-assists", version = "0.0.0" }
-ide-completion = { path = "./crates/ide-completion", version = "0.0.0" }
 ide-db = { path = "./crates/ide-db", version = "0.0.0" }
 ide-diagnostics = { path = "./crates/ide-diagnostics", version = "0.0.0" }
-ide-ssr = { path = "./crates/ide-ssr", version = "0.0.0" }
 intern = { path = "./crates/intern", version = "0.0.0" }
 load-cargo = { path = "./crates/load-cargo", version = "0.0.0" }
 mbe = { path = "./crates/mbe", version = "0.0.0" }
@@ -112,7 +102,6 @@ ra-ap-rustc_next_trait_solver = { version = "0.166", default-features = false }
 # in-tree crates that are published separately and follow semver. See lib/README.md
 line-index = { version = "0.1.2" }
 la-arena = { version = "0.3.1" }
-lsp-server = { version = "0.7.9" }
 
 # non-local crates
 anyhow = "1.0.98"

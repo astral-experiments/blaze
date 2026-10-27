@@ -6,9 +6,7 @@
 //! What comes out is not a module. A [`WasmFunction`] names the functions and data it uses
 //! through relocations, like machine code does, and a linker gives them places:
 //!
-//! - a call names the function ([`Calls::Direct`]) or goes through the function's slot in
-//!   the function table ([`Calls::Table`]), so that a function is replaced by writing its
-//!   slot;
+//! - a direct call names the function;
 //! - the address of a function is its slot, the address of data is where the linker put it
 //!   in linear memory;
 //! - stack slots live on the stack in linear memory, whose pointer is the global
@@ -34,10 +32,8 @@ use cranelift_module::{ModuleReloc, ModuleRelocTarget};
 use serde_derive::{Deserialize, Serialize};
 use wasm_encoder::{BlockType, Encode, Instruction as I, MemArg, ValType};
 
-use super::target::Calls;
-
 /// How many bytes an operand a linker fills in takes: a LEB128 padded to full length.
-pub const INDEX_LEN: usize = 5;
+pub(super) const INDEX_LEN: usize = 5;
 
 /// The relocation of a `call` operand: the index of the function. The other relocation
 /// here, `Abs4`, is of an `i32.const` operand: the address of data, or the slot of a function.
@@ -47,7 +43,7 @@ pub(super) const CALL: cranelift_codegen::binemit::Reloc =
 /// A value type, as its byte in the binary format.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[repr(u8)]
-pub enum WasmType {
+pub(super) enum WasmType {
     I32 = 0x7f,
     I64 = 0x7e,
     F32 = 0x7d,
@@ -66,13 +62,13 @@ impl From<WasmType> for ValType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub struct WasmSignature {
-    pub params: Vec<WasmType>,
-    pub results: Vec<WasmType>,
+pub(super) struct WasmSignature {
+    pub(super) params: Vec<WasmType>,
+    pub(super) results: Vec<WasmType>,
 }
 
 impl WasmSignature {
-    pub fn of(sig: &Signature) -> Result<WasmSignature, String> {
+    pub(super) fn of(sig: &Signature) -> Result<WasmSignature, String> {
         let mut params = Vec::new();
         let returned = Returned::of(sig)?;
         if let Returned::Through(_) = returned {
@@ -134,23 +130,23 @@ impl Returned {
 
 /// A function body with what a linker has to fill in.
 #[derive(Debug, Serialize, Deserialize)]
-pub struct WasmFunction {
-    pub signature: WasmSignature,
+pub(super) struct WasmFunction {
+    pub(super) signature: WasmSignature,
     /// The signatures of the indirect calls in the body.
-    pub types: Vec<WasmSignature>,
+    pub(super) types: Vec<WasmSignature>,
     /// Where the body has a type index to fill in, and which of `types` it is. Each place is
     /// [`INDEX_LEN`] bytes.
-    pub type_fixups: Vec<(u32, u32)>,
+    pub(super) type_fixups: Vec<(u32, u32)>,
     /// Where the body has the index of the stack pointer's global to fill in.
-    pub stack_pointer_fixups: Vec<u32>,
+    pub(super) stack_pointer_fixups: Vec<u32>,
     /// Local declarations and instructions, as the code section has them after the size.
-    pub body: Vec<u8>,
+    pub(super) body: Vec<u8>,
 }
 
 impl WasmFunction {
     /// The bytes that stand for the function where machine code would, and where in them
     /// `body` starts: relocations are counted from the start of these.
-    pub fn encode(&self) -> Result<(Vec<u8>, u32), String> {
+    pub(super) fn encode(&self) -> Result<(Vec<u8>, u32), String> {
         let header = WasmFunction { body: Vec::new(), ..self.clone_header() };
         let header = postcard::to_allocvec(&header).map_err(|e| e.to_string())?;
         let mut bytes = (header.len() as u32).to_le_bytes().to_vec();
@@ -162,7 +158,7 @@ impl WasmFunction {
 
     /// Reads what [`Self::encode`] wrote. The second value is where the body starts in
     /// `bytes`.
-    pub fn decode(bytes: &[u8]) -> Result<(WasmFunction, usize), String> {
+    pub(super) fn decode(bytes: &[u8]) -> Result<(WasmFunction, usize), String> {
         let len = bytes.first_chunk::<4>().ok_or("truncated function")?;
         let start = 4 + u32::from_le_bytes(*len) as usize;
         let header = bytes.get(4..start).ok_or("truncated function header")?;
@@ -183,11 +179,8 @@ impl WasmFunction {
 }
 
 /// Lowers `func`. The relocations are relative to the start of the body.
-pub(super) fn lower(
-    func: &Function,
-    calls: Calls,
-) -> Result<(WasmFunction, Vec<ModuleReloc>), String> {
-    Lower::new(func, calls)?.run()
+pub(super) fn lower(func: &Function) -> Result<(WasmFunction, Vec<ModuleReloc>), String> {
+    Lower::new(func)?.run()
 }
 
 /// How a Cranelift type is held in wasm locals.
@@ -381,7 +374,6 @@ impl Op {
 
 struct Lower<'a> {
     func: &'a Function,
-    calls: Calls,
     signature: WasmSignature,
     returned: Returned,
     /// Where in the frame the values are written that a called function returns through a
@@ -416,7 +408,7 @@ fn mem(offset: u64) -> MemArg {
 }
 
 impl<'a> Lower<'a> {
-    fn new(func: &'a Function, calls: Calls) -> Result<Self, String> {
+    fn new(func: &'a Function) -> Result<Self, String> {
         let signature = WasmSignature::of(&func.signature)?;
         let returned = Returned::of(&func.signature)?;
         let mut order = SecondaryMap::new();
@@ -447,7 +439,6 @@ impl<'a> Lower<'a> {
         }
         let mut this = Lower {
             func,
-            calls,
             returned,
             returned_at,
             reachable: Self::reachable(func),
@@ -783,11 +774,7 @@ impl<'a> Lower<'a> {
     }
 
     /// Calls the function `name` with the arguments on the stack.
-    fn call_named(&mut self, name: &ExternalName, signature: &Signature) -> Result<(), String> {
-        if self.calls == Calls::Table {
-            self.address(name, 0)?;
-            return self.call_slot(signature);
-        }
+    fn call_named(&mut self, name: &ExternalName) -> Result<(), String> {
         let ExternalName::User(name) = name else {
             return Err(format!("wasm: call of {name:?}"));
         };
@@ -1070,7 +1057,7 @@ impl<'a> Lower<'a> {
         signature: &Signature,
     ) -> Result<Vec<u32>, String> {
         match callee {
-            Some(name) => self.call_named(name, signature)?,
+            Some(name) => self.call_named(name)?,
             None => self.call_slot(signature)?,
         }
         let mut local_of = |this: &mut Self, class: Class| {

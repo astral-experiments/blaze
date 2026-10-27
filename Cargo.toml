@@ -1,8 +1,6 @@
 [workspace]
 members = ["crates/*"]
-# `ra-jit-wasm` turns on a feature of `hir-ty-codegen` that swaps the code generator's output, which
-# must not be unified into a build of the native crates.
-exclude = ["crates/ra-jit-wasm", "demo", "harness", "vendor/proc-macro-srv", "vendor/rust-analyzer"]
+exclude = ["demo", "harness", "vendor/proc-macro-srv", "vendor/rust-analyzer"]
 resolver = "2"
 
 [workspace.package]
@@ -29,9 +27,6 @@ serde.opt-level = 3
 salsa.opt-level = 3
 dissimilar.opt-level = 3
 
-# This speeds up `cargo xtask dist`.
-miniz_oxide.opt-level = 3
-
 [profile.release]
 # Set this to 1 or 2 to get more useful backtraces in debugger.
 debug = 0
@@ -54,7 +49,6 @@ salsa-macro-rules = { path = "vendor/salsa-macro-rules" }
 
 # line-index = { path = "lib/line-index" }
 # la-arena = { path = "lib/la-arena" }
-# lsp-server = { path = "lib/lsp-server" }
 
 
 # ungrammar = { path = "lib/ungrammar" }
@@ -79,12 +73,8 @@ blaze-manifest = { path = "crates/blaze-manifest" }
 blaze-metadata = { path = "crates/blaze-metadata" }
 ra-jit-fuzz = { path = "crates/ra-jit-fuzz" }
 hir-ide = { path = "vendor/rust-analyzer/crates/hir-ide", version = "0.0.0" }
-ide = { path = "vendor/rust-analyzer/crates/ide", version = "0.0.0" }
-ide-assists = { path = "vendor/rust-analyzer/crates/ide-assists", version = "0.0.0" }
-ide-completion = { path = "vendor/rust-analyzer/crates/ide-completion", version = "0.0.0" }
 ide-db = { path = "vendor/rust-analyzer/crates/ide-db", version = "0.0.0" }
 ide-diagnostics = { path = "vendor/rust-analyzer/crates/ide-diagnostics", version = "0.0.0" }
-ide-ssr = { path = "vendor/rust-analyzer/crates/ide-ssr", version = "0.0.0" }
 intern = { path = "vendor/rust-analyzer/crates/intern", version = "0.0.0" }
 load-cargo = { path = "vendor/rust-analyzer/crates/load-cargo", version = "0.0.0" }
 mbe = { path = "vendor/rust-analyzer/crates/mbe", version = "0.0.0" }
@@ -120,7 +110,6 @@ ra-ap-rustc_next_trait_solver = { version = "0.166", default-features = false }
 # in-tree crates that are published separately and follow semver. See lib/README.md
 line-index = { version = "0.1.2" }
 la-arena = { version = "0.3.1" }
-lsp-server = { version = "0.7.9" }
 
 # non-local crates
 anyhow = "1.0.98"

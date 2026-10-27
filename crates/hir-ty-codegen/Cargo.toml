@@ -68,8 +68,6 @@ ra-jit-fuzz.workspace = true
 
 [features]
 llvm = ["dep:inkwell", "dep:llvm-sys"]
-# The compiler as a WebAssembly module itself: see `crates/ra-jit-wasm`.
-wasm = []
 
 [lints]
 workspace = true

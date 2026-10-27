@@ -378,11 +378,9 @@ fn rename_reference<'db>(
     } else {
         match ident_kind {
             IdentifierKind::Lifetime => {
-                cov_mark::hit!(rename_not_an_ident_ref);
                 bail!("Invalid name `{}`: not an identifier", new_name.display(sema.db, edition));
             }
-            IdentifierKind::Ident => cov_mark::hit!(rename_non_local),
-            IdentifierKind::Underscore => (),
+            IdentifierKind::Ident | IdentifierKind::Underscore => (),
             IdentifierKind::LowercaseSelf => {
                 bail!(
                     "Invalid name `{}`: cannot rename to `self`",
@@ -396,7 +394,6 @@ fn rename_reference<'db>(
     let usages = def.usages(sema).all();
 
     if !usages.is_empty() && ident_kind == IdentifierKind::Underscore {
-        cov_mark::hit!(rename_underscore_multiple);
         bail!("Cannot rename reference to `_` as it is being referenced multiple times");
     }
     let mut source_change = SourceChange::default();
@@ -562,7 +559,6 @@ fn source_edit_from_name(
     if ast::RecordPatField::for_field_name(name).is_some()
         && let Some(ident_pat) = name.syntax().parent().and_then(ast::IdentPat::cast)
     {
-        cov_mark::hit!(rename_record_pat_field_name_split);
         // Foo { ref mut field } -> Foo { new_name: ref mut field }
         //      ^ insert `new_name: `
 
@@ -594,7 +590,6 @@ fn source_edit_from_name_ref(
                 let new_name = new_name.to_string();
                 if field_name == name_ref {
                     if init.text() == new_name {
-                        cov_mark::hit!(test_rename_field_put_init_shorthand);
                         // Foo { field: local } -> Foo { local }
                         //       ^^^^^^^ delete this
 
@@ -606,7 +601,6 @@ fn source_edit_from_name_ref(
                         return true;
                     }
                 } else if init == name_ref && field_name.text() == new_name {
-                    cov_mark::hit!(test_rename_local_put_init_shorthand);
                     // Foo { field: local } -> Foo { field }
                     //            ^^^^^^^ delete this
 
@@ -620,7 +614,6 @@ fn source_edit_from_name_ref(
             }
             // init shorthand
             (None, Some(_)) if matches!(def, Definition::Field(_)) => {
-                cov_mark::hit!(test_rename_field_in_field_shorthand);
                 // Foo { field } -> Foo { new_name: field }
                 //       ^ insert `new_name: `
                 let offset = name_ref.syntax().text_range().start();
@@ -628,7 +621,6 @@ fn source_edit_from_name_ref(
                 return true;
             }
             (None, Some(_)) if matches!(def, Definition::Local(_)) => {
-                cov_mark::hit!(test_rename_local_in_field_shorthand);
                 // Foo { field } -> Foo { field: new_name }
                 //            ^ insert `: new_name`
                 let offset = name_ref.syntax().text_range().end();
@@ -649,7 +641,6 @@ fn source_edit_from_name_ref(
                 if let Some(name) = pat.name() {
                     let new_name = new_name.to_string();
                     if name.text() == new_name {
-                        cov_mark::hit!(test_rename_field_put_init_shorthand_pat);
                         // Foo { field: ref mut local } -> Foo { ref mut field }
                         //       ^^^^^^^ delete this
                         //                      ^^^^^ replace this with `field`
@@ -740,7 +731,6 @@ fn source_edit_from_def<'db>(
                             // Foo { field: ref mut local } -> Foo { ref mut field }
                             //       ^^^^^^ delete this
                             //                      ^^^^^ replace this with `field`
-                            cov_mark::hit!(test_rename_local_put_init_shorthand_pat);
                             edit.delete(
                                 name_ref
                                     .syntax()

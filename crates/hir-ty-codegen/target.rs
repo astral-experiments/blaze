@@ -91,16 +91,6 @@ pub enum UnwindFormat {
     None,
 }
 
-/// How wasm code calls a function it names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Calls {
-    /// `call`, as rustc's code does.
-    Direct,
-    /// `call_indirect` through the slot the linker gives the function in the function
-    /// table, so that a module loaded later replaces the function by writing its slot.
-    Table,
-}
-
 impl Target {
     /// Names the target of this process. It is said once, before anything is compiled.
     pub fn select(triple: &str) -> Result<&'static Target, String> {
@@ -126,11 +116,6 @@ impl Target {
 
     /// The triple of what the daemon itself runs on.
     pub fn host() -> &'static str {
-        // The wasm backend writes its own code from Cranelift's IR and only borrows the
-        // settings of an ISA Cranelift has, whatever the compiler itself runs on.
-        if cfg!(feature = "wasm") {
-            return "wasm32-unknown-unknown";
-        }
         // FIXME: the triples of the hosts that have no code emitted for them yet are missing,
         // and `parse` turns those down by name.
         match (std::env::consts::ARCH, std::env::consts::OS) {
@@ -180,17 +165,6 @@ impl Target {
 
     pub fn is_wasm(&self) -> bool {
         self.arch == Arch::Wasm32
-    }
-
-    /// Whether an object is written as a relocatable wasm object, for a linker. A page links
-    /// what the compiler emits itself, and reads the object Cranelift's writer made.
-    pub fn writes_wasm_objects(&self) -> bool {
-        self.is_wasm() && self.calls() == Calls::Direct
-    }
-
-    /// How wasm code calls: through the table where functions are replaced in a page.
-    pub fn calls(&self) -> Calls {
-        if cfg!(feature = "wasm") { Calls::Table } else { Calls::Direct }
     }
 
     /// The integer an address is.
