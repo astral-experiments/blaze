@@ -180,6 +180,14 @@ impl WorkspaceBuildScripts {
         self.outputs.get(package)?.out_dir.as_deref()
     }
 
+    /// The compiled procedural macro that Cargo selected for this package.
+    pub fn proc_macro_dylib(&self, package: Package) -> Option<&AbsPath> {
+        match &self.outputs.get(package)?.proc_macro_dylib_path {
+            ProcMacroDylibPath::Path(path) => Some(path),
+            _ => None,
+        }
+    }
+
     pub(crate) fn get_output(&self, idx: Package) -> Option<&BuildScriptOutput> {
         self.outputs.get(idx)
     }

@@ -13,6 +13,73 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::dep_info::DepInfo;
 
+/// The contents read by native code from generated files named in rustc dep-info.
+#[derive(Clone, Default)]
+pub(crate) struct GeneratedInputs(FxHashMap<PathBuf, Option<u64>>);
+
+impl GeneratedInputs {
+    /// Captures the generated inputs read by a host proc macro. Its dylib is loaded by the
+    /// compiler and has no symbols in the target's native link.
+    pub(crate) fn record_proc_macro(&mut self, dylib: &Path, package: &str) {
+        let name = dylib.file_name().and_then(|name| name.to_str());
+        let Some(stem) = name
+            .and_then(|name| name.strip_prefix(std::env::consts::DLL_PREFIX))
+            .and_then(|name| name.strip_suffix(std::env::consts::DLL_SUFFIX))
+        else {
+            return;
+        };
+        let Ok(text) = std::fs::read_to_string(dylib.with_file_name(format!("{stem}.d"))) else {
+            return;
+        };
+        let fingerprint = if let Some(unit) = crate::cargo::layout::unit_dir(dylib) {
+            Some(unit.dir.join("fingerprint"))
+        } else {
+            stem.rsplit_once('-').and_then(|(_, hash)| {
+                crate::cargo::layout::profile_of(dylib)
+                    .map(|p| p.join(".fingerprint").join(format!("{package}-{hash}")))
+            })
+        };
+        let started = fingerprint.and_then(|dir| written(&dir.join("invoked.timestamp")));
+        let started = started.filter(|start| written(dylib).is_some_and(|built| *start <= built));
+        // Cargo passes OUT_DIR as an absolute path. The proc macro's working directory may
+        // differ from the workspace root for the other paths in its dep-info.
+        for path in
+            DepInfo::parse(&text).files.into_iter().map(PathBuf::from).filter(|p| p.is_absolute())
+        {
+            self.record_source(path, started);
+        }
+    }
+
+    /// Records a dep-info input. A generated file written during or after compilation could
+    /// already differ from what rustc read, even if it is older than the saved object.
+    fn record_source(&mut self, path: PathBuf, started: Option<SystemTime>) -> Source {
+        if !crate::cargo::script::in_out_dir(&path) {
+            return Source { path, generated: None };
+        }
+        let generated = content(&path);
+        let snapshot =
+            generated.filter(|_| written(&path).zip(started).is_some_and(|(at, start)| at < start));
+        let previous = self.0.entry(path.clone()).or_insert(snapshot);
+        if *previous != snapshot {
+            *previous = None;
+        }
+        Source { path, generated }
+    }
+
+    /// Whether all native readers observed the generated text loaded by the analyzer.
+    pub(crate) fn as_read<'a>(
+        inputs: impl Iterator<Item = &'a Self>,
+        path: &Path,
+        text: &str,
+    ) -> Option<bool> {
+        let mut snapshots = inputs.filter_map(|inputs| inputs.0.get(path));
+        let first = *snapshots.next()?;
+        Some(first.is_some_and(|hash| {
+            content_hash(text.as_bytes()) == hash && snapshots.all(|other| *other == first)
+        }))
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct SymbolTable {
     /// More than one symbol for the items that print as one path: of two `const _` blocks of
@@ -38,7 +105,7 @@ pub(crate) struct SymbolTable {
     built_from: Vec<(PathBuf, Vec<Source>)>,
     /// Contents of generated inputs that predate every native invocation that read them.
     /// A missing or conflicting snapshot leaves the path unverified.
-    generated_inputs: FxHashMap<PathBuf, Option<u64>>,
+    pub(crate) generated_inputs: GeneratedInputs,
     /// When the files started to be read.
     read: Option<SystemTime>,
     /// Which table read from files this is, counting from 1: 0 for one that is not.
@@ -858,8 +925,10 @@ impl SymbolTable {
             if let Some((name, sources)) = crate_sources(file, root) {
                 owners.push((name, table.real(&sources[0]), first..symbols.len()));
                 let started = crate::cargo::Record::started_for(file);
-                let sources =
-                    sources.into_iter().map(|path| table.record_source(path, started)).collect();
+                let sources = sources
+                    .into_iter()
+                    .map(|path| table.generated_inputs.record_source(path, started))
+                    .collect();
                 table.built_from.push((file.clone(), sources));
             }
         }
@@ -1079,42 +1148,12 @@ impl SymbolTable {
         self.built_from.iter().flat_map(|(_, sources)| sources.iter().map(|it| &*it.path))
     }
 
-    /// Records a dep-info input. A generated file written during or after compilation could
-    /// already differ from what rustc read, even if it is older than the saved object.
-    fn record_source(&mut self, path: PathBuf, started: Option<SystemTime>) -> Source {
-        if !crate::cargo::script::in_out_dir(&path) {
-            return Source { path, generated: None };
-        }
-        let generated = content(&path);
-        let snapshot =
-            generated.filter(|_| written(&path).zip(started).is_some_and(|(at, start)| at < start));
-        let previous = self.generated_inputs.entry(path.clone()).or_insert(snapshot);
-        if *previous != snapshot {
-            *previous = None;
-        }
-        Source { path, generated }
-    }
-
-    /// Whether every native reader saw the generated text now loaded into the analyzer.
-    /// Returns `None` for a path absent from native dep-info.
-    pub(crate) fn generated_as_read<'a>(
-        tables: impl Iterator<Item = &'a SymbolTable>,
-        path: &Path,
-        text: &str,
-    ) -> Option<bool> {
-        let mut snapshots = tables.filter_map(|table| table.generated_inputs.get(path));
-        let first = *snapshots.next()?;
-        Some(first.is_some_and(|hash| {
-            content_hash(text.as_bytes()) == hash && snapshots.all(|other| *other == first)
-        }))
-    }
-
     /// Roots whose native dep-info names a generated input that may have changed, even if
     /// the analyzer has yet to expand the `include!` that reads it.
     pub(crate) fn stale_generated_roots(&self) -> impl Iterator<Item = &Path> {
         self.built_from.iter().filter_map(|(_, sources)| {
             let stale =
-                sources.iter().any(|source| match self.generated_inputs.get(&source.path) {
+                sources.iter().any(|source| match self.generated_inputs.0.get(&source.path) {
                     Some(Some(hash)) => content(&source.path) != Some(*hash),
                     Some(None) => true,
                     None => false,
@@ -1760,25 +1799,73 @@ mod tests {
         file.set_modified(UNIX_EPOCH + Duration::from_secs(2)).unwrap();
 
         let reader = |object: &str| {
-            let mut table = SymbolTable::default();
-            table
+            let mut inputs = super::GeneratedInputs::default();
+            inputs
                 .record_source(path.clone(), crate::cargo::Record::started_for(&root.join(object)));
-            table
+            inputs
         };
         let later = reader(".ra-jit-units/example/3000000000/example.rcgu.o");
-        assert_eq!(SymbolTable::generated_as_read([&later].into_iter(), &path, "8"), Some(true));
-        assert_eq!(SymbolTable::generated_as_read([&later].into_iter(), &path, "9"), Some(false));
+        assert_eq!(super::GeneratedInputs::as_read([&later].into_iter(), &path, "8"), Some(true));
+        assert_eq!(super::GeneratedInputs::as_read([&later].into_iter(), &path, "9"), Some(false));
         // The object could have been saved after the edit, but this invocation had already begun.
         let earlier = reader(".ra-jit-units/example/1000000000/example.rcgu.o");
         assert_eq!(
-            SymbolTable::generated_as_read([&later, &earlier].into_iter(), &path, "8"),
+            super::GeneratedInputs::as_read([&later, &earlier].into_iter(), &path, "8"),
             Some(false)
         );
         let unknown = reader("debug/deps/example.rcgu.o");
         assert_eq!(
-            SymbolTable::generated_as_read([&later, &unknown].into_iter(), &path, "8"),
+            super::GeneratedInputs::as_read([&later, &unknown].into_iter(), &path, "8"),
             Some(false)
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_proc_macro_include_is_checked_against_its_host_compilation() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let root = std::env::temp_dir().join(format!("ra-jit macro input {}", std::process::id()));
+        let path = root.join("build/script/out/version.expr");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "8").unwrap();
+        let source = std::fs::File::open(&path).unwrap();
+        let stem = "version_macro-0123456789abcdef";
+        for (out, fingerprint) in [
+            ("debug/deps", "debug/.fingerprint/version-macro-0123456789abcdef"),
+            (
+                "debug/build/version-macro/0123456789abcdef/out",
+                "debug/build/version-macro/0123456789abcdef/fingerprint",
+            ),
+        ] {
+            let out = root.join(out);
+            let fingerprint = root.join(fingerprint);
+            std::fs::create_dir_all(&out).unwrap();
+            std::fs::create_dir_all(&fingerprint).unwrap();
+            let dylib = out.join(format!(
+                "{}{stem}{}",
+                std::env::consts::DLL_PREFIX,
+                std::env::consts::DLL_SUFFIX
+            ));
+            std::fs::write(&dylib, "").unwrap();
+            let escaped = crate::dep_info::escaped(&path.display().to_string());
+            std::fs::write(out.join(format!("{stem}.d")), format!("lib: {escaped}\n")).unwrap();
+            let start = std::fs::File::create(fingerprint.join("invoked.timestamp")).unwrap();
+            start.set_modified(UNIX_EPOCH + Duration::from_secs(2)).unwrap();
+            for (written, expected) in [(1, true), (3, false)] {
+                source.set_modified(UNIX_EPOCH + Duration::from_secs(written)).unwrap();
+                let mut inputs = super::GeneratedInputs::default();
+                inputs.record_proc_macro(&dylib, "version-macro");
+                assert_eq!(
+                    super::GeneratedInputs::as_read([&inputs].into_iter(), &path, "8"),
+                    Some(expected)
+                );
+                assert_eq!(
+                    super::GeneratedInputs::as_read([&inputs].into_iter(), &path, "9"),
+                    Some(false)
+                );
+            }
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
