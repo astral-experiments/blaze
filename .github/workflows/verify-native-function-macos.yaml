@@ -1,0 +1,13 @@
+name: Verify native function forwarding on macOS
+on:
+  push:
+    branches: [codex/verify-native-function-forwarding-macos]
+permissions:
+  contents: read
+jobs:
+  macos:
+    uses: ./.github/workflows/ra-jit-platform.yaml
+    with:
+      platform: macos-arm64
+      os: macos-15
+      tier: fast
