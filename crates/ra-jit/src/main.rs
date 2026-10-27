@@ -1328,11 +1328,14 @@ impl SymbolResolver for Resolver<'_> {
         if threads < 2 {
             return beside();
         }
+        let batch = trace::cold_batch(count);
+        let mut join = None;
         let next = std::sync::atomic::AtomicUsize::new(0);
         std::thread::scope(|scope| {
             for _ in 0..threads {
                 let (db, next, parts) = (self.db.clone(), &next, self.parts());
                 scope.spawn(move || {
+                    let _worker = trace::cold_span("worker", batch);
                     let resolver = parts.over(&db);
                     hir::attach_db(&db, || {
                         loop {
@@ -1345,8 +1348,13 @@ impl SymbolResolver for Resolver<'_> {
                     })
                 });
             }
-            beside();
+            {
+                let _caller = trace::cold_span("caller", batch);
+                beside();
+            }
+            join = trace::cold_span("join", batch);
         });
+        drop(join);
     }
 
     fn source_path(&self, file: vfs::FileId) -> Option<String> {
@@ -5422,7 +5430,7 @@ fn packs_whole(args: &Args) -> bool {
 /// Runs the link command `cmd` and says how long it took since `start` and how it ended, with
 /// `note` after.
 fn run_link(cmd: &str, start: Instant, note: &str) -> anyhow::Result<()> {
-    let linked = shell(cmd).output()?;
+    let linked = trace::link_output(&mut shell(cmd), "link")?;
     let status = linked.status;
     let said = String::from_utf8_lossy(&linked.stderr).into_owned();
     eprint!("{}{said}", String::from_utf8_lossy(&linked.stdout));
@@ -7537,7 +7545,13 @@ fn main() -> anyhow::Result<()> {
         return doctest::command(std::env::args_os().skip(1));
     }
     trace::install();
-    run(Args::parse(std::env::args().skip(1))?, None)
+    let args = Args::parse(std::env::args().skip(1))?;
+    if args.socket.is_none() && std::env::var_os(cargo::daemon::ENDS_WITH_INPUT).is_none() {
+        trace::start_cold();
+    }
+    let result = run(args, None);
+    trace::finish_cold(if result.is_ok() { "complete" } else { "failed" });
+    result
 }
 
 /// Compiles the crates `args` names on `threads` threads until `done`, giving up on what is
@@ -8591,6 +8605,7 @@ fn run_holding(
         memo_capacities(&mut db)?;
     }
     memory::report(&mut db, "warm-up")?;
+    trace::finish_cold("watch ready");
     eprintln!("watching {} files", files.len());
     ide_db::executions::take(&db);
     // Requests wait here while a build is under way, and those that have come by the time it

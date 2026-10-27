@@ -27,6 +27,7 @@ pub fn cache_inline(x: i32) -> i32 { x + 2 }
 """
 LIB = """pub mod fields;
 pub mod tables;
+mod ranges;
 mod tags;
 use cache_leaf as selected;
 
@@ -43,6 +44,9 @@ impl tables::Folder {
         Ok(Self { table: tables::FOLDS, last: None, flag: tables::Flag::Idle, next: 0 })
     }
 }
+
+#[inline(never)]
+pub fn cache_property(index: usize) -> (&'static str, &'static [(char, char)]) { tables::BY_NAME[index] }
 
 #[inline(never)]
 pub fn cache_leaf(x: i32) -> i32 { x + 1 }
@@ -82,12 +86,14 @@ overflow-checks = false
     "lib/src/lib.rs": LIB,
     "lib/src/fields.rs": "#[repr(C)] pub struct Header { pub prefix: u8, pub value: u8, pub tail: u32 }\n",
     "lib/src/tables.rs": """pub const FOLDS: &[(char, &[char])] = &[('K', &['k', 'K']), ('S', &['s', 'ſ'])];
+pub const BY_NAME: &[(&str, &[(char, char)])] = &[("Hex", crate::ranges::HEX), ("Digit", &[('0', '9')])];
 #[repr(u8)]
 pub enum Flag { Idle = 1, Other = 7 }
 #[repr(C)]
 pub struct Folder { pub last: Option<char>, pub flag: Flag, pub table: &'static [(char, &'static [char])], pub next: usize }
 pub struct FoldError(());
 """,
+    "lib/src/ranges.rs": "pub const HEX: &[(char, char)] = &[('A', 'F')];\n",
     "lib/src/tags.rs": "pub const TAG: i32 = 1;\n",
     "src/main.rs": """#[inline(never)]
 fn cache_public_caller(x: u8) -> i32 { store_dep::cache_public(x) as i32 }
@@ -102,7 +108,9 @@ fn main() {
     let needle = if x == 1 { 50 } else { 125 };
     let Ok(folder) = store_dep::tables::Folder::cache_folder() else { std::process::exit(2) };
     let folded = folder.table[folder.next].1[1] as u32;
-    println!("{} {} {} {} {} {} {} {} {} {} {} {} {} {}", store_dep::cache_leaf_caller(x), store_dep::cache_inline_caller(x),
+    let (name, ranges) = store_dep::cache_property(std::hint::black_box(0));
+    let (start, end) = ranges[0];
+    println!("{} {} {} {} {} {} {} {name}={start}-{end} {} {} {} {} {} {} {}", store_dep::cache_leaf_caller(x), store_dep::cache_inline_caller(x),
              header.cache_field(), header.cache_contains(needle),
              folded, std::mem::offset_of!(store_dep::tables::Folder, table), folder.flag as u8,
              cache_public_caller(x as u8), store_dep::cache_sibling(x), store_dep::cache_if(signed),
@@ -127,6 +135,7 @@ CASES = {
     "table": ("'K'", "'Å'", {"cache_folder"}, {"cache_sibling"}),
     "table-layout": ("#[repr(C)]", "#[repr(Rust)]", {"cache_folder"}, {"cache_sibling"}),
     "table-tag": ("Idle = 1, Other = 7", "Idle = 7, Other = 1", {"cache_folder"}, {"cache_sibling"}),
+    "property-child": ("('A', 'F')", "('A', 'G')", set(), {"cache_sibling"}),
 }
 
 
@@ -287,7 +296,7 @@ def main():
             reused = reused | {"cache_inline_caller", "cache_arm"}
         filename = {"tag": "lib/src/tags.rs", "layout": "lib/src/fields.rs",
                     "table": "lib/src/tables.rs", "table-layout": "lib/src/tables.rs",
-                    "table-tag": "lib/src/tables.rs"}.get(case, "lib/src/lib.rs")
+                    "table-tag": "lib/src/tables.rs", "property-child": "lib/src/ranges.rs"}.get(case, "lib/src/lib.rs")
         contents = FILES[filename]
         assert contents.count(old) == 1
         edited = checkout(ws, f"{case}-edit")
@@ -310,6 +319,8 @@ def main():
                        for a, b in zip(original, changed))
         if case == "table-tag":
             assert all(a.split()[6] == "1" and b.split()[6] == "7" for a, b in zip(original, changed))
+        if case == "property-child":
+            assert all(" Hex=A-F " in a and " Hex=A-G " in b for a, b in zip(original, changed))
         if case == "inline":
             assert [a.split()[-2] != b.split()[-2] for a, b in zip(original, changed)] == [True, False]
         if case == "tag":

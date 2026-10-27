@@ -610,7 +610,10 @@ fn asking(checkout: &Checkout) -> Checkout {
             || name == switch::VARIABLE
             || name == switch::CHAINED
             || name == "RA_JIT_STATS"
-            || name == "RA_JIT_TRACE"
+            || matches!(
+                name,
+                "RA_JIT_TRACE" | "BLAZE_TRACE" | "RA_JIT_TRACE_CONST" | "BLAZE_TRACE_CONST"
+            )
     };
     let mut env: BTreeMap<String, String> =
         std::env::vars().filter(|(name, _)| !wraps(name)).collect();
