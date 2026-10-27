@@ -386,6 +386,10 @@ pub struct FileText {
     #[returns(ref)]
     pub text: Arc<str>,
     pub file_id: vfs::FileId,
+    /// A module appended by the compiler after configuring the crate's own items.
+    #[default]
+    #[returns(copy)]
+    pub appended_root_module: Option<&'static str>,
 }
 
 /// The contents of a file named by `include_bytes!` or `include_str!`, `None` if it can't be read.
