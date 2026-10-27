@@ -82,7 +82,7 @@ jobs:
         with:
           shared-key: tests
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.11
       - run: $PYTHON harness/unittests.py
         env:
           RUSTC_WRAPPER: sccache
@@ -105,7 +105,7 @@ jobs:
         with:
           shared-key: build
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.11
       # In the flake's dev shell, against the LLVM it pins. On Windows, which has no Nix, the
       # build is against the static C runtime, and names libraries of the SDK that the linker is
       # not otherwise shown.
