@@ -95,23 +95,22 @@ struct Symbol {
 #[derive(Debug)]
 struct Source {
     path: PathBuf,
-    /// What a file that a build script wrote came to when the symbols were read. cargo runs
-    /// a script again without building the crate again when the script says the same, so
-    /// when such a file was written says nothing.
-    generated: Option<u64>,
+    /// The timestamp and contents of a build-script output when the symbols were loaded.
+    /// Cargo can rerun a script without rebuilding the crate if its output is unchanged.
+    generated: Option<(SystemTime, u64)>,
 }
 
 impl Source {
     fn new(path: PathBuf) -> Source {
         let of_script = crate::cargo::script::in_out_dir(&path);
-        let generated = of_script.then(|| content(&path)).flatten();
+        let generated = of_script.then(|| written(&path).zip(content(&path))).flatten();
         Source { path, generated }
     }
 
     /// Whether the file is another than the one rustc read when it finished at `built`.
     fn written_since(&self, built: SystemTime) -> bool {
         match self.generated {
-            Some(generated) => content(&self.path) != Some(generated),
+            Some((at, generated)) => at > built || content(&self.path) != Some(generated),
             None => written(&self.path).is_none_or(|it| it > built),
         }
     }

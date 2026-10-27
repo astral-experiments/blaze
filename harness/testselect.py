@@ -366,9 +366,9 @@ fn library() { assert_eq!(half(8_u32), 4.0); }
     # A restarted worker must observe edits to an existing generated test input.
     (output,) = (Path(ws) / "target").rglob("first.expr")
     for value, status, result in [(2, 101, "FAILED"), (0, 0, "ok")]:
-        output.write_text(f"{value}_u32")
         subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, check=True,
                        capture_output=True, timeout=120)
+        output.write_text(f"{value}_u32")
         code, said = test(ws, env, "all --tests")
         if code != status or ("first", result) not in RAN.findall(said):
             return f"FAILED after writing {output.name} = {value}\n{said[-3000:]}"

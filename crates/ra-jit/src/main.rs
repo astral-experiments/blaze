@@ -9824,17 +9824,24 @@ impl Program {
                 None => file.mtime.zip(built).is_some_and(|(written, built)| written <= built),
             })
         };
+        // A joined target may be the only one that read a changed generated input.
+        let mut stale: FxHashSet<_> =
+            self.table.all_written_since_built().map(|(root, _)| root).collect();
         let unread: Vec<vfs::FileId> = files
             .iter()
             .filter_map(|it| {
                 let Watched::Source(id) = it.file else { return None };
-                (!compiled_from(it, id)?).then_some(id)
+                (stale.remove(it.path.as_path()) || !compiled_from(it, id)?).then_some(id)
             })
             .collect();
-        let other: Vec<_> = unread
-            .iter()
-            .flat_map(|&id| ide_db::base_db::relevant_crates(db, id).to_vec())
-            .collect();
+        let other: Vec<_> = if stale.is_empty() {
+            unread
+                .iter()
+                .flat_map(|&id| ide_db::base_db::relevant_crates(db, id).to_vec())
+                .collect()
+        } else {
+            ide_db::base_db::all_crates(db).to_vec()
+        };
         self.known.distrust(db, &other);
         // A file rustc did not read is edited for this program: its build checks it.
         self.unbuilt.edited.extend(unread);

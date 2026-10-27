@@ -170,7 +170,8 @@ enum Guard {
         name: String,
         value: Option<String>,
     },
-    /// A lockfile or generated input as Cargo left it, by its timestamp or absence.
+    /// A file cargo writes itself while it builds, `Cargo.lock`: as cargo left it, by when
+    /// it was last written, or not there.
     AsLeft {
         file: PathBuf,
         written: Option<u128>,
@@ -1530,8 +1531,9 @@ fn guards(
         ),
     ];
     let in_build = runs_in_build(used);
-    // A script can write an input after the build starts. Record the file as it was
-    // left, so a later edit to its output also makes Cargo rebuild the reading unit.
+    // What a build script wrote to its `OUT_DIR` it wrote while cargo built, after the build
+    // began, and only cargo writes it again: when the script runs again, which its own guards
+    // are for.
     let generated =
         |file: &PathBuf| scripts.iter().any(|it| file.starts_with(it.out_dir.as_std_path()));
     let mut read_at: std::collections::BTreeMap<PathBuf, Option<u128>> = Default::default();
@@ -1551,15 +1553,10 @@ fn guards(
             || name == "OUT_DIR"
             || scripts.iter().any(|it| it.env.iter().any(|(set, _)| set == name))
     };
-    let mut outputs = std::collections::BTreeSet::new();
     for unit in used {
-        let inputs = unit.inputs();
-        outputs.extend(inputs.files.into_iter().filter(&generated));
-        let env = inputs.env.into_iter().filter(|(name, _)| !set_for_rustc(name));
+        let env = unit.inputs().env.into_iter().filter(|(name, _)| !set_for_rustc(name));
         guards.extend(env.map(|(name, value)| Guard::Env { name, value }));
     }
-    guards
-        .extend(outputs.into_iter().map(|file| Guard::AsLeft { written: written_at(&file), file }));
     let members: FxHashSet<_> = metadata.workspace_members.iter().collect();
     for script in scripts.iter().filter(|it| members.contains(&it.package_id)) {
         let package = metadata.packages.iter().find(|it| it.id == script.package_id);
