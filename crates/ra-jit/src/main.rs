@@ -1539,9 +1539,14 @@ impl SymbolResolver for Resolver<'_> {
         let db = self.db;
         let it = hir::Impl::from(id);
         let source = it.source(db)?;
-        // FIXME: where rustc puts the `impl`s a macro makes among the ones written out.
         if source.file_id.is_macro() {
-            return None;
+            let mut places = it.items(db).into_iter().filter_map(|item| {
+                let hir::AssocItem::Function(func) = item else { return None };
+                let symbol = self.function(FunctionId::try_from(func).ok()?)?;
+                symbols::impl_place(&symbol)
+            });
+            let place = places.next()?;
+            return places.all(|p| p == place).then_some(place);
         }
         let start = |it: &hir::InFile<ast::Impl>| it.value.syntax().text_range().start();
         let mut earlier = 0;
