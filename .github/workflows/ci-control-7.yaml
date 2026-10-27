@@ -1,4 +1,4 @@
-name: Compare macOS splicing on the merged compiler
+name: Diagnose the multi-harness CI failure
 on:
   push:
     branches: [charlie/ci-control-pr-7]
@@ -6,68 +6,67 @@ permissions:
   contents: read
   actions: read
 jobs:
-  quick:
-    name: Repeated splicing on ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [macos-15, nscloud-macos-sequoia-arm64-6x14]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 50
-    env:
-      CARGO_INCREMENTAL: 0
-      CARGO_NET_RETRY: 10
-      CARGO_TERM_COLOR: always
-      RA_JIT_SANDBOX: ''
-      PYTHON: python3
-      SCCACHE_GHA_ENABLED: "true"
-      SCCACHE_GHA_RW_MODE: READ_WRITE
-      RA_JIT_BACKEND: cranelift
-      RA_JIT_OPT: 2
-      RA_JIT_EMIT: fast
-    defaults:
-      run:
-        shell: bash
+  fixture:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: cf2ad1a05b577fe2d74fbac88968113a71f721b4
+          ref: 9bc237eddb96020ceecd24a92f1fa5e96226a792
           persist-credentials: false
       - uses: ./.github/actions/toolchain
         with:
           llvm: run
       - uses: actions/download-artifact@v8
         with:
-          name: ra-jit-macos-arm64
+          name: ra-jit-linux-x64
           path: target/release
           github-token: ${{ github.token }}
-          run-id: 40437279211
-      - name: Unpack the compiler from the main run
+          run-id: 40450861091
+      - run: tar -xf ra-jit.tar
         working-directory: target/release
-        run: |
-          tar -xf ra-jit.tar
-          echo "RA_JIT_BIN=$PWD/ra-jit" >> "$GITHUB_ENV"
-          shasum -a 256 ra-jit
-          sw_vers
-          sysctl -n hw.logicalcpu
-          xcodebuild -version
-      - name: Repeat the splicing test with the main artifact
+      - name: Compare the unmodified CI fixture with the pinned rustc
         working-directory: harness
+        shell: bash
         run: |
-          failed=0
-          for round in {1..10}; do
-            echo "::group::splicing round $round"
-            if python3 storetracked.py > "$RUNNER_TEMP/storetracked-$round.txt" 2>&1; then
-              tail -1 "$RUNNER_TEMP/storetracked-$round.txt"
-            else
-              failed=$((failed + 1))
-              grep -E 'NOT SPLICED|wrong; under|Traceback' "$RUNNER_TEMP/storetracked-$round.txt" || true
-              root=$(sed -n 's/.*wrong; under \(\/private\/tmp\/ra-jit-tracked-[[:alnum:]_-]*\)$/\1/p' "$RUNNER_TEMP/storetracked-$round.txt" | tail -1)
-              if [[ -n "$root" && -d "$root" ]]; then
-                find "$root" -name log -type f -exec grep -hE 'not spliced: the static' {} + | sort -u || true
-              fi
-            fi
-            echo "::endgroup::"
-          done
-          echo "$failed of 10 splicing runs failed" | tee -a "$GITHUB_STEP_SUMMARY"
-          [[ "$failed" == 0 ]]
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import shutil
+          import subprocess
+          import tempfile
+
+          import testselect
+
+          binaries = pathlib.Path("../target/release").resolve()
+          cases = (("CI Cranelift", {"RA_JIT_BACKEND":"cranelift","RA_JIT_OPT":"2","RA_JIT_EMIT":"fast"}),
+                   ("CI LLVM", {"RA_JIT_BACKEND":"llvm","RA_JIT_OPT":"2","RA_JIT_EMIT":"fast"}),
+                   ("workstation defaults", {}))
+          failures = 0
+          for label, settings in cases:
+              with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory(dir="/tmp") as home:
+                  env = dict(os.environ, PATH=f"{binaries}:{os.environ['PATH']}", RA_JIT_BIN=str(binaries/"ra-jit"),
+                             RA_JIT_HOME=home, RUST_BACKTRACE="0", **settings)
+                  ws = pathlib.Path(root) / "unchanged"
+                  try:
+                      result = testselect.unchanged_instances(root, env)
+                      print(f"{label}: {result}", flush=True)
+                      failures += result != "ok"
+                      if label == "CI Cranelift":
+                          bootstrap = dict(env, RUSTC_BOOTSTRAP="1")
+                          rustc = subprocess.run(["cargo","test","--tests","--target-dir",str(ws/"oracle")],
+                                                 cwd=ws, env=bootstrap, text=True, capture_output=True)
+                          print(f"pinned rustc: {rustc.returncode}\n{rustc.stdout}{rustc.stderr}", flush=True)
+                          failures += rustc.returncode != 0
+                          if result != "ok" and shutil.which("strace"):
+                              trace = pathlib.Path(root) / "trace"
+                              more = subprocess.run(["strace","-f","-e","trace=wait4,waitid,exit_group",
+                                  "-o",str(trace),"cargo","ra-jit","test","--lib","-v"],
+                                  cwd=ws, env=dict(bootstrap, RA_JIT_TESTS="all"), text=True, capture_output=True)
+                              print(f"sandboxed rerun: {more.returncode}\n{more.stdout}{more.stderr}", flush=True)
+                              print("\n".join(s for s in trace.read_text().splitlines()
+                                    if any(k in s for k in ("SIGSEGV","SIGSYS","SIGILL","SIGABRT","SIGBUS")))[-3000:])
+                  finally:
+                      subprocess.run(["cargo","ra-jit","stop"], env=env, cwd=ws, capture_output=True)
+          raise SystemExit(bool(failures))
+          PY
