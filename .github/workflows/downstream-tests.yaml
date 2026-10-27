@@ -1,8 +1,13 @@
 name: Downstream tests
-run-name: Paired Blaze and Cargo downstream tests (trials ${{ inputs.trials }})
+run-name: Paired Blaze and Cargo ${{ inputs.scope }} tests (trials ${{ inputs.trials }})
 on:
   workflow_dispatch:
     inputs:
+      scope:
+        description: Full default command or unit and integration tests only
+        type: choice
+        options: [default, unit-integration]
+        default: default
       trials:
         description: JSON array of paired trial numbers (odd starts with Cargo)
         default: "[1,2]"
@@ -26,6 +31,7 @@ jobs:
     env:
       SUITE: ${{ matrix.suite }}
       TRIAL: ${{ matrix.trial }}
+      BENCH_SCOPE: ${{ inputs.scope }}
       BLAZE_SANDBOX: 'off'
       RA_JIT_SANDBOX: 'off'
       CARGO_PROFILE_DEV_DEBUG: line-tables-only

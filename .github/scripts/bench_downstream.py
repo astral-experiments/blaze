@@ -90,6 +90,8 @@ def executables(log):
 def timed_run(suite, engine, phase, package_args, env, results):
     python_group = ["--only-group", "test"] if suite == "uv" else ["--only-dev"]
     command = ["uv", "run", "--locked", *python_group, engine, "test", "--locked", "--no-fail-fast", *package_args]
+    if env.get("BENCH_SCOPE") == "unit-integration":
+        command.append("--tests")
     if suite == "uv":
         command += ["--", "--skip", "test::malformed_option::", *(arg for name in COW for arg in ("--skip", name))]
     stem = f"{engine}-{phase}"
@@ -172,7 +174,7 @@ def main():
     target = Path("target").resolve()
     assert not target.exists()
     order = ("cargo", "blaze") if trial % 2 else ("blaze", "cargo")
-    details = dict(suite=suite, trial=trial, order=order, downstream=output("git", "rev-parse", "HEAD"),
+    details = dict(suite=suite, scope=os.environ.get("BENCH_SCOPE", "default"), trial=trial, order=order, downstream=output("git", "rev-parse", "HEAD"),
                    workflow=os.environ["GITHUB_SHA"], run=os.environ["GITHUB_RUN_ID"],
                    blaze=output("git", "-C", "../blaze", "rev-parse", "HEAD"),
                    rustc=output("rustc", "-vV"), cargo=output("cargo", "-V"), kernel=platform.release(),
