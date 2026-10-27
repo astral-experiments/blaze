@@ -370,10 +370,11 @@ project's tests (Linux AArch64), and the ripgrep bench. A failed nightly opens a
 "Nightly ra-jit failed", or comments on it while it is open
 (`.github/actions/nightly-issue`).
 
-Blaze uses Namespace's 16-core Ubuntu 24.04 profile for selected x86-64 builds and unit tests.
-Linux harness shards reuse the build artifact on GitHub-hosted runners. The Apple Silicon
-suite uses Namespace's macOS 15 (Sequoia) profile. Linux ARM64, Windows, fork and Dependabot PRs, and
-merge-queue entries use GitHub-hosted runners.
+Blaze builds the compiler and runs its unit tests on Namespace's 16-core Ubuntu 24.04
+x86-64 profile and its Apple Silicon macOS 15 (Sequoia) profile. The Linux and macOS
+harness shards run those artifacts on GitHub-hosted runners. Darwin Nix builds and live
+edits use Namespace. Linux ARM64, Windows, fork and Dependabot PRs, and merge-queue entries
+use GitHub-hosted runners.
 
 The build and the unit tests compile through sccache, which keeps rustc's output in the
 Actions cache; rust-cache keeps the dependencies from crates.io and leaves out the crates of

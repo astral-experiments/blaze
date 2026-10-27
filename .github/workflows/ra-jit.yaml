@@ -214,7 +214,8 @@ jobs:
     uses: ./.github/workflows/ra-jit-platform.yaml
     with:
       platform: macos-arm64
-      os: ${{ needs.changes.outputs.macos_runner }}
+      os: macos-15
+      build-os: ${{ needs.changes.outputs.macos_runner }}
       tier: ${{ needs.changes.outputs.tier }}
       pinned-ui: true
       cargo-ra-jit: ${{ needs.changes.outputs.tier == 'full' }}
