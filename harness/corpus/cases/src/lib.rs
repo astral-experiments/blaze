@@ -4,7 +4,7 @@
 //! One module per backend feature area, so a bisected culprit names the area.
 // Deref patterns and 128-bit variable arguments are unstable: the cases are for a nightly
 // toolchain only.
-#![cfg_attr(feature = "nightly", feature(deref_patterns, c_variadic_int128))]
+#![cfg_attr(feature = "nightly", feature(deref_patterns, c_variadic_int128, unboxed_closures))]
 #![cfg_attr(feature = "nightly", allow(incomplete_features))]
 
 pub mod stabilized;
@@ -744,6 +744,17 @@ pub mod objects {
     pub fn forwarded_fn(f: &dyn Fn(&u64, [u64; 2]) -> [u64; 3], word: &u64) -> [u64; 3] {
         let forwarded: &dyn Fn(&u64, [u64; 2]) -> [u64; 3] = std::hint::black_box(&f);
         forwarded(word, [11, 13])
+    }
+
+    #[cfg(feature = "nightly")]
+    pub fn rust_call_pointer(word: &u64) -> (u64, u64) {
+        #[inline(never)]
+        extern "rust-call" fn add((first, rest): (&u64, [u64; 5])) -> u64 {
+            *first + rest[4]
+        }
+        let args = (word, [1, 2, 3, 4, 5]);
+        let pointer = std::hint::black_box(add as extern "rust-call" fn((&u64, [u64; 5])) -> u64);
+        (add(args), pointer(args))
     }
     pub fn call_fn_mut(f: &mut dyn FnMut(u64) -> u64) -> u64 {
         f(1);
