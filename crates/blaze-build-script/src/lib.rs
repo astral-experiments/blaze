@@ -1,14 +1,13 @@
 //! Build scripts run as cargo 1.99 runs them, with nothing of cargo's: the environment a
 //! script is given ([`env`]), the run itself ([`run`]), what it prints read as cargo reads it
 //! ([`output`]) and who receives what ([`apply`]), for blaze to run the scripts it compiles without cargo (no-rustc
-//! step I, [#89]) and in its sandbox ([#147]).
+//! step I, [#89]).
 //!
 //! What a run is made from is a plain description ([`unit::Unit`]) that blaze's manifest
 //! reader and resolver fill; this crate reads no manifest and asks no cargo. cargo is the
 //! oracle of `harness/scripts.py`, which runs a corpus of scripts under both and compares.
 //!
 //! [#89]: https://github.com/indexable-inc/blaze/issues/89
-//! [#147]: https://github.com/indexable-inc/blaze/issues/147
 
 pub mod apply;
 pub mod env;

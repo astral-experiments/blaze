@@ -50,8 +50,6 @@ env:
   CARGO_INCREMENTAL: 0
   CARGO_NET_RETRY: 10
   CARGO_TERM_COLOR: always
-  # Every test `cargo ra-jit test` runs is in a sandbox, which Windows does not have yet.
-  RA_JIT_SANDBOX: ${{ startsWith(inputs.os, 'windows') && 'off' || '' }}
   # Git Bash on Windows has `python` and no `python3`.
   PYTHON: ${{ startsWith(inputs.os, 'windows') && 'python' || 'python3' }}
   # sccache keeps what rustc compiled in the Actions cache, for the steps that set RUSTC_WRAPPER:

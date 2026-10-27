@@ -103,7 +103,7 @@ mod debuginfo;
 pub use debuginfo::Sidecar;
 mod float_pair;
 mod fncache;
-pub use fncache::{AlwaysRun, Reach, tests_reach};
+pub use fncache::{AlwaysRun, tests_reach};
 mod fragment;
 mod home;
 mod later;

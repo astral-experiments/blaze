@@ -37,16 +37,6 @@ runs:
         # With its library's source, which ra-jit compiles code built by it from.
         if [ -n "${{ inputs.nightly }}" ]; then rustup toolchain install "${{ inputs.nightly }}" --profile minimal -c rust-src; fi
 
-    # `cargo ra-jit test` runs every test in a sandbox made of namespaces a user makes, which
-    # Ubuntu's AppArmor keeps users from making unless told otherwise.
-    - name: user namespaces
-      if: runner.os == 'Linux'
-      shell: bash
-      run: |
-        if [ "$(cat /proc/sys/kernel/apparmor_restrict_unprivileged_userns 2>/dev/null || echo 0)" != 0 ]; then
-          sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0
-        fi
-
     - if: runner.os != 'Windows' && inputs.llvm != 'none'
       uses: DeterminateSystems/nix-installer-action@v23
     - name: LLVM 20 (Nix)

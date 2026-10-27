@@ -16,7 +16,6 @@ use std::path::{Path, PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
-    sandbox_library();
     println!("cargo:rerun-if-env-changed=CARGO_WORKSPACE_DIR");
     let Some(root) = std::env::var_os("CARGO_WORKSPACE_DIR").map(PathBuf::from) else { return };
     let (lock, crates, vendor) =
@@ -55,42 +54,6 @@ fn main() {
     field(&[u8::from(std::env::var_os("CARGO_CFG_DEBUG_ASSERTIONS").is_some())]);
     let hex: String = hash.finish().iter().map(|byte| format!("{byte:02x}")).collect();
     println!("cargo:rustc-env=RA_JIT_SOURCES={hex}");
-}
-
-/// On macOS, the library every process of a sandbox loads (`src/sandbox/macos_interpose.c`),
-/// built with the C compiler of the system (`CC` when set), which `src/sandbox/macos.rs`
-/// carries in the executable. A C file and no build dependency: dyld loads only a dynamic
-/// library, which cargo builds from Rust only as a crate of its own.
-fn sandbox_library() {
-    let source = "src/sandbox/macos_interpose.c";
-    println!("cargo:rerun-if-changed={source}");
-    println!("cargo:rerun-if-env-changed=CC");
-    println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
-    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("macos") {
-        return;
-    }
-    let arch = match std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() {
-        Ok("aarch64") => "arm64",
-        Ok("x86_64") => "x86_64",
-        other => panic!("no sandbox library for the architecture {other:?}"),
-    };
-    let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("ra_jit_sandbox.dylib");
-    let cc = std::env::var("CC").unwrap_or_else(|_| "cc".to_owned());
-    let target = std::env::var("MACOSX_DEPLOYMENT_TARGET").unwrap_or_else(|_| "11.0".to_owned());
-    let status = std::process::Command::new(&cc)
-        .args(["-dynamiclib", "-O2", "-Wall", "-arch", arch])
-        .arg(format!("-mmacosx-version-min={target}"))
-        .arg("-o")
-        .arg(&out)
-        .arg(source)
-        .status()
-        .unwrap_or_else(|error| panic!("{cc} did not run to build {source}: {error}"));
-    assert!(status.success(), "{cc} could not build {source}");
-    // Its name in the user's cache, by its contents, worked out here rather than at each run.
-    let mut hash = Sha256::new();
-    hash.update(&std::fs::read(&out).unwrap());
-    let hex: String = hash.finish().iter().take(12).map(|byte| format!("{byte:02x}")).collect();
-    println!("cargo:rustc-env=RA_JIT_SANDBOX_LIBRARY={hex}");
 }
 
 /// Every file below `dir`, but in hidden directories and in what cargo and npm build into.

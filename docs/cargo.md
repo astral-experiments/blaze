@@ -155,90 +155,8 @@ has a new worker load the workspace.
 
 `run` then runs the program and `test` runs the test executables the way cargo does: the
 same working directory, the variables cargo sets, cargo's `Running` lines and the same exit
-status. Every test runs, unless `RA_JIT_TESTS=affected` says otherwise, and every test runs
-in a sandbox.
-
-### Every test runs in a sandbox
-
-"Everything should by default be in sandbox and yea it should have sandbox support macos"
-(Andrew, 2026-10-26). Every test executable `cargo ra-jit test` runs, under `all` and
-`affected` alike, runs in a sandbox of its own, with libtest's threads inside it as cargo would
-run them. In it the machine's files are read-only; the workspace and the target directory are
-as they are, but what a test writes there is kept to the run and gone when it ends; `/tmp`,
-`/var/tmp` and `/dev/shm` (on macOS the temporary directory) start empty; there is no network
-but the sandbox's own loopback; and the environment is fixed. A write outside gets the error a
-read-only file system gives, and a connection to anything but loopback is refused.
-
-The sandbox records what each test reached, by name: the harness tells it, before and after
-each test, which test the thread is running. Of a test executable that fails, the note under
-it names each failed test the sandbox refused something, and how to run it outside:
-
-    note: tests::writes_home failed in the sandbox, which refused it writing `/home/me/.cache/x` (the machine is read-only in a sandbox); if it needs that, run it outside: `unsandboxed-tests = ["tests::writes_home"]` under `[package.metadata.blaze.sandbox]` in /home/me/tsel/Cargo.toml (`tests = false` for every test of the package), or `RA_JIT_SANDBOX=off` for every test of the command
-
-A package takes its tests out of the sandbox in its manifest:
-
-```toml
-[package.metadata.blaze.sandbox]
-tests = false                                 # every test of the package runs outside
-unsandboxed-tests = ["tests::writes_home"]    # or these, by libtest's names
-```
-
-Any other key there is an error. The tests named run in a second run of the executable,
-outside, after the sandboxed one (libtest's `--exact` and `--skip` split them); `-v` says
-which and why. `RA_JIT_SANDBOX=off` runs every test of the command outside, as cargo does.
-
-Where no sandbox can be made, `cargo ra-jit test` stops before any test runs, says why and how
-to fix it, and exits 101. It does not go on outside with a warning: a run that did would break,
-unseen, the promise that a test can't change the machine or reach the network, and a warning
-in a long log is not seen. `RA_JIT_SANDBOX=off` is the explicit way to run outside.
-
-On Linux the sandbox is user, mount, network, IPC and PID namespaces: the machine bound
-read-only, overlays for the workspace and target directory, tmpfs for the empty directories, a
-network namespace with only loopback up, and a seccomp filter whose supervisor reads the paths
-asked for. It needs namespaces a user can make; Ubuntu's AppArmor stops them unless
-`kernel.apparmor_restrict_unprivileged_userns` is 0, which the error says. A filter is only
-installed when the run is recorded, and then notifies only writes, the network and the
-harness's marks unless reads are recorded too (`affected`).
-
-On macOS the sandbox is Seatbelt, applied with `sandbox_init_with_parameters` in the child
-before it runs the program (as Nix does), and needs no root: a profile that allows everything
-but writes (allowed only to the sandbox's scratch directory and a few of `/dev`) and the
-network (loopback and Unix sockets only). An interposer library ra-jit builds and loads with
-`DYLD_INSERT_LIBRARIES` records what is read, makes the workspace and target directory
-copy-on-write (`clonefile`, whiteouts for removed files, merged listings) and gives the empty
-temporary directory. Seatbelt alone can neither record reads without root (`fs_usage` needs
-it, and `(with report)` logs nothing a user can read) nor give private writes, hence the
-interposer. Its limits: a program macOS protects (`/bin/sh`, `/usr/bin/*`) is started without
-the interposer, so what it reads is not known (the test then runs every time under
-`affected`, and `-v` says so) and its writes to the workspace are refused rather than kept
-private; a test that makes raw system calls, or tampers with the interposer in its own process,
-gets past the recording and the private writes but not Seatbelt's read-only machine or its
-network rule; a sandbox inside the sandbox fails with `EPERM`.
-
-What it costs, measured with `harness/sandboxbench.py` (one sandbox per executable against a
-process per test, which ra-jit used before and dropped):
-
-| | Linux x86-64 (dev host, 16 cores) | macOS (M5 Max, 8 at a time, loaded) |
-|---|---|---|
-| a trivial program, bare | 0.86 ms | 5.2 ms |
-| in a sandbox | 8.0 ms | 29 ms |
-| in a sandbox, recording reads | 9.3 ms | 25 ms |
-| 600-test library, test phase, `RA_JIT_SANDBOX=off` | 18 ms | 20 ms |
-| the same, sandboxed, `all` | 37 ms | 68 ms |
-| the same, sandboxed, `affected` (every test forced to run) | 80 ms | 100 ms |
-| the same, a sandbox per test (16 at a time on Linux, 8 on macOS) | 0.68 s | 2.26 s |
-
-A sandbox per test executable costs one launch, about 8 ms on Linux, whatever its number of
-tests, and about 25 ms on macOS (mostly the fork, Seatbelt and dyld); a sandbox per test cost
-the 600-test library ten to thirty times as much, so there is none. On
-macOS a stat under the interposer goes from 0.8 to 1.1 µs, and to 3 to 5 µs on a workspace
-whose overlay has been written.
-
-What is left: doctests run in rustdoc's process and are not sandboxed; Linux does not stop a
-connection to a Unix socket outside, `io_uring` gets past seccomp, and `openat2` always counts
-as a write. Windows has no sandbox yet. The plan is
-[#257](https://github.com/indexable-inc/blaze/issues/257); build scripts and proc macros are
-[#147](https://github.com/indexable-inc/blaze/issues/147).
+status. Blaze runs test executables directly. Tests inherit the environment and can write to
+the workspace and access the network with the user's permissions.
 
 ### Running only the tests an edit reached
 
@@ -264,22 +182,6 @@ An integration test also runs again when a program of its package that cargo han
 executable, why each test it runs every time does, by the fewest calls from the test to it:
 
     Always tests::reads_a_file: it reaches `statx`, which reads or writes files, by tsel::tests::reads_a_file -> std::fs::read_to_string::<…> -> std::fs::read_to_string::inner -> <std::fs::File>::metadata -> … -> statx
-
-Under `affected` a test that reaches outside its code is not run every time: the sandbox
-records every path it opens, looks at, lists or runs, with the environment it was given (the
-variables cargo sets for a test, `PATH`, `HOME`, `USER`, `LOGNAME`, `LANG`, `LANGUAGE`,
-`LC_*`, `TZ`, `CARGO`, `CARGO_HOME`, `RUSTUP_HOME`, `RUSTUP_TOOLCHAIN`, `LD_LIBRARY_PATH`,
-`NIX_LD`, `NIX_LD_LIBRARY_PATH`, `RUST_BACKTRACE`, `RUST_LIB_BACKTRACE`, `RUST_MIN_STACK`, and
-those `RA_JIT_TEST_ENV` names, by commas; under `all` a test gets the whole environment). Once
-it passes, what was at each path (a file's contents, a directory's names, nothing) is kept
-beside its program, and the test runs again when its code, its environment or one of those
-changed; otherwise it is skipped like any other. `-v` says why one runs:
-
-    Sandboxed tests::reads_a_file: it read `/home/me/tsel/data.txt`, which changed
-
-A test whose reads are not all known (a program macOS starts without the interposer), one its
-package takes out of the sandbox, and every one under `RA_JIT_SANDBOX=off` runs every time.
-The time a test reads, the randomness it draws and the threads it starts are its own still.
 
 `-v`, `-q` and `--color` only change what cargo prints, and are the same build to the daemon.
 
@@ -482,9 +384,6 @@ build a command line is, so changing one starts from a cargo build again.
 `RA_JIT_TESTS` is read by each `cargo ra-jit test` alone and is not part of which build it
 is: `affected` runs the tests an edit reached
 ([above](#running-only-the-tests-an-edit-reached)), `all` every test. The default is `all`.
-`RA_JIT_SANDBOX=off` runs every test outside the sandbox
-([above](#every-test-runs-in-a-sandbox)), and `RA_JIT_TEST_ENV` names more variables a test
-is given under `affected`, by commas; both are read the same way.
 
 These are read by the daemon when it starts, from the environment of whichever command
 started it. To change one, run `cargo ra-jit stop` first.
