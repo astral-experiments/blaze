@@ -866,6 +866,34 @@ impl Resolver<'_> {
         }
     }
 
+    /// Whether the expanded crate declares just this static at its symbolic path. An
+    /// unresolved owner of another static of the same name keeps the match ambiguous.
+    fn only_static_here(&self, id: StaticId, module: Module, name: &str, path: &str) -> bool {
+        let db = self.db;
+        let krate = module.krate(db);
+        let outer = module.nearest_non_block_module(db);
+        let parent = path.rsplit_once("::").map(|(parent, _)| parent);
+        let owner = self.scope_path(module);
+        let same = |other: &StaticId| {
+            if *other == id {
+                return true;
+            }
+            if hir_def::signatures::StaticSignature::of(db, *other).name.as_str() != name {
+                return false;
+            }
+            let other = Module::from(hir_def::HasModule::module(other, db));
+            other.nearest_non_block_module(db) == outer
+                && (owner.as_deref() != parent
+                    || self.scope_path(other).is_none_or(|it| Some(it.as_str()) == parent))
+        };
+        let only = |statics: &[StaticId]| statics.iter().copied().filter(same).eq([id]);
+        let listed = lock(&self.listed.functions).get(&krate).cloned();
+        match listed {
+            Some(it) => only(&it.statics),
+            None => only(&declared_in(db, krate).statics),
+        }
+    }
+
     /// Whether another function written in a body of the crate has this one's path. rustc
     /// tells such functions apart by a number that the path does not show, so its symbol for
     /// the path may be the other's.
@@ -1610,7 +1638,7 @@ impl SymbolResolver for Resolver<'_> {
         let source = sema.source(it)?;
         let mut names = vec![name.as_str().to_owned()];
         let mut closures = Vec::new();
-        let mut around = Vec::new();
+        let mut around = Some(Vec::new());
         let mut owner = None;
         let mut child = source.value.syntax().clone();
         for node in sema.ancestors_with_macros(child.clone()).skip(1) {
@@ -1636,14 +1664,21 @@ impl SymbolResolver for Resolver<'_> {
             }
             if let Some(name) = name_in_path(&node) {
                 let named = |other: &SyntaxNode| name_in_path(other).as_ref() == Some(&name);
-                around.push(place_in_definition(&sema, &node, &named)?.into());
+                if let Some(places) = &mut around {
+                    match place_in_definition(&sema, &node, &named) {
+                        Some(place) => places.push(u64::from(place)),
+                        None => around = None,
+                    }
+                }
                 names.push(name);
             }
         }
         let owner = match owner {
             Some(owner) => owner,
             None => {
-                around.pop();
+                if let Some(places) = &mut around {
+                    places.pop();
+                }
                 let outer = names.pop()?;
                 self.item_path(module.nearest_non_block_module(self.db), &outer)?
             }
@@ -1651,7 +1686,6 @@ impl SymbolResolver for Resolver<'_> {
         names.push(owner);
         names.reverse();
         closures.reverse();
-        around.reverse();
         let path = names.join("::");
         // Only a path through a closure or an anonymous constant has segments left out of it.
         let named = |node: &SyntaxNode| {
@@ -1659,8 +1693,17 @@ impl SymbolResolver for Resolver<'_> {
                 .is_some_and(|it| it.name().is_some_and(|it| it.text() == name.as_str()))
         };
         let counted = Counted::Statics(name.as_str().to_owned());
-        let place =
-            place_counted(&sema, &self.places, counted, source.value.syntax(), &named)?.into();
+        let place = place_counted(&sema, &self.places, counted, source.value.syntax(), &named);
+        let Some((place, mut around)) = place.map(u64::from).zip(around) else {
+            // Attribute macros can put several anonymous constants in a module. An ordinal
+            // is unnecessary when both the expanded source and the link identify one static.
+            if !closures.is_empty() {
+                return None;
+            }
+            let symbol = self.table.get(&path).map(str::to_owned).or_else(|| private(&path))?;
+            return self.only_static_here(id, module, name.as_str(), &path).then_some(symbol);
+        };
+        around.reverse();
         let symbol = self
             .table
             .get_nested(&path, &closures, place, &around)
