@@ -129,6 +129,23 @@ def main():
                     job["measurements"].append(row)
                     print("MEASUREMENT", json.dumps(row), flush=True)
                     save()
+                if probe and job["measurements"][-1]["backend"] == "Blaze":
+                    production = Path(changed[0])
+                    edited = production.read_bytes()
+                    production.write_bytes(originals[0])
+                    row, actual = run([*cmd, "--exact", witness], env, out / "blaze-negative-control.log")
+                    row["confirmed"] = (row["exit"] != 0 and row["ra_jit_marker"] and not row["fallback_notes"]
+                                        and row["targets"] == [target_src] and actual == Counter({"FAILED\t" + witness: 1})
+                                        and row["summaries"] == [(0, 1, 0)])
+                    job["blaze_negative_control"] = row
+                    save()
+                    production.write_bytes(edited)
+                    row, actual = run([*cmd, "--exact", witness], env, out / "blaze-restored-control.log")
+                    row["confirmed"] = (row["exit"] == 0 and row["ra_jit_marker"] and not row["fallback_notes"]
+                                        and row["targets"] == [target_src] and actual == expected
+                                        and row["summaries"] == [(expected.total(), 0, 0)])
+                    job["blaze_restored_control"] = row
+                    save()
                 # This check runs after all four timed phases once per suite. Keep the new
                 # assertion and restore only production code to verify that stale code fails.
                 if not probe and trial == 2 and engine == "cargo":
@@ -142,7 +159,6 @@ def main():
                     save()
             finally:
                 if engine == "blaze":
-                    subprocess.run(["blaze", "stop"], env=env, timeout=90)
                     if probe:
                         with (out / "compiler-refusals.txt").open("w") as trace:
                             for log in Path(daemon).rglob("log"):
@@ -150,6 +166,7 @@ def main():
                                     for line in log.open(errors="replace"):
                                         if "file-bench-forward:" in line or "file-bench-stale:" in line:
                                             trace.write(f"{log.relative_to(daemon)} {line}")
+                    subprocess.run(["blaze", "stop"], env=env, timeout=90)
                 for path, original in zip(changed, originals):
                     Path(path).write_bytes(original)
                 if target.exists():
@@ -157,6 +174,8 @@ def main():
     if any(not row["valid"] or (row["engine"] == "blaze" and row["backend"] != "Blaze")
            for row in job["measurements"]) or (not probe and trial == 2 and not job["negative_control"]["confirmed"]):
         raise SystemExit("Test file validation failed; see measurements.json and the corresponding logs.")
+    if probe and not all(job[key]["confirmed"] for key in ("blaze_negative_control", "blaze_restored_control")):
+        raise SystemExit("The Blaze-only negative or restored witness failed validation.")
 
 
 if __name__ == "__main__":
