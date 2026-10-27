@@ -104,8 +104,8 @@ pub(crate) fn definitions(data: &mut [u8]) {
     share_statics(data);
 }
 
-/// Makes each symbol of Rust's that is private to the object and names data the program
-/// writes (a section `symbols::CopyOfStatic` reads as such) a private external, which the
+/// Makes each symbol of Rust's that is private to the object and names a static in the
+/// loaded image (a section `symbols::CopyOfStatic` reads as such) a private external, which the
 /// code of another object can refer to: rustc's copy of a static it kept to its codegen unit,
 /// which ra-jit's code has to share. Its place in the table stays, among the local ones,
 /// which Apple's linker takes as it is, so no relocation's symbol changes; nor is it weak,
