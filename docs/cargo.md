@@ -236,7 +236,7 @@ whose overlay has been written.
 
 What is left: doctests run in rustdoc's process and are not sandboxed; Linux does not stop a
 connection to a Unix socket outside, `io_uring` gets past seccomp, and `openat2` always counts
-as a write; Windows has no sandbox yet (its CI runs with `RA_JIT_SANDBOX=off`). The plan is
+as a write. Windows has no sandbox yet. The plan is
 [#257](https://github.com/indexable-inc/blaze/issues/257); build scripts and proc macros are
 [#147](https://github.com/indexable-inc/blaze/issues/147).
 
