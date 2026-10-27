@@ -372,7 +372,7 @@ project's tests (Linux AArch64), and the ripgrep bench. A failed nightly opens a
 
 Blaze uses Namespace's 16-core Ubuntu 24.04 profile for selected x86-64 builds and unit tests.
 Linux harness shards reuse the build artifact on GitHub-hosted runners. The Apple Silicon
-suite uses Namespace's Tahoe profile. Linux ARM64, Windows, fork and Dependabot PRs, and
+suite uses Namespace's macOS 15 (Sequoia) profile. Linux ARM64, Windows, fork and Dependabot PRs, and
 merge-queue entries use GitHub-hosted runners.
 
 The build and the unit tests compile through sccache, which keeps rustc's output in the

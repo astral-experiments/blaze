@@ -135,7 +135,7 @@ jobs:
            github.event.pull_request.user.login != 'dependabot[bot]' && github.actor != 'dependabot[bot]'))
         run: |
           echo 'linux=namespace-profile-ubuntu-24-04-16' >> "$GITHUB_OUTPUT"
-          echo 'macos=nscloud-macos-tahoe-arm64-6x14' >> "$GITHUB_OUTPUT"
+          echo 'macos=nscloud-macos-sequoia-arm64-6x14' >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

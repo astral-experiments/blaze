@@ -78,7 +78,7 @@ jobs:
 
   nix-darwin:
     name: nix build (aarch64-darwin)
-    runs-on: ${{ inputs.macos-runner || (github.repository_id == '1434979395' && 'nscloud-macos-tahoe-arm64-6x14' || 'macos-15') }}
+    runs-on: ${{ inputs.macos-runner || (github.repository_id == '1434979395' && 'nscloud-macos-sequoia-arm64-6x14' || 'macos-15') }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
@@ -122,7 +122,7 @@ jobs:
 
   live-edits:
     name: live edits (macOS arm64)
-    runs-on: ${{ inputs.macos-runner || (github.repository_id == '1434979395' && 'nscloud-macos-tahoe-arm64-6x14' || 'macos-15') }}
+    runs-on: ${{ inputs.macos-runner || (github.repository_id == '1434979395' && 'nscloud-macos-sequoia-arm64-6x14' || 'macos-15') }}
     timeout-minutes: 60
     # Not required: it runs a daemon, a program and a patch between them on a hosted macOS VM,
     # which has been the least steady thing in the repository. Whatever it says is still shown.
