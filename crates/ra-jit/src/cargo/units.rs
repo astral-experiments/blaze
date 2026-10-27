@@ -35,7 +35,7 @@ pub(crate) struct Record {
     pub(crate) args: Vec<String>,
     /// The root file of the crate.
     pub(crate) source: PathBuf,
-    /// When rustc was done, in nanoseconds since the epoch. Later records have later stamps.
+    /// When compilation started, in nanoseconds since the epoch.
     pub(crate) stamp: u128,
     /// The files rustc wrote that a later build writes again, each with the copy of it.
     pub(crate) copies: Vec<Copied>,
@@ -65,6 +65,17 @@ impl Record {
     /// is found the same way.
     pub(crate) fn dir_for(out_dir: &Path) -> PathBuf {
         super::layout::profile_of(out_dir).unwrap_or(out_dir).join(RECORDS)
+    }
+
+    /// When compilation started for this copy in `.ra-jit-units/<unit>/<stamp>/`.
+    /// An object outside a recorded invocation has no such bound on when rustc read its inputs.
+    pub(crate) fn started_for(copy: &Path) -> Option<SystemTime> {
+        let snapshot = copy.parent()?;
+        if !snapshot.parent()?.parent()?.ends_with(RECORDS) {
+            return None;
+        }
+        let nanos = snapshot.file_name()?.to_str()?.parse().ok()?;
+        UNIX_EPOCH.checked_add(Duration::from_nanos(nanos))
     }
 
     /// The name of the unit of crate `crate_name` that rustc writes to `out_dir` with

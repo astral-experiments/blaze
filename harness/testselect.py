@@ -38,6 +38,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 os.environ.setdefault("RUSTUP_TOOLCHAIN", open(os.path.join(HERE, "toolchain")).read().strip())
@@ -312,7 +313,7 @@ BENCHED_ADDED = ("src/lib.rs", "    #[test]\n    fn adds()",
 
 
 def unchanged_instances(root, env):
-    """A second integration test installs another harness while both use the same native instance."""
+    """Both harnesses use the same native instance. Only the second reads the edited expression."""
     ws = os.path.join(root, "unchanged")
     files = {
         "Cargo.toml": '[package]\nname = "unchanged"\nversion = "0.1.0"\nedition = "2021"\n'
@@ -338,8 +339,11 @@ pub fn half<T: Into<f64>>(value: T) -> f64 {
 fn library() { assert_eq!(half(8_u32), 4.0); }
 """,
     }
+    # Cargo may create cache tags under its home; they are not inputs to this build script.
+    cargo_home = Path(root, "cargo-home")
+    (cargo_home / "registry").mkdir(parents=True, exist_ok=True)
     for name in ("first", "second"):
-        files[f"cargo-home/registry/{name}.data"] = "const VALUE: u32 = 8;\n"
+        (cargo_home / "registry" / f"{name}.data").write_text("const VALUE: u32 = 8;\n")
         files[f"tests/{name}.rs"] = (
             f'include!(concat!(env!("CARGO_HOME"), "/registry/{name}.data"));\n'
             f'#[test]\nfn {name}() {{\n'
@@ -354,13 +358,36 @@ fn library() { assert_eq!(half(8_u32), 4.0); }
         with open(path, "w") as out:
             out.write(text)
     # With incremental compilation off rustc can keep only the descriptor for the test.
-    env = dict(env, CARGO_HOME=os.path.join(ws, "cargo-home"), RUSTC_BOOTSTRAP="1", CARGO_INCREMENTAL="0")
+    env = dict(env, CARGO_HOME=str(cargo_home), RUSTC_BOOTSTRAP="1",
+               CARGO_INCREMENTAL="0", CARGO_TERM_COLOR="never")
     code, said = test(ws, env, "all --tests")
     if code or "[ra-jit]" not in said or set(RAN.findall(said)) != {
         ("library", "ok"), ("first", "ok"), ("second", "ok")
     }:
         return f"FAILED\n{said[-3000:]}"
-    return "ok"
+    # A warm build must see an edit to the generated file itself, including when Cargo
+    # builds the unsupported native instance again. Only the second executable reads it.
+    generated = list(Path(ws, "target").rglob("second.expr"))
+    if len(generated) != 1:
+        return f"FAILED to locate second.expr: {generated}"
+    expression = generated[0]
+    failures = []
+    for value, status, expected_code in (("2_u32", "FAILED", 101), ("0_u32", "ok", 0)):
+        expression.write_text(value)
+        code, said = test(ws, env, "all --tests --no-fail-fast")
+        expected = {("library", "ok"), ("first", "ok"), ("second", status)}
+        actual = expression.read_text() if expression.exists() else None
+        if code != expected_code or set(RAN.findall(said)) != expected or actual != value:
+            failures.append(f"second.expr = {value}: command exited {code}, file now {actual!r}\n{said[-3000:]}")
+        image = re.search(r"^\s*Running tests[/\\]second\.rs \((.+)\)$", said, re.M)
+        if image is None:
+            failures.append(f"second.expr = {value}: no executable reported for tests/second.rs")
+            continue
+        ran = subprocess.run([Path(ws, image[1])], cwd=ws, env=env, capture_output=True, text=True, timeout=TIMEOUT)
+        if (ran.returncode != expected_code or RAN.findall(ran.stdout) != [("second", status)]
+                or status == "FAILED" and not ("left: 5.0" in ran.stdout and "right: 4.0" in ran.stdout)):
+            failures.append(f"second.expr = {value}: executable exited {ran.returncode}\n{ran.stdout}{ran.stderr}")
+    return "\n".join(failures) or "ok"
 
 
 def benched(root, env):

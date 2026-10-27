@@ -36,6 +36,9 @@ pub(crate) struct SymbolTable {
     private: FxHashSet<u64>,
     /// The files rustc built that cargo left a dep-info file for, each with its sources.
     built_from: Vec<(PathBuf, Vec<Source>)>,
+    /// Contents of generated inputs that predate every native invocation that read them.
+    /// A missing or conflicting snapshot leaves the path unverified.
+    generated_inputs: FxHashMap<PathBuf, Option<u64>>,
     /// When the files started to be read.
     read: Option<SystemTime>,
     /// Which table read from files this is, counting from 1: 0 for one that is not.
@@ -102,12 +105,6 @@ struct Source {
 }
 
 impl Source {
-    fn new(path: PathBuf) -> Source {
-        let of_script = crate::cargo::script::in_out_dir(&path);
-        let generated = of_script.then(|| content(&path)).flatten();
-        Source { path, generated }
-    }
-
     /// Whether the file is another than the one rustc read when it finished at `built`.
     fn written_since(&self, built: SystemTime) -> bool {
         match self.generated {
@@ -122,9 +119,14 @@ fn written(file: &Path) -> Option<SystemTime> {
 }
 
 fn content(file: &Path) -> Option<u64> {
+    Some(content_hash(&std::fs::read(file).ok()?))
+}
+
+/// The fingerprint used for both generated files on disk and the text loaded by the analyzer.
+fn content_hash(bytes: &[u8]) -> u64 {
     let mut hasher = DefaultHasher::new();
-    std::fs::read(file).ok()?.hash(&mut hasher);
-    Some(hasher.finish())
+    bytes.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// A symbol of an object, and how it demangles when it is one of Rust's.
@@ -855,7 +857,9 @@ impl SymbolTable {
             }
             if let Some((name, sources)) = crate_sources(file, root) {
                 owners.push((name, table.real(&sources[0]), first..symbols.len()));
-                let sources = sources.into_iter().map(Source::new).collect();
+                let started = crate::cargo::Record::started_for(file);
+                let sources =
+                    sources.into_iter().map(|path| table.record_source(path, started)).collect();
                 table.built_from.push((file.clone(), sources));
             }
         }
@@ -1073,6 +1077,50 @@ impl SymbolTable {
     /// Every file rustc read of the crates it built, as their dep-info files list them.
     pub(crate) fn sources(&self) -> impl Iterator<Item = &Path> {
         self.built_from.iter().flat_map(|(_, sources)| sources.iter().map(|it| &*it.path))
+    }
+
+    /// Records a dep-info input. A generated file written during or after compilation could
+    /// already differ from what rustc read, even if it is older than the saved object.
+    fn record_source(&mut self, path: PathBuf, started: Option<SystemTime>) -> Source {
+        if !crate::cargo::script::in_out_dir(&path) {
+            return Source { path, generated: None };
+        }
+        let generated = content(&path);
+        let snapshot =
+            generated.filter(|_| written(&path).zip(started).is_some_and(|(at, start)| at < start));
+        let previous = self.generated_inputs.entry(path.clone()).or_insert(snapshot);
+        if *previous != snapshot {
+            *previous = None;
+        }
+        Source { path, generated }
+    }
+
+    /// Whether every native reader saw the generated text now loaded into the analyzer.
+    /// Returns `None` for a path absent from native dep-info.
+    pub(crate) fn generated_as_read<'a>(
+        tables: impl Iterator<Item = &'a SymbolTable>,
+        path: &Path,
+        text: &str,
+    ) -> Option<bool> {
+        let mut snapshots = tables.filter_map(|table| table.generated_inputs.get(path));
+        let first = *snapshots.next()?;
+        Some(first.is_some_and(|hash| {
+            content_hash(text.as_bytes()) == hash && snapshots.all(|other| *other == first)
+        }))
+    }
+
+    /// Roots whose native dep-info names a generated input that may have changed, even if
+    /// the analyzer has yet to expand the `include!` that reads it.
+    pub(crate) fn stale_generated_roots(&self) -> impl Iterator<Item = &Path> {
+        self.built_from.iter().filter_map(|(_, sources)| {
+            let stale =
+                sources.iter().any(|source| match self.generated_inputs.get(&source.path) {
+                    Some(Some(hash)) => content(&source.path) != Some(*hash),
+                    Some(None) => true,
+                    None => false,
+                });
+            stale.then(|| sources[0].path.as_path())
+        })
     }
 
     /// Each source written after rustc built its crate, paired with the crate's root.
@@ -1697,6 +1745,41 @@ mod tests {
         names_of_object(&object.write().unwrap(), &mut names, true);
         let names: Vec<&str> = names.iter().map(|it| it.name.as_str()).collect();
         assert_eq!(names, [name]);
+    }
+
+    #[test]
+    fn a_generated_input_must_predate_every_native_reader() {
+        use std::time::{Duration, UNIX_EPOCH};
+
+        let root =
+            std::env::temp_dir().join(format!("ra-jit generated input {}", std::process::id()));
+        let path = root.join("build/script/out/value.expr");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "8").unwrap();
+        let file = std::fs::File::open(&path).unwrap();
+        file.set_modified(UNIX_EPOCH + Duration::from_secs(2)).unwrap();
+
+        let reader = |object: &str| {
+            let mut table = SymbolTable::default();
+            table
+                .record_source(path.clone(), crate::cargo::Record::started_for(&root.join(object)));
+            table
+        };
+        let later = reader(".ra-jit-units/example/3000000000/example.rcgu.o");
+        assert_eq!(SymbolTable::generated_as_read([&later].into_iter(), &path, "8"), Some(true));
+        assert_eq!(SymbolTable::generated_as_read([&later].into_iter(), &path, "9"), Some(false));
+        // The object could have been saved after the edit, but this invocation had already begun.
+        let earlier = reader(".ra-jit-units/example/1000000000/example.rcgu.o");
+        assert_eq!(
+            SymbolTable::generated_as_read([&later, &earlier].into_iter(), &path, "8"),
+            Some(false)
+        );
+        let unknown = reader("debug/deps/example.rcgu.o");
+        assert_eq!(
+            SymbolTable::generated_as_read([&later, &unknown].into_iter(), &path, "8"),
+            Some(false)
+        );
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
