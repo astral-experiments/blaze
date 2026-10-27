@@ -102,16 +102,21 @@ impl Served {
         let listener = match SocketAddr::from_pathname(&made) {
             Ok(address) => UnixListener::bind_addr(&address)?,
             Err(_) => {
-                use std::os::unix::fs::{PermissionsExt as _, symlink};
+                use std::os::unix::fs::{DirBuilderExt as _, symlink};
 
                 // The public address fits, but the private staging suffix does not. Bind in
                 // the same directory through a short name so the rename stays atomic.
-                let short = tempfile::Builder::new()
-                    .permissions(std::fs::Permissions::from_mode(0o700))
-                    .tempdir_in("/tmp")?;
-                let alias = short.path().join("d");
-                symlink(std::path::absolute(&made_in)?, &alias)?;
-                UnixListener::bind(alias.join("s"))?
+                let target = std::path::absolute(&made_in)?;
+                let tmp = Path::new("/tmp");
+                not_swapped_under(tmp)?;
+                let nonce = getrandom::u64().map_err(|e| io::Error::other(e.to_string()))?;
+                let short = tmp.join(format!(".blaze-{nonce:016x}"));
+                std::fs::DirBuilder::new().mode(0o700).create(&short)?;
+                let alias = short.join("d");
+                let bound =
+                    symlink(target, &alias).and_then(|()| UnixListener::bind(alias.join("s")));
+                let _ = std::fs::remove_dir_all(short);
+                bound?
             }
         };
         #[cfg(windows)]

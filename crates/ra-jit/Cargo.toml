@@ -111,7 +111,6 @@ ra-jit-live = { path = "../ra-jit-live" }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
-tempfile = "3"
 tikv-jemallocator = "0.5.4"
 tikv-jemalloc-ctl = "0.5.4"
 tikv-jemalloc-sys = "0.5.4"
