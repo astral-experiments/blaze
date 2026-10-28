@@ -20,7 +20,7 @@ use rustc_hash::FxHashSet;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    Request, Start,
+    Executable, Programs, Request, Start,
     cli::{Invocation, Subcommand, worker_env},
     client,
     daemon::{self, Checkout, WorkerConfig},
@@ -727,6 +727,30 @@ impl State {
         })
     }
 
+    /// Companion executables Cargo just linked for an integration test. A source written or
+    /// removed during the bootstrap belongs to the worker, as on any later build.
+    pub(super) fn fresh_companions(&self, asked: &Invocation) -> FxHashSet<PathBuf> {
+        if asked.subcommand != Subcommand::Test
+            || !asked.flags.dev_targets
+            || !self.programs.iter().any(|p| p.kind == Kind::Test && p.test)
+        {
+            return FxHashSet::default();
+        }
+        self.programs
+            .iter()
+            .filter(|p| {
+                p.kind == Kind::Bin
+                    && !p.test
+                    && !p.inputs.is_empty()
+                    && p.inputs.iter().all(|f| written_at(f).is_some_and(|t| t <= self.built_at))
+            })
+            .filter_map(|p| {
+                let (checkout, at) = p.asked_as?;
+                Some(self.checkouts[checkout].programs[at].object.clone())
+            })
+            .collect()
+    }
+
     /// `said`, the errors the daemon found in the source, ended as cargo ends a build rustc
     /// turned down: with the program the build is of.
     pub(crate) fn turned_down(&self, said: &crate::errors::Said) -> String {
@@ -799,7 +823,7 @@ impl State {
     /// program the daemon did not build has new source. Under `held`, which is this build's.
     pub(crate) fn settle(
         &self,
-        answers: &[Vec<Result<(), String>>],
+        answers: &[Programs],
         _held: &Held,
     ) -> Result<Vec<(&Program, String)>, String> {
         let mut cargos = Vec::new();
@@ -813,14 +837,17 @@ impl State {
                 None => Err(program.left_to_cargo.clone().unwrap_or_default()),
             };
             let from = match (&answer, program.asked_as) {
-                (Ok(()), Some((checkout, at))) => &self.checkouts[checkout].programs[at].binary,
+                (Ok(Executable::Worker), Some((checkout, at))) => {
+                    &self.checkouts[checkout].programs[at].binary
+                }
                 _ => &program.cargos,
             };
             // On Linux cargo's program is the daemon's file, which whatever starts it next
             // starts with no word to the daemon, which may still be writing it.
-            let _unwritten = answer.is_ok().then(|| crate::splice::unwritten(from));
+            let _unwritten =
+                matches!(answer, Ok(Executable::Worker)).then(|| crate::splice::unwritten(from));
             let package = match (&answer, program.asked_as) {
-                (Ok(()), Some((checkout, at))) => {
+                (Ok(Executable::Worker), Some((checkout, at))) => {
                     let plan = &self.checkouts[checkout].programs[at];
                     let rustcs = plan.package.as_deref();
                     rustcs.map(|it| packed(&plan.binary, &plan.object, it)).transpose()?
@@ -845,10 +872,12 @@ impl State {
     }
 
     /// The programs the daemon built, by `answers`, for the source as it is now.
-    pub(crate) fn daemons(&self, answers: &[Vec<Result<(), String>>]) -> Vec<Daemons> {
+    pub(crate) fn daemons(&self, answers: &[Programs]) -> Vec<Daemons> {
         let built = |program: &Program| {
             let (checkout, at) = program.asked_as?;
-            answers.get(checkout)?.get(at)?.as_ref().ok()?;
+            if *answers.get(checkout)?.get(at)?.as_ref().ok()? != Executable::Worker {
+                return None;
+            }
             let plan = self.checkouts[checkout].programs[at].clone();
             let places = program.places().map(Path::to_owned).collect();
             Some(Daemons { unit: program.unit.clone()?, plan, places, key: self.key.clone() })

@@ -433,6 +433,7 @@ impl Unit {
         let answer = super::built(checkout).and_then(|programs| {
             let said = programs.get(at).cloned();
             said.unwrap_or(Err("the daemon said nothing of it".to_owned()))
+                .map(|_| ())
                 .map_err(NotBuilt::Failed)
         });
         let read = deps.join().map_err(|_| "rustc did not run".to_owned());
