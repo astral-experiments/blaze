@@ -84,6 +84,10 @@ pub(crate) struct Program {
     pub(crate) package: String,
     /// Whether it is built as a test: `cargo test` runs it.
     pub(crate) test: bool,
+    /// Optimized workspace code may inline a value that the worker must track before an edit.
+    /// This decision applies only to the bootstrap that captured the executable.
+    #[serde(skip)]
+    unoptimized_companion: bool,
     /// The root file of the target.
     pub(crate) source: PathBuf,
     /// The directory of the package, which a test runs in.
@@ -739,14 +743,14 @@ impl State {
         self.programs
             .iter()
             .filter(|p| {
-                p.kind == Kind::Bin
-                    && !p.test
+                p.unoptimized_companion
                     && !p.inputs.is_empty()
                     && p.inputs.iter().all(|f| written_at(f).is_some_and(|t| t <= self.built_at))
             })
             .filter_map(|p| {
                 let (checkout, at) = p.asked_as?;
-                Some(self.checkouts[checkout].programs[at].object.clone())
+                let plan = &self.checkouts[checkout].programs[at];
+                plan.rustc_binary.is_none().then(|| plan.object.clone())
             })
             .collect()
     }
@@ -1017,7 +1021,6 @@ impl State {
             config: config(unit_test),
             root: root.clone(),
             programs: Vec::new(),
-            companions: Default::default(),
             sources: Vec::new(),
             env: env.clone(),
             scripts: scripts.clone(),
@@ -1074,6 +1077,12 @@ impl State {
                 kind == Kind::Bin && !test && package.default_run.as_ref() == Some(&name);
             state.programs.push(Program {
                 default_run,
+                unoptimized_companion: kind == Kind::Bin
+                    && !test
+                    && !compiled.is_empty()
+                    && compiled.iter().all(|unit| {
+                        !unit.stands_in() && unit.codegen("opt-level").unwrap_or("0") == "0"
+                    }),
                 name,
                 kind,
                 package: package.name.to_string(),

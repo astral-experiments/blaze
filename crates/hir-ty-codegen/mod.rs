@@ -1660,19 +1660,6 @@ impl Rejections {
         self.forget_rustc();
     }
 
-    /// Remember the initializers a deferred executable shares with rustc, while both still
-    /// see the same source. Its first full build can then compare them after an edit.
-    pub fn remember_initializers(
-        &self,
-        db: &dyn HirDatabase,
-        statics: impl Iterator<Item = StaticId>,
-    ) {
-        let values = self.frozen.rustc_values(db);
-        for id in statics {
-            values.kept(db, id);
-        }
-    }
-
     /// Notes that rustc compiled `crates` from other source than they are first built from
     /// here, so that what it compiled of them and of those that see them is not to be linked.
     pub fn distrust(&mut self, db: &dyn HirDatabase, crates: &[Crate]) {

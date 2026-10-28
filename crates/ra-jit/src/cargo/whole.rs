@@ -194,7 +194,6 @@ fn checkout(
         config,
         root: root.to_owned(),
         programs: plans.collect(),
-        companions: Default::default(),
         sources: manifests.chain(sources).collect(),
         env: BTreeMap::new(),
         scripts: None,

@@ -18,7 +18,7 @@ use std::{
 };
 
 use anyhow::Context as _;
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
@@ -331,9 +331,6 @@ pub(crate) struct Checkout {
     /// The root of the checkout.
     pub(crate) root: PathBuf,
     pub(crate) programs: Vec<Plan>,
-    /// Test companions to register for future edits while running Cargo's freshly linked binary.
-    #[serde(default, skip_serializing_if = "FxHashSet::is_empty")]
-    pub(crate) companions: FxHashSet<PathBuf>,
     /// The source files rustc read. Only a request to warm names them.
     pub(crate) sources: Vec<PathBuf>,
     /// The variables `env!` reads in the checkout: the ones cargo set to say where its
@@ -369,9 +366,8 @@ impl Checkout {
             true => (String::new(), plan.binary.display().to_string()),
             false => (plan.binary.display().to_string(), String::new()),
         };
-        let verb = if self.companions.contains(&plan.object) { "register" } else { "sync" };
         let mut line = format!(
-            "{verb}\t{}\t{}\t{}\t{}\t{}\t{splice}\t{exe}",
+            "sync\t{}\t{}\t{}\t{}\t{}\t{splice}\t{exe}",
             self.project().display(),
             crates,
             plan.object.display(),
@@ -454,11 +450,7 @@ impl Worker {
     /// Starts a worker on the first program of `checkout`, with its files in `dir`.
     /// `spare` is a process that waits to be told a build, and is told this one.
     fn start(checkout: &Checkout, dir: PathBuf, spare: Option<Spare>) -> anyhow::Result<Worker> {
-        let first = checkout
-            .programs
-            .iter()
-            .find(|p| !checkout.companions.contains(&p.object))
-            .context("a checkout without a program to compile")?;
+        let first = checkout.programs.first().context("a checkout without programs")?;
         private_dir(&dir)?;
         let (socket, mut log) = (dir.join("sock"), dir.join("log"));
         // The worker of a daemon that was killed may still be there, on its way out: it

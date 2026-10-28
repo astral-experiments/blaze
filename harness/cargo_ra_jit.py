@@ -1031,32 +1031,26 @@ observer = { path = "observer" }
         check(label, ran.returncode == 0 and ran.stdout.strip() == f"value={value}" and how == "daemon",
               f"{how}, {ran.stdout.strip()}, {ran.stderr[-180:]}")
 
+    def companion_state():
+        states = glob.glob(os.path.join(side.env["RA_JIT_HOME"], "states", "*.json"))
+        state, = [json.load(open(path)) for path in states if not path.endswith(".kept.json")]
+        binary, = [p for p in state["programs"] if p["name"] == "subject" and not p["test"]]
+        checkout, at = binary["asked_as"]
+        return state, binary, state["checkouts"][checkout]["programs"][at]
+
     try:
         _, cold = side.cargo("test", "--test", "probe")
         check("the integration test runs before edits", cold.returncode == 0 and "value=2" in cold.stdout, cold.stderr[-300:])
         wait_warm(side, ws)
-        states = glob.glob(os.path.join(env["RA_JIT_HOME"], "states", "*.json"))
-        state, = [json.load(open(path)) for path in states if not path.endswith(".kept.json")]
-        binary, = [p for p in state["programs"] if p["name"] == "subject" and not p["test"]]
-        checkout, at = binary["asked_as"]
-        companion = state["checkouts"][checkout]["programs"][at]
-        check("the integration test uses the binary Cargo linked without rebuilding it",
-              filecmp.cmp(binary["cargos"], binary["executable"], shallow=False)
-              and not os.path.exists(companion["object"]), binary["executable"])
+        state, binary, companion = companion_state()
+        check("the worker builds the optimized companion before the first edit",
+              os.path.isfile(companion["binary"]) and filecmp.cmp(companion["binary"], binary["executable"], shallow=False),
+              binary["executable"])
         plans = [plan for checkout in state["checkouts"]
                  for plan in checkout["programs"] if plan["crates"][0] == os.path.join(ws, "tests/probe.rs")]
         expected = {"tests/probe.rs", "src/lib.rs", "observer/src/lib.rs"}
         check("only the tested package and its caller are built with the harness",
               any({os.path.relpath(file, ws) for file in plan["crates"]} == expected for plan in plans), str(plans)[:300])
-        main = os.path.join(ws, "src/main.rs")
-        rewrite(main, "value={}", "edited={}")
-        reference = Side(ws, env, False)
-        for runner in (reference, side):
-            _, mismatch = runner.cargo("test", "--test", "probe")
-            check("editing only the companion reaches the integration test under " + ("Blaze" if runner.ra_jit else "Cargo"),
-                  mismatch.returncode == 101 and "edited=2" in mismatch.stderr and "value=2" in mismatch.stderr
-                  and (not runner.ra_jit or how_built(mismatch.stderr) == "daemon"), mismatch.stderr[-500:])
-        rewrite(main, "edited={}", "value={}")
         for file, old, new, value in [("src/lib.rs", "+ 1", "+ 2", 3), ("leaf/src/lib.rs", "{ 1 }", "{ 6 }", 8)]:
             rewrite(os.path.join(ws, file), old, new)
             check_value(f"editing {file} updates its inlined callers", value)
@@ -1072,6 +1066,31 @@ observer = { path = "observer" }
               broken.stderr[-300:])
         rewrite(leaf, "{ missing() }", "{ 8 }")
         check_value("fixing the dependency wakes the failed worker", 10)
+    finally:
+        side.cargo("stop")
+
+    # Unoptimized code built without incremental symbols needs a full first build on an edit.
+    rewrite(os.path.join(ws, "Cargo.toml"), "opt-level = 1", "opt-level = 0")
+    env = dict(base_env(os.path.join(work, "home-unoptimized-companion")),
+               CARGO_TARGET_DIR=os.path.join(work, "target-unoptimized-companion"), CARGO_INCREMENTAL="0")
+    side = Side(ws, env, True)
+    try:
+        check_value("the unoptimized integration test runs on Blaze", 10)
+        _, binary, companion = companion_state()
+        check("the unoptimized test uses Cargo's executable without compiling it twice",
+              filecmp.cmp(binary["cargos"], binary["executable"], shallow=False)
+              and not os.path.exists(companion["binary"]), binary["executable"])
+        rewrite(os.path.join(ws, "src/main.rs"), "value={}", "edited={}")
+        for runner in (Side(ws, env, False), side):
+            _, mismatch = runner.cargo("test", "--test", "probe")
+            check("the first edit to the unoptimized companion fails the old assertion under " + ("Blaze" if runner.ra_jit else "Cargo"),
+                  mismatch.returncode == 101 and "edited=10" in mismatch.stderr and "value=10" in mismatch.stderr
+                  and (not runner.ra_jit or how_built(mismatch.stderr) == "daemon"), mismatch.stderr[-500:])
+        rewrite(os.path.join(ws, "tests/probe.rs"), 'format!("value={}"', 'format!("edited={}"')
+        _, fixed = side.cargo("test", "--test", "probe")
+        check("updating the assertion accepts the edited companion on Blaze",
+              fixed.returncode == 0 and fixed.stdout.strip() == "edited=10" and how_built(fixed.stderr) == "daemon",
+              fixed.stderr[-300:])
     finally:
         side.cargo("stop")
 
