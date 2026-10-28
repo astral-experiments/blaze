@@ -650,6 +650,7 @@ pub(crate) struct RustcValues {
     /// what depends on them, and those rustc compiled from other source.
     touched: Arc<FxHashSet<Crate>>,
     callback_edits: Arc<FxHashSet<Crate>>,
+    bodies: Arc<FxHashSet<FileId>>,
 }
 
 /// The crates that can supply code to the native function pointers in an initializer.
@@ -668,6 +669,79 @@ impl Callbacks {
             Self::Unknown => any || !changes.is_empty(),
         }
     }
+
+    /// A body-only edit can affect native instructions only along a call path to that file.
+    fn touches_body(
+        &self,
+        db: &dyn HirDatabase,
+        id: StaticId,
+        changes: &FxHashSet<Crate>,
+        bodies: &FxHashSet<FileId>,
+    ) -> bool {
+        !bodies.is_empty()
+            && self.touched(changes, false)
+            && (matches!(self, Self::Unknown)
+                || bodies.iter().any(|&file| callback_reaches_file(db, id, file)))
+    }
+}
+
+/// Follow native callback targets that could contain a body from `file`. A library below
+/// the edited crate cannot inline one of its functions. Keep opaque calls conservative.
+#[salsa::tracked(returns(copy))]
+fn callback_reaches_file(db: &dyn HirDatabase, id: StaticId, file: FileId) -> bool {
+    let owners = base_db::relevant_crates(db, file);
+    if owners.is_empty() {
+        return true;
+    }
+    let affected: FxHashSet<_> = owners.iter().flat_map(|it| it.transitive_rev_deps(db)).collect();
+    let Ok(value) = compiled_static(db, id).as_ref() else { return true };
+    let mut pending = vec![&value.requests];
+    let mut statics = FxHashSet::from_iter([id]);
+    let mut functions = FxHashSet::default();
+    while let Some(requests) = pending.pop() {
+        for data in &requests.datas {
+            if let DataRequest::Static(id) = data
+                && affected.contains(&id.krate(db))
+                && statics.insert(*id)
+            {
+                let Ok(value) = compiled_static(db, *id).as_ref() else { return true };
+                pending.push(&value.requests);
+            }
+        }
+        if requests.inlined.iter().any(|it| {
+            mentioned_crates(db, it)
+                .is_none_or(|crates| crates.is_empty() || !crates.is_disjoint(&affected))
+        }) {
+            return true;
+        }
+        for request in &requests.funcs {
+            // A cleanup resumes the platform unwinder after running its Rust drop glue.
+            if matches!(&request.target, FuncTarget::Symbol(name) if matches!(name.as_str(), "_Unwind_Resume" | super::unwind::seh::RESUME))
+            {
+                continue;
+            }
+            let FuncTarget::Instance(instance, env) = &request.target else { return true };
+            let Some(crates) = mentioned_crates(db, instance) else { return true };
+            if crates.is_empty() {
+                return true;
+            }
+            if crates.is_disjoint(&affected) || !functions.insert((instance.clone(), env.clone())) {
+                continue;
+            }
+            if body_files(db, instance).is_none_or(|files| files.contains(&file)) {
+                return true;
+            }
+            let compiled = match instance.def {
+                InstanceDef::Fn(func) if instance.args.as_ref().is_empty() => {
+                    compiled_root(db, func)
+                }
+                _ => compiled_instance(db, instance.clone(), env.clone()),
+            };
+            let Ok(value) = compiled.as_ref() else { return true };
+            pending.push(&value.requests);
+        }
+    }
+    false
 }
 
 /// Follow static references as well as direct function pointers. A generic callback can
@@ -737,10 +811,13 @@ impl RustcValues {
     /// call native code that inlined the old body.
     pub(crate) fn kept(&self, db: &dyn HirDatabase, id: StaticId) -> bool {
         let Ok(compiled) = compiled_static(db, id).as_ref() else { return true };
-        if !self.callback_edits.is_empty()
-            && static_callbacks(db, id).touched(&self.callback_edits, false)
-        {
-            return false;
+        if !self.callback_edits.is_empty() {
+            let callbacks = static_callbacks(db, id);
+            if callbacks.touched(&self.touched, false)
+                || callbacks.touches_body(db, id, &self.callback_edits, &self.bodies)
+            {
+                return false;
+            }
         }
         let now = Mark::new(db, static_serial(db, id), &compiled.requests);
         let touched = self.touched(db, id);
@@ -756,7 +833,12 @@ impl Frozen {
     pub(crate) fn rustc_values(&self, db: &dyn HirDatabase) -> RustcValues {
         let touched = self.edited.iter().chain(&self.distrusted).copied().collect();
         let callback_edits = Arc::new(callback_edits(db, &touched, &self.edited_bodies));
-        RustcValues { known: self.statics.clone(), touched: Arc::new(touched), callback_edits }
+        RustcValues {
+            known: self.statics.clone(),
+            touched: Arc::new(touched),
+            callback_edits,
+            bodies: Arc::new(self.edited_bodies.clone()),
+        }
     }
 
     pub(crate) fn distrust(&mut self, crates: impl IntoIterator<Item = Crate>) {
@@ -2517,7 +2599,9 @@ impl Base {
         stale.steps.instances = start.elapsed() - stale.steps.roots;
         let changes = callback_edits(db, &self.touched.crates, &self.touched.bodies);
         for (&id, was) in self.statics.iter().skip(part).step_by(parts) {
-            if was.callbacks.touched(&changes, self.touched.any) {
+            if was.callbacks.touched(&self.touched.crates, self.touched.any)
+                || was.callbacks.touches_body(db, id, &changes, &self.touched.bodies)
+            {
                 return stale.declined("native code in a static initializer may have changed");
             }
             let touched = self.touched.reaches(was.krate)
