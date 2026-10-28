@@ -377,8 +377,12 @@ impl Staged {
     /// `Err` is why rustc builds every crate of the build `asked` for. The crates that
     /// run during the build are rustc's, and so are the ones those depend on: a build
     /// script, a proc macro, and what either is declared to need under any feature.
-    pub(crate) fn of(asked: &Invocation) -> anyhow::Result<Result<Staged, String>> {
-        if asked.subcommand == Subcommand::Test || asked.flags.selects_targets {
+    pub(crate) fn of(asked: &Invocation, staging: bool) -> anyhow::Result<Result<Staged, String>> {
+        // The worker can load the workspace while Cargo builds a selected test. Cargo
+        // still provides the actual targets, compiler flags, and link inputs afterwards.
+        let preload_test =
+            !staging && asked.subcommand == Subcommand::Test && asked.flags.dev_targets;
+        if !preload_test && (asked.subcommand == Subcommand::Test || asked.flags.selects_targets) {
             return Ok(Err("the build picks its targets".to_owned()));
         }
         let metadata = metadata(asked);
