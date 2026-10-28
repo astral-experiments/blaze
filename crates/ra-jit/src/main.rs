@@ -9147,6 +9147,7 @@ fn run_holding(
                                 let crates: Vec<_> = built_crates(&db, &program.args)?
                                     .into_iter()
                                     .filter(|krate| krate.data(&db).origin.is_local())
+                                    .map(Crate::from)
                                     .collect();
                                 listed.of_all(&db, &crates);
                                 let statics = crates
