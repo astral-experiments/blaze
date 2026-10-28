@@ -653,9 +653,8 @@ pub(crate) struct RustcValues {
 }
 
 /// The crates that can supply code to the native function pointers in an initializer.
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 enum Callbacks {
-    #[default]
     None,
     From(Arc<FxHashSet<Crate>>),
     Unknown,
@@ -684,7 +683,14 @@ fn static_callbacks(db: &dyn HirDatabase, id: StaticId) -> Callbacks {
         }
         let Ok(value) = compiled_static(db, id).as_ref() else { return Callbacks::Unknown };
         for request in &value.requests.funcs {
-            let FuncTarget::Instance(instance, _) = &request.target else { return Callbacks::Unknown };
+            let FuncTarget::Instance(instance, _) = &request.target else {
+                return Callbacks::Unknown;
+            };
+            if let InstanceDef::Fn(f) | InstanceDef::VtableShim(f) = instance.def
+                && !FunctionSignature::of(db, f).has_body()
+            {
+                return Callbacks::Unknown;
+            }
             let Some(origins) = mentioned_crates(db, instance) else { return Callbacks::Unknown };
             if origins.is_empty() {
                 return Callbacks::Unknown;
@@ -731,7 +737,9 @@ impl RustcValues {
     /// call native code that inlined the old body.
     pub(crate) fn kept(&self, db: &dyn HirDatabase, id: StaticId) -> bool {
         let Ok(compiled) = compiled_static(db, id).as_ref() else { return true };
-        if !self.callback_edits.is_empty() && static_callbacks(db, id).touched(&self.callback_edits, false) {
+        if !self.callback_edits.is_empty()
+            && static_callbacks(db, id).touched(&self.callback_edits, false)
+        {
             return false;
         }
         let now = Mark::new(db, static_serial(db, id), &compiled.requests);
