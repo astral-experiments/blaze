@@ -139,6 +139,10 @@ impl Plan {
             return Ok(Err(why.to_owned()));
         };
         let mut patched_as_built = !unit_test && !unit.is_test() && calls_by_symbol(unit);
+        let profile_companion = std::env::var_os("RA_JIT_STATS").is_some();
+        if profile_companion {
+            eprintln!("companion-plan root={} unit_test={unit_test} test={} opt={:?} incr={} standin={} link={:?}", unit.id, unit.is_test(), unit.codegen("opt-level"), unit.codegen("incremental").is_some(), unit.stands_in(), link.output());
+        }
         let mut plan = Plan {
             crates: vec![unit.source.clone()],
             object: dir.join("ra-jit.o"),
@@ -180,6 +184,9 @@ impl Plan {
                 continue;
             }
             patched_as_built &= calls_by_symbol(owner);
+            if profile_companion && !calls_by_symbol(owner) {
+                eprintln!("companion-plan root={} owner={} opt={:?} incr={} standin={}", unit.id, owner.id, owner.codegen("opt-level"), owner.codegen("incremental").is_some(), owner.stands_in());
+            }
             // These libraries are rustc's until an edit reaches one, which the
             // daemon then takes over, built as rustc built it, without `cfg(test)`.
             match unit_test || native.contains(owner.id.as_str()) {
@@ -189,6 +196,9 @@ impl Plan {
         }
         plan.symbol_files = link.rustc_files();
         plan.rustc_binary = link.output().filter(|_| patched_as_built).map(PathBuf::from);
+        if profile_companion {
+            eprintln!("companion-plan root={} candidate={:?} linked={:?}", unit.id, plan.rustc_binary, link.output());
+        }
         std::fs::create_dir_all(dir)?;
         match unit.is_test() {
             true => std::fs::write(dir.join(TESTS), harness_alone(unit).unwrap_or_default())?,
