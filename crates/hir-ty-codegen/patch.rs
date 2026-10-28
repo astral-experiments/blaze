@@ -716,6 +716,11 @@ fn callback_reaches_file(db: &dyn HirDatabase, id: StaticId, file: FileId) -> bo
             return true;
         }
         for request in &requests.funcs {
+            // A cleanup resumes the platform unwinder after running its Rust drop glue.
+            if matches!(&request.target, FuncTarget::Symbol(name) if matches!(name.as_str(), "_Unwind_Resume" | super::unwind::seh::RESUME))
+            {
+                continue;
+            }
             let FuncTarget::Instance(instance, env) = &request.target else { return true };
             let Some(crates) = mentioned_crates(db, instance) else { return true };
             if crates.is_empty() {
