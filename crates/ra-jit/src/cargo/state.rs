@@ -732,7 +732,7 @@ impl State {
     pub(super) fn fresh_companions(&self, asked: &Invocation) -> FxHashSet<PathBuf> {
         if asked.subcommand != Subcommand::Test
             || !asked.flags.dev_targets
-            || !self.programs.iter().any(|p| p.kind == Kind::Test && p.test)
+            || !self.programs.iter().any(|p| p.kind == Kind::Test && p.test && p.asked_as.is_some())
         {
             return FxHashSet::default();
         }
@@ -1017,6 +1017,7 @@ impl State {
             config: config(unit_test),
             root: root.clone(),
             programs: Vec::new(),
+            companions: Default::default(),
             sources: Vec::new(),
             env: env.clone(),
             scripts: scripts.clone(),

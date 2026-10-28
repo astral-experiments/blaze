@@ -596,9 +596,6 @@ pub(super) fn built(
     }
     let asking_at = Instant::now();
     let request = requested(checkout, companions);
-    if request.programs.is_empty() {
-        return Ok(vec![Ok(Executable::FreshCompanion); checkout.programs.len()]);
-    }
     let reply = client::ask(Request::Build(request), Start::IfMissing)
         .map_err(|it| NotBuilt::Failed(format!("{it:#}")))?;
     crate::trace::note("client↔daemon", crate::trace::CLIENT, asking_at);
@@ -614,39 +611,31 @@ pub(super) fn built(
         Some(Reply::Cold { reason }) => return Err(NotBuilt::Failed(reason)),
         Some(other) => return Err(NotBuilt::Failed(format!("the daemon answered {other:?}"))),
     };
-    let mut replies = programs.into_iter();
-    checkout
-        .programs
-        .iter()
-        .map(|program| {
-            if companions.contains(&program.object) {
+    std::iter::zip(&checkout.programs, programs)
+        .map(|(program, reply)| match reply {
+            Ok(_) if companions.contains(&program.object) => {
                 if std::env::var_os("RA_JIT_STATS").is_some() {
                     eprintln!(
                         "cold: reusing Cargo's test companion {}",
                         program.crates[0].display()
                     );
                 }
-                return Ok(Ok(Executable::FreshCompanion));
+                Ok(Ok(Executable::FreshCompanion))
             }
-            let Some(reply) = replies.next() else {
-                return Ok(Err("the daemon said nothing of it".to_owned()));
-            };
-            match reply {
-                Ok(_) => Ok(Ok(Executable::Worker)),
-                Err(NotBuilt::Error(said)) => Err(NotBuilt::Error(said)),
-                Err(NotBuilt::Failed(why)) => {
-                    Ok(Err(format!("ra-jit did not build {}: {why}", program.binary.display())))
-                }
-                Err(NotBuilt::Cargos(why)) => Ok(Err(why)),
+            Ok(_) => Ok(Ok(Executable::Worker)),
+            Err(NotBuilt::Error(said)) => Err(NotBuilt::Error(said)),
+            Err(NotBuilt::Failed(why)) => {
+                Ok(Err(format!("ra-jit did not build {}: {why}", program.binary.display())))
             }
+            Err(NotBuilt::Cargos(why)) => Ok(Err(why)),
         })
         .collect()
 }
 
-/// The part of a Cargo bootstrap the worker still has to compile.
+/// Register fresh companions with the worker before it sees any edits to their inputs.
 fn requested(checkout: &Checkout, companions: &FxHashSet<PathBuf>) -> Checkout {
     let mut request = asking(checkout);
-    request.programs.retain(|plan| !companions.contains(&plan.object));
+    request.companions.clone_from(companions);
     request
 }
 

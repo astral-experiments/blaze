@@ -6457,6 +6457,8 @@ fn errors_for_the_daemon(args: &Args, said: &errors::Said) -> anyhow::Result<()>
 /// What a client asks of the daemon, as the one line it sends.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Request {
+    /// Track the program's sources and symbols before an edit, without generating code.
+    Register,
     /// Bring the objects and the linked program up to date with the files on disk.
     Sync,
     /// Bring the objects up to date and leave the linking to the client, which loads the
@@ -6470,6 +6472,7 @@ enum Request {
 impl Request {
     fn parse(line: &str) -> Option<Request> {
         match line {
+            "register" => Some(Request::Register),
             "sync" => Some(Request::Sync),
             "patch" => Some(Request::Patch),
             _ => None,
@@ -6478,6 +6481,7 @@ impl Request {
 
     fn name(self) -> &'static str {
         match self {
+            Request::Register => "register",
             Request::Sync => "sync",
             Request::Patch => "patch",
             Request::Edit => "edit",
@@ -9018,6 +9022,10 @@ fn run_holding(
                         None => Outputs::of(&programs[0].args),
                     };
                     if let Some(at) = known {
+                        if request == Request::Register {
+                            let _ = writeln!(&stream, "ok");
+                            continue;
+                        }
                         if builds.running.contains_key(&at)
                             || outputs.get(&at).is_some_and(|it| *it != wanted)
                         {
@@ -9135,8 +9143,12 @@ fn run_holding(
                             }
                             let first = program.args.symbol_files == programs[0].args.symbol_files;
                             program.distrust_rustc(&db, &files, first.then_some(&as_compiled))?;
-                            clients.push((programs.len(), (request, asked, stream)));
-                            outputs.insert(programs.len(), wanted);
+                            if request == Request::Register {
+                                let _ = writeln!(&stream, "ok");
+                            } else {
+                                clients.push((programs.len(), (request, asked, stream)));
+                                outputs.insert(programs.len(), wanted);
+                            }
                             programs.push(program);
                         }
                         // A request for what can't be built is the client's mistake.
