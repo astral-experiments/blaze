@@ -708,11 +708,10 @@ fn callback_reaches_file(db: &dyn HirDatabase, id: StaticId, file: FileId) -> bo
                 pending.push(&value.requests);
             }
         }
-        if requests
-            .inlined
-            .iter()
-            .any(|it| mentioned_crates(db, it).is_none_or(|crates| !crates.is_disjoint(&affected)))
-        {
+        if requests.inlined.iter().any(|it| {
+            mentioned_crates(db, it)
+                .is_none_or(|crates| crates.is_empty() || !crates.is_disjoint(&affected))
+        }) {
             return true;
         }
         for request in &requests.funcs {
