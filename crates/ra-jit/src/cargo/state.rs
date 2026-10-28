@@ -1001,7 +1001,10 @@ impl State {
             let unit = Record::of_artifact(&used, executable.as_std_path());
             let compiled = reached_from(unit.into_iter().collect(), &used);
             let native = match kind {
-                Kind::Test => optimized_test_deps(package, &compiled),
+                Kind::Test => native_test_deps(package, &compiled, true),
+                Kind::Bin if asked.subcommand == Subcommand::Test && !test => {
+                    native_test_deps(package, &compiled, false)
+                }
                 _ => FxHashSet::default(),
             };
             // Named as cargo names the unit, the same in every build of it.
@@ -1617,13 +1620,17 @@ fn runs_in_build(used: &[Record]) -> Vec<&Record> {
     reached_from(used.iter().filter(|it| it.runs_in_build()).collect(), used)
 }
 
-/// Optimized workspace libraries an integration test can keep as rustc built them. Keep
+/// Workspace libraries a test or its companion executable can keep as rustc built them. Keep
 /// the package under test editable, along with every caller that may have inlined an
 /// editable library. An edit inside the remaining native libraries widens the build.
-fn optimized_test_deps<'a>(package: &Package, compiled: &[&'a Record]) -> FxHashSet<&'a str> {
+fn native_test_deps<'a>(
+    package: &Package,
+    compiled: &[&'a Record],
+    optimized_only: bool,
+) -> FxHashSet<&'a str> {
     let libraries = compiled.iter().copied().filter(|unit| unit.is_rlib());
     let (mut native, editable): (Vec<_>, Vec<_>) = libraries.partition(|unit| {
-        unit.codegen("opt-level").is_some_and(|level| level != "0")
+        (!optimized_only || unit.codegen("opt-level").is_some_and(|level| level != "0"))
             && !package.targets.iter().any(|target| target.src_path.as_std_path() == unit.source)
             && !unit.stands_in()
     });
