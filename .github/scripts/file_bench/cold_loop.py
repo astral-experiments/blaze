@@ -101,6 +101,16 @@ def main():
                         env["RA_JIT_TRACE"]=str(out/f"{which}-{phase}-trace.json")
                     log=out/f"{which}-{phase}.log"
                     row, actual=run(cmd,env,log)
+                    if trace:
+                        plans = []
+                        for state in (home/"states").glob("*.json"):
+                            if state.name.endswith(".kept.json"): continue
+                            view=json.loads(state.read_text())
+                            for checkout in view["checkouts"]:
+                                for plan in checkout["programs"]:
+                                    plans.append(dict(root=plan["crates"][0], crates=len(plan["crates"]),
+                                                      rustc_binary=plan.get("rustc_binary"), whole=plan["whole"]))
+                        (out/f"{which}-{phase}-plans.json").write_text(json.dumps(plans,indent=2))
                     success = phase != "fail"
                     want = expected if full else Counter({("ok" if success else "FAILED")+"\t"+witness:1})
                     backend = which=="cargo" or (row["ra_jit_marker"] and not row["fallback_notes"])
