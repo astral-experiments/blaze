@@ -577,7 +577,7 @@ pub(super) struct BaseStatic {
     theirs: bool,
     /// Both compilers' code uses rustc's allocation. A patch must preserve its address.
     pub(super) shared: bool,
-    shared_callback: bool,
+    callbacks: Callbacks,
 }
 
 /// What a function left to rustc keeps the rest of the build from doing.
@@ -649,29 +649,73 @@ pub(crate) struct RustcValues {
     /// The crates an edit since the start can have changed a value of: those edited and
     /// what depends on them, and those rustc compiled from other source.
     touched: Arc<FxHashSet<Crate>>,
-    edited: bool,
+    callback_edits: Arc<FxHashSet<Crate>>,
 }
 
-/// Whether borrowing these initial bytes also borrows native code, through a function
-/// pointer here or in another static. An opaque initializer may contain such a pointer.
-#[salsa::tracked(returns(copy))]
-fn static_has_callbacks(db: &dyn HirDatabase, id: StaticId) -> bool {
+/// The crates that can supply code to the native function pointers in an initializer.
+#[derive(Clone, Default, PartialEq, Eq)]
+enum Callbacks {
+    #[default]
+    None,
+    From(Arc<FxHashSet<Crate>>),
+    Unknown,
+}
+
+impl Callbacks {
+    fn touched(&self, changes: &FxHashSet<Crate>, any: bool) -> bool {
+        match self {
+            Self::None => false,
+            Self::From(crates) => any || !crates.is_disjoint(changes),
+            Self::Unknown => any || !changes.is_empty(),
+        }
+    }
+}
+
+/// Follow static references as well as direct function pointers. A generic callback can
+/// inline code supplied by its type arguments as well as by its defining crate.
+#[salsa::tracked]
+fn static_callbacks(db: &dyn HirDatabase, id: StaticId) -> Callbacks {
     let mut pending = vec![id];
     let mut seen = FxHashSet::default();
+    let mut crates = FxHashSet::default();
     while let Some(id) = pending.pop() {
         if !seen.insert(id) {
             continue;
         }
-        let Ok(value) = compiled_static(db, id).as_ref() else { return true };
-        if !value.requests.funcs.is_empty() {
-            return true;
+        let Ok(value) = compiled_static(db, id).as_ref() else { return Callbacks::Unknown };
+        for request in &value.requests.funcs {
+            let FuncTarget::Instance(instance, _) = &request.target else { return Callbacks::Unknown };
+            let Some(origins) = mentioned_crates(db, instance) else { return Callbacks::Unknown };
+            if origins.is_empty() {
+                return Callbacks::Unknown;
+            }
+            crates.extend(origins);
         }
         pending.extend(value.requests.datas.iter().filter_map(|data| match data {
             DataRequest::Static(id) => Some(*id),
             _ => None,
         }));
     }
-    false
+    if crates.is_empty() { Callbacks::None } else { Callbacks::From(Arc::new(crates)) }
+}
+
+/// Native callbacks can inline a body from any dependency of the crate providing it.
+fn callback_edits(
+    db: &dyn HirDatabase,
+    crates: &FxHashSet<Crate>,
+    bodies: &FxHashSet<FileId>,
+) -> FxHashSet<Crate> {
+    let mut changed = crates.clone();
+    for &file in bodies {
+        let owners = base_db::relevant_crates(db, file);
+        if owners.is_empty() {
+            return base_db::all_crates(db).iter().copied().collect();
+        }
+        for &owner in owners {
+            changed.extend(owner.transitive_rev_deps(db));
+        }
+    }
+    changed
 }
 
 impl RustcValues {
@@ -687,7 +731,7 @@ impl RustcValues {
     /// call native code that inlined the old body.
     pub(crate) fn kept(&self, db: &dyn HirDatabase, id: StaticId) -> bool {
         let Ok(compiled) = compiled_static(db, id).as_ref() else { return true };
-        if self.edited && static_has_callbacks(db, id) {
+        if !self.callback_edits.is_empty() && static_callbacks(db, id).touched(&self.callback_edits, false) {
             return false;
         }
         let now = Mark::new(db, static_serial(db, id), &compiled.requests);
@@ -701,12 +745,10 @@ impl RustcValues {
 impl Frozen {
     /// What a build asks of [`RustcValues`]: the values taken so far, shared with it, and the
     /// edits as they are now.
-    pub(crate) fn rustc_values(&self) -> RustcValues {
+    pub(crate) fn rustc_values(&self, db: &dyn HirDatabase) -> RustcValues {
         let touched = self.edited.iter().chain(&self.distrusted).copied().collect();
-        let edited = !self.edited_bodies.is_empty()
-            || !self.edited.is_empty()
-            || !self.distrusted.is_empty();
-        RustcValues { known: self.statics.clone(), touched: Arc::new(touched), edited }
+        let callback_edits = Arc::new(callback_edits(db, &touched, &self.edited_bodies));
+        RustcValues { known: self.statics.clone(), touched: Arc::new(touched), callback_edits }
     }
 
     pub(crate) fn distrust(&mut self, crates: impl IntoIterator<Item = Crate>) {
@@ -1417,7 +1459,7 @@ impl Base {
             parents: Vec::new(),
             theirs: false,
             shared,
-            shared_callback: shared && static_has_callbacks(db, id),
+            callbacks: if shared { static_callbacks(db, id).clone() } else { Callbacks::None },
         };
         let mut statics = cg
             .statics
@@ -1707,7 +1749,7 @@ impl Base {
                 theirs: false,
                 // rustc's copy, which rustc's code writes when the static has state.
                 shared: is_thread_local(db, id) || compiled.is_some_and(|it| it.writable),
-                shared_callback: static_has_callbacks(db, id),
+                callbacks: static_callbacks(db, id).clone(),
             };
             self.statics.insert(id, known);
         }
@@ -2465,8 +2507,9 @@ impl Base {
             return stale.declined(why);
         }
         stale.steps.instances = start.elapsed() - stale.steps.roots;
+        let changes = callback_edits(db, &self.touched.crates, &self.touched.bodies);
         for (&id, was) in self.statics.iter().skip(part).step_by(parts) {
-            if was.shared_callback && self.touched.edited() {
+            if was.callbacks.touched(&changes, self.touched.any) {
                 return stale.declined("native code in a static initializer may have changed");
             }
             let touched = self.touched.reaches(was.krate)
@@ -2792,7 +2835,7 @@ impl Base {
         cg.phases.compile = verify;
         cg.phases.setup = start.elapsed() - verify;
         cg.rustc_futures = known.futures.clone();
-        cg.rustc_values = known.frozen.rustc_values();
+        cg.rustc_values = known.frozen.rustc_values(db);
         cg.tiers = Some(&known.tiers);
         // What nothing reached any more can be reached again by the code compiled now.
         cg.replaced = unchanged;

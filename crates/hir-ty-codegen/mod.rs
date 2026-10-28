@@ -906,7 +906,7 @@ impl CodegenUnit {
             )?;
             cg.patching = patching;
             cg.rustc_futures = futures.clone();
-            cg.rustc_values = frozen.rustc_values();
+            cg.rustc_values = frozen.rustc_values(db);
             let mut compiled = Vec::new();
             let mut skipped = Vec::new();
             let mut failed = Vec::new();
