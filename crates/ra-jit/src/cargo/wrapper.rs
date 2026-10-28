@@ -64,6 +64,11 @@ const PROGRAM_OF: &str = "CARGO_BIN_EXE_";
 /// The variable that names the directory cargo gives the integration tests of a build.
 const SCRATCH: &str = "CARGO_TARGET_TMPDIR";
 
+/// Cargo supplies these paths after choosing the executable and test directories.
+pub(super) fn target_path(name: &str) -> bool {
+    name.starts_with(PROGRAM_OF) || name == SCRATCH
+}
+
 /// The file in the daemon's directory that has a line for every program plain cargo asked
 /// for: who linked it, and why when it was rustc.
 const TALLY: &str = "plain-cargo.log";
@@ -430,7 +435,7 @@ impl Unit {
         }
         let (checkout, at) = state.asked_for(dir)?;
         let deps = self.dep_info(rustc);
-        let answer = super::built(checkout).and_then(|programs| {
+        let answer = super::built(checkout, &Default::default()).and_then(|programs| {
             let said = programs.get(at).cloned();
             said.unwrap_or(Err("the daemon said nothing of it".to_owned()))
                 .map(|_| ())
@@ -658,9 +663,7 @@ impl Unit {
             stamp,
             copies,
             link_line,
-            env: std::env::vars()
-                .filter(|(name, _)| name.starts_with(PROGRAM_OF) || name == SCRATCH)
-                .collect(),
+            env: std::env::vars().filter(|(name, _)| target_path(name)).collect(),
             crate_env: std::env::vars()
                 .filter(|(name, _)| super::own_script::read_by_crates(name))
                 .collect(),

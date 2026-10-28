@@ -43,7 +43,7 @@ Writes CARGO-RA_JIT.md and cargo_ra_jit.json next to this file, or CARGO-RA_JIT-
 cargo_ra_jit_llvm.json under `RA_JIT_BACKEND=llvm`. A run of some projects replaces their rows
 and keeps the others. `--small` is the three projects of the CI job.
 """
-import collections, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time, urllib.request
+import collections, filecmp, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -1011,7 +1011,17 @@ observer = { path = "observer" }
             f'[package]\nname = "{name}"\nversion = "0.0.0"\nedition = "2021"\n' + manifest + "\n")
         open(os.path.join(path, "src/lib.rs"), "w").write(body + "\n")
     os.makedirs(os.path.join(ws, "tests"))
-    open(os.path.join(ws, "tests/probe.rs"), "w").write('fn main() { println!("value={}", observer::value()); }\n')
+    open(os.path.join(ws, "src/main.rs"), "w").write('fn main() { println!("value={}", api::value()); }\n')
+    open(os.path.join(ws, "tests/probe.rs"), "w").write('''fn main() {
+    let exe = std::env::var("CARGO_BIN_EXE_subject").unwrap();
+    assert_eq!(exe, env!("CARGO_BIN_EXE_subject"));
+    let child = std::process::Command::new(exe).output().unwrap();
+    assert!(child.status.success());
+    let value = String::from_utf8(child.stdout).unwrap();
+    assert_eq!(value.trim(), format!("value={}", observer::value()));
+    print!("{value}");
+}
+''')
     env = base_env(os.path.join(work, "home-optimized-test-deps"))
     side = Side(ws, dict(env, RA_JIT_RUSTC_BASE="0"), True)
 
@@ -1026,12 +1036,27 @@ observer = { path = "observer" }
         check("the integration test runs before edits", cold.returncode == 0 and "value=2" in cold.stdout, cold.stderr[-300:])
         wait_warm(side, ws)
         states = glob.glob(os.path.join(env["RA_JIT_HOME"], "states", "*.json"))
-        plans = [plan for path in states if not path.endswith(".kept.json")
-                 for checkout in json.load(open(path)).get("checkouts", [])
+        state, = [json.load(open(path)) for path in states if not path.endswith(".kept.json")]
+        binary, = [p for p in state["programs"] if p["name"] == "subject" and not p["test"]]
+        checkout, at = binary["asked_as"]
+        companion = state["checkouts"][checkout]["programs"][at]
+        check("the integration test uses the binary Cargo linked without rebuilding it",
+              filecmp.cmp(binary["cargos"], binary["executable"], shallow=False)
+              and not os.path.exists(companion["object"]), binary["executable"])
+        plans = [plan for checkout in state["checkouts"]
                  for plan in checkout["programs"] if plan["crates"][0] == os.path.join(ws, "tests/probe.rs")]
         expected = {"tests/probe.rs", "src/lib.rs", "observer/src/lib.rs"}
         check("only the tested package and its caller are built with the harness",
               any({os.path.relpath(file, ws) for file in plan["crates"]} == expected for plan in plans), str(plans)[:300])
+        main = os.path.join(ws, "src/main.rs")
+        rewrite(main, "value={}", "edited={}")
+        reference = Side(ws, env, False)
+        for runner in (reference, side):
+            _, mismatch = runner.cargo("test", "--test", "probe")
+            check("editing only the companion reaches the integration test under " + ("Blaze" if runner.ra_jit else "Cargo"),
+                  mismatch.returncode == 101 and "edited=2" in mismatch.stderr and "value=2" in mismatch.stderr
+                  and (not runner.ra_jit or how_built(mismatch.stderr) == "daemon"), mismatch.stderr[-500:])
+        rewrite(main, "edited={}", "value={}")
         for file, old, new, value in [("src/lib.rs", "+ 1", "+ 2", 3), ("leaf/src/lib.rs", "{ 1 }", "{ 6 }", 8)]:
             rewrite(os.path.join(ws, file), old, new)
             check_value(f"editing {file} updates its inlined callers", value)
