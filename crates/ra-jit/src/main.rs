@@ -9144,6 +9144,15 @@ fn run_holding(
                             let first = program.args.symbol_files == programs[0].args.symbol_files;
                             program.distrust_rustc(&db, &files, first.then_some(&as_compiled))?;
                             if request == Request::Register {
+                                let crates: Vec<_> = built_crates(&db, &program.args)?
+                                    .into_iter()
+                                    .filter(|krate| krate.data(&db).origin.is_local())
+                                    .collect();
+                                listed.of_all(&db, &crates);
+                                let statics = crates
+                                    .into_iter()
+                                    .flat_map(|krate| listed.of(&db, krate).statics.clone());
+                                program.known.remember_initializers(&db, statics);
                                 let _ = writeln!(&stream, "ok");
                             } else {
                                 clients.push((programs.len(), (request, asked, stream)));
