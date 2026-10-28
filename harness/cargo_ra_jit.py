@@ -1365,7 +1365,7 @@ use std::{future::Future, pin::pin, sync::atomic::{AtomicUsize, Ordering}, task:
 
 async fn counters<T>() -> [usize; 3] {
     let ordinary = || {
-        static CELL: AtomicUsize = AtomicUsize::new(10);
+        static CELL: std::sync::LazyLock<AtomicUsize> = std::sync::LazyLock::new(|| AtomicUsize::new(10));
         CELL.fetch_add(1, Ordering::Relaxed)
     };
     let first = async || {

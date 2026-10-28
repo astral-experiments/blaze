@@ -1,6 +1,11 @@
 name: Downstream tests
-run-name: Blaze on ${{ inputs.suite }}
+run-name: Blaze on ${{ inputs.suite || 'uv-lock-edit' }}
 on:
+  pull_request:
+    paths:
+      - crates/hir-ty-codegen/patch.rs
+      - .github/scripts/downstream_test_edit.py
+      - .github/workflows/downstream-tests.yaml
   workflow_dispatch:
     inputs:
       suite:
@@ -20,7 +25,7 @@ jobs:
       run:
         shell: bash
     env:
-      SUITE: ${{ inputs.suite }}
+      SUITE: ${{ inputs.suite || 'uv-lock-edit' }}
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
       RUST_MIN_STACK: 33554432
       RUST_TEST_THREADS: 1
@@ -41,18 +46,18 @@ jobs:
       - name: Check out the upstream workspace
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: ${{ startsWith(inputs.suite, 'uv') && 'astral-sh/uv' || 'astral-sh/ruff' }}
-          ref: ${{ startsWith(inputs.suite, 'uv') && '5b5a53e1803d426ba04f4af8ff7d6ff747548218' || '07872adbafa7c00f42f1174d8aa3c3e324033009' }}
+          repository: ${{ startsWith(env.SUITE, 'uv') && 'astral-sh/uv' || 'astral-sh/ruff' }}
+          ref: ${{ startsWith(env.SUITE, 'uv') && '5b5a53e1803d426ba04f4af8ff7d6ff747548218' || '07872adbafa7c00f42f1174d8aa3c3e324033009' }}
           path: downstream
           persist-credentials: false
-      - if: inputs.suite != 'uv-archive-fixtures'
+      - if: env.SUITE != 'uv-archive-fixtures'
         uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: '0.13.5'
           checksum: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
           enable-cache: false
       - name: Install uv's test dependencies
-        if: inputs.suite == 'uv' || inputs.suite == 'uv-lock-edit'
+        if: env.SUITE == 'uv' || env.SUITE == 'uv-lock-edit'
         working-directory: downstream
         env:
           UV_PYTHON_DOWNLOADS_JSON_URL: crates/uv-python-managed/download-metadata.json

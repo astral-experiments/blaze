@@ -62,6 +62,9 @@ def main(suite):
     run_test(command, witness, True, after)
     try:
         source.write_text(edited_source)
+        if suite == "uv-lock-edit":
+            # The old snapshot must see the new diagnostic before we update it.
+            run_test(command, witness, False, after)
         test.write_text(edited_test)
         run_test(command, witness, True, after)
         # Keep the new assertion. A stale executable that ignores both edits would pass.
