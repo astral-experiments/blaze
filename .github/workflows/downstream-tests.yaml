@@ -1,198 +1,61 @@
-name: Downstream tests
-run-name: Blaze on ${{ inputs.suite || 'uv-lock-edit' }}
-on:
-  pull_request:
-    paths:
-      - crates/hir-ty-codegen/patch.rs
-      - .github/scripts/downstream_test_edit.py
-      - .github/workflows/downstream-tests.yaml
-  workflow_dispatch:
-    inputs:
-      suite:
-        description: Upstream test suite
-        type: choice
-        required: true
-        options: [ruff-and-ty, uv, uv-archive-fixtures, uv-lock-edit, ty-semantic-edit]
-
+name: Native callback sibling edit
+run-name: Reduced Ruff initializer before and after the fix
+on: workflow_dispatch
 permissions:
   contents: read
-
 jobs:
-  test:
-    runs-on: ${{ github.repository_id == '1434979395' && 'namespace-profile-ubuntu-24-04-16' || 'ubuntu-24.04' }}
-    timeout-minutes: 300
+  verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [namespace-profile-ubuntu-24-04-16, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      RUST_MIN_STACK: '33554432'
+      BLAZE_SANDBOX: 'off'
+      RA_JIT_SANDBOX: 'off'
     defaults:
       run:
         shell: bash
-    env:
-      SUITE: ${{ inputs.suite || 'uv-lock-edit' }}
-      CARGO_PROFILE_DEV_DEBUG: line-tables-only
-      RUST_MIN_STACK: 33554432
-      RUST_TEST_THREADS: 1
-      INSTA_UPDATE: 'no'
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          path: blaze
+          fetch-depth: 2
+          ref: 079b1dd06861a4678ac0d7a68a8108f006386459
           persist-credentials: false
-      - name: Build Blaze
-        working-directory: blaze
+      - name: Prepare the fixture from the candidate and its pinned compiler
         run: |
           tc=$(cat harness/toolchain)
           rustup toolchain install "$tc" --profile minimal -c rust-src
-          cargo +"$tc" build --locked --release -p ra-jit
           echo "RUSTUP_TOOLCHAIN=$tc" >> "$GITHUB_ENV"
-          echo "$PWD/target/release" >> "$GITHUB_PATH"
-      - name: Check out the upstream workspace
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: ${{ startsWith(env.SUITE, 'uv') && 'astral-sh/uv' || 'astral-sh/ruff' }}
-          ref: ${{ startsWith(env.SUITE, 'uv') && '5b5a53e1803d426ba04f4af8ff7d6ff747548218' || '07872adbafa7c00f42f1174d8aa3c3e324033009' }}
-          path: downstream
-          persist-credentials: false
-      - if: env.SUITE != 'uv-archive-fixtures'
-        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
-        with:
-          version: '0.13.5'
-          checksum: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
-          enable-cache: false
-      - name: Install uv's test dependencies
-        if: env.SUITE == 'uv' || env.SUITE == 'uv-lock-edit'
-        working-directory: downstream
-        env:
-          UV_PYTHON_DOWNLOADS_JSON_URL: crates/uv-python-managed/download-metadata.json
+          echo "RA_JIT_BIN=$PWD/target/release/ra-jit" >> "$GITHUB_ENV"
+          cp harness/staticcallbacks.py "$RUNNER_TEMP/staticcallbacks.py"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path(os.environ["RUNNER_TEMP"]) / "staticcallbacks.py"
+          src = p.read_text()
+          marker = '                if actual != f"{value} {value} {tag} {label}":'
+          oracle = '''                ref_env = dict(env, CARGO_TARGET_DIR=str(root / "rustc-target"))
+                          reference = subprocess.check_output(["cargo", "run", "--quiet", "--offline"], cwd=root, env=ref_env, text=True).strip()
+                          print(f"pinned rustc {reference!r}, Blaze {actual!r}", flush=True)
+                          assert actual == reference'''.replace("\n                          ", "\n                ")
+          assert src.count(marker) == 1
+          p.write_text(src.replace(marker, oracle + "\n" + marker))
+          PY
+      - name: Exercise the original regression on the parent compiler
         run: |
-          export UV_PYTHON_CACHE_DIR="$RUNNER_TEMP/uv-python-cache"
-          echo "UV_PYTHON_CACHE_DIR=$UV_PYTHON_CACHE_DIR" >> "$GITHUB_ENV"
-          uv python install
-          if [[ "$SUITE" == uv-lock-edit ]]; then exit 0; fi
-          uv python install 3.12d 3.13d 3.13t 3.13td
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends --allow-downgrades \
-            git/noble-updates git-man/noble-updates libcurl3t64-gnutls/noble-updates git-lfs gnome-keyring
-          export DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNNER_TEMP/uv-test-bus"
-          dbus-daemon --session --fork --address="$DBUS_SESSION_BUS_ADDRESS"
-          echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS" >> "$GITHUB_ENV"
-          gnome-keyring-daemon --components=secrets --daemonize --unlock <<< 'uv-test'
-          gdbus call --session --dest org.freedesktop.secrets \
-            --object-path /org/freedesktop/secrets --method org.freedesktop.Secret.Service.ReadAlias default
-          sudo mkdir /tmpfs
-          sudo mount -t tmpfs -o size=256m tmpfs /tmpfs
-          sudo chown "$(id -u):$(id -g)" /tmpfs
-      - name: Run the upstream tests under Blaze
-        working-directory: downstream
-        env:
-          UV_HTTP_RETRIES: 5
-        run: |
-          case "$SUITE" in
-            ruff-and-ty)
-              cmd=(uv run --locked --only-dev blaze test --workspace --all-features --locked --no-fail-fast)
-              ;;
-            uv)
-              export UV_INTERNAL__TEST_NOCOW_FS=/tmpfs UV_INTERNAL__TEST_ALT_FS=/tmpfs
-              export UV_INTERNAL__TEST_LOWLINKS_FS="$RUNNER_TEMP"
-              cmd=(uv run --locked --only-group test blaze test --workspace --locked --no-fail-fast
-                   --features test-python-patch,test-universal,native-auth,secret-service
-                   -- --skip test::malformed_option::)
-              ;;
-            uv-lock-edit|ty-semantic-edit)
-              exec python3 ../blaze/.github/scripts/downstream_test_edit.py "$SUITE"
-              ;;
-            uv-archive-fixtures)
-              cmd=(blaze test --locked -p uv --test build -- extract::)
-              ;;
-          esac
-          log="$RUNNER_TEMP/blaze-tests.log"
-          "${cmd[@]}" 2>&1 | tee "$log"
-          grep -Fq 'profile [ra-jit] target(s)' "$log"
-          if grep -Fq "this build is cargo's" "$log"; then exit 1; fi
-          if [[ "$SUITE" == uv-archive-fixtures ]]; then
-            grep -Fq '39 passed; 0 failed' "$log"
+          git checkout --detach bb8fba44a5539e195166f81f216d6c372014c20f
+          cargo build --release --locked -p ra-jit
+          if python3 "$RUNNER_TEMP/staticcallbacks.py" > "$RUNNER_TEMP/parent.log" 2>&1; then
+            test "$RUNNER_OS" != Linux
+          else
+            grep -Fq 'An unrelated body edit invalidated the callback' "$RUNNER_TEMP/parent.log"
           fi
-      - name: Run the shared inline snapshot once per process
-        if: ${{ !cancelled() && inputs.suite == 'uv' }}
-        working-directory: downstream
+          cat "$RUNNER_TEMP/parent.log"
+      - name: Compare the fixed compiler with pinned rustc on every edit
         run: |
-          log="$RUNNER_TEMP/blaze-tests.log"
-          exe=$(awk '$1 == "Running" && $2 == "unittests" && $4 ~ /\/uv_requirements_txt-[[:xdigit:]]+\)$/ { print substr($4, 2, length($4)-2) }' "$log")
-          exe=$(realpath "$exe")
-          export CARGO_MANIFEST_DIR="$PWD/crates/uv-requirements-txt"
-          cd "$CARGO_MANIFEST_DIR"
-          mapfile -t cases < <("$exe" --list test::malformed_option:: | sed -n 's/: test$//p')
-          test "${#cases[@]}" -eq 3
-          for name in "${cases[@]}"; do
-            "$exe" --exact "$name" | tee "$RUNNER_TEMP/inline-snapshot.log"
-            grep -Fq '1 passed; 0 failed' "$RUNNER_TEMP/inline-snapshot.log"
-          done
-      - name: Save Blaze-built executables for the Btrfs cases
-        if: ${{ !cancelled() && inputs.suite == 'uv' }}
-        working-directory: downstream
-        run: |
-          log="$RUNNER_TEMP/blaze-tests.log"
-          grep -Fq 'profile [ra-jit] target(s)' "$log"
-          if grep -Fq "this build is cargo's" "$log"; then exit 1; fi
-          mkdir "$RUNNER_TEMP/uv-cow"
-          for t in build pip_install; do
-            exe=$(awk -v target="tests/$t/main.rs" '$1 == "Running" && $2 == target { print substr($3, 2, length($3)-2) }' "$log")
-            cp "$exe" "$RUNNER_TEMP/uv-cow/$t"
-          done
-          cp target/debug/uv "$RUNNER_TEMP/uv-cow/uv"
-          strip --strip-debug "$RUNNER_TEMP/uv-cow/"*
-          tar -czf "$RUNNER_TEMP/uv-cow.tar.gz" -C "$RUNNER_TEMP/uv-cow" .
-      - if: ${{ !cancelled() && inputs.suite == 'uv' }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: uv-cow-tests
-          path: ${{ runner.temp }}/uv-cow.tar.gz
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
-
-  uv-cow:
-    needs: test
-    if: ${{ !cancelled() && inputs.suite == 'uv' }}
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: astral-sh/uv
-          ref: 5b5a53e1803d426ba04f4af8ff7d6ff747548218
-          path: downstream
-          persist-credentials: false
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: uv-cow-tests
-          path: ${{ runner.temp }}
-      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
-        with:
-          version: '0.13.5'
-          checksum: f68d291c75783122dad58ab77def0e13f3233f358731db5d6d7e8715603b928f
-          enable-cache: false
-      - name: Run the upstream copy-on-write tests on Btrfs
-        shell: bash
-        working-directory: downstream
-        env:
-          UV_PYTHON_DOWNLOADS_JSON_URL: crates/uv-python-managed/download-metadata.json
-          INSTA_UPDATE: 'no'
-          UV_INTERNAL__TEST_COW_FS: /btrfs
-        run: |
-          uv python install 3.12
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends btrfs-progs
-          truncate -s 1G "$RUNNER_TEMP/cow.img"
-          mkfs.btrfs "$RUNNER_TEMP/cow.img"
-          sudo mkdir /btrfs
-          sudo mount -o loop "$RUNNER_TEMP/cow.img" /btrfs
-          sudo chown "$(id -u):$(id -g)" /btrfs
-          dir="$RUNNER_TEMP/uv-cow"
-          mkdir "$dir"
-          tar -xzf "$RUNNER_TEMP/uv-cow.tar.gz" -C "$dir"
-          export CARGO_BIN_EXE_uv="$dir/uv" CARGO_MANIFEST_DIR="$PWD/crates/uv"
-          cd crates/uv
-          for name in cache_clean::clean_all_cloned_file cache_clean::clean_all_cached_clones cache_clean::clean_all_compressed_file \
-                      pip_install::install_executable_clone pip_install::install_copy_on_write_fs; do
-            test_bin=build
-            if [[ "$name" == pip_install::* ]]; then test_bin=pip_install; fi
-            "$dir/$test_bin" --exact "$name" | tee "$RUNNER_TEMP/cow-result"
-            grep -Fq '1 passed; 0 failed' "$RUNNER_TEMP/cow-result"
-          done
+          git checkout --detach 079b1dd06861a4678ac0d7a68a8108f006386459
+          cargo build --release --locked -p ra-jit
+          python3 "$RUNNER_TEMP/staticcallbacks.py"
