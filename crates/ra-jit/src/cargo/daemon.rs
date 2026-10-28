@@ -447,10 +447,16 @@ impl Drop for Answering<'_> {
 }
 
 impl Worker {
-    /// Starts a worker on the first program of `checkout`, with its files in `dir`.
+    /// Starts a worker on one program of `checkout`, with its files in `dir`.
     /// `spare` is a process that waits to be told a build, and is told this one.
     fn start(checkout: &Checkout, dir: PathBuf, spare: Option<Spare>) -> anyhow::Result<Worker> {
-        let first = checkout.programs.first().context("a checkout without programs")?;
+        // Only the startup program can start from the executable Cargo already linked.
+        // Give that slot to the program with the most workspace crates to compile.
+        let first = checkout.programs.iter().rev()
+            .filter(|plan| plan.rustc_binary.is_some())
+            .max_by_key(|plan| plan.crates.len())
+            .or_else(|| checkout.programs.first())
+            .context("a checkout without programs")?;
         private_dir(&dir)?;
         let (socket, mut log) = (dir.join("sock"), dir.join("log"));
         // The worker of a daemon that was killed may still be there, on its way out: it
