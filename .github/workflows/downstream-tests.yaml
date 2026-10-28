@@ -24,12 +24,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 728da1af6a9375611d69bd9a40b6f03cb60282ae
+          ref: 33fc458f14ae172ff4bb06f5343e9b22708ee12a
           path: regression
           persist-credentials: false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ matrix.version == 'parent' && 'c0dfac412ad826be2a2c9998724ea5a7636c98f4' || '728da1af6a9375611d69bd9a40b6f03cb60282ae' }}
+          ref: ${{ matrix.version == 'parent' && 'c0dfac412ad826be2a2c9998724ea5a7636c98f4' || '33fc458f14ae172ff4bb06f5343e9b22708ee12a' }}
           path: compiler
           persist-credentials: false
       - name: Build the compiler under test
@@ -51,8 +51,11 @@ jobs:
               print("PASS" if passed else "FAIL", label, "" if passed else detail, flush=True)
               if not passed:
                   failed.append(label)
-          with tempfile.TemporaryDirectory() as root:
-              optimized_test_dependencies(root, check)
+          with tempfile.TemporaryDirectory(dir="/tmp") as root:
+              optimized_test_dependencies(os.path.realpath(root), check)
           expected = ["the unoptimized test uses Cargo's executable without compiling it twice"] if os.environ["VERSION_UNDER_TEST"] == "parent" else []
           assert failed == expected, (failed, expected)
           PY
+      - name: Edit a companion while its harness loads
+        if: matrix.version == 'candidate'
+        run: python3 regression/harness/loadedits.py --rounds 1
