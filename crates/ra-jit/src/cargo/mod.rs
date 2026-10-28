@@ -24,15 +24,30 @@ mod toolchain;
 mod units;
 mod whole;
 
-use std::{collections::BTreeMap, path::Path, process::Command, time::Instant};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    process::Command,
+    time::Instant,
+};
 
 use anyhow::Context as _;
+use rustc_hash::FxHashSet;
 
 use cli::{Asked, Invocation, Subcommand};
 use client::Start;
 use daemon::{Checkout, NotBuilt, Reply, Request};
 use state::{Built, Counts, Held, Staged, State};
 pub(crate) use units::{NativeInputs, Record};
+
+/// The executable to install for one target of a build.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Executable {
+    Worker,
+    FreshCompanion,
+}
+
+type Programs = Vec<Result<Executable, String>>;
 
 /// `ra-jit cargo ...`: runs the command and ends with the status cargo would end with.
 pub(crate) fn command(args: impl Iterator<Item = String>) -> anyhow::Result<()> {
@@ -242,7 +257,7 @@ fn build(asked: &Invocation) -> anyhow::Result<i32> {
     }
     let mut served = false;
     let mut held = None;
-    let state = match read.map(|state| by_daemon(state)) {
+    let state = match read.map(|state| by_daemon(state, None)) {
         Ok(Ok((state, settled))) => {
             finished(&state);
             served = true;
@@ -355,7 +370,7 @@ fn check(asked: &Invocation) -> anyhow::Result<i32> {
     if let Ok(state) = State::read_for_build(&asked.key(&cwd))
         && !state.programs.is_empty()
     {
-        match by_daemon(state) {
+        match by_daemon(state, None) {
             Ok((state, _held)) => {
                 finished(&state.profile);
                 state.write()?;
@@ -456,7 +471,9 @@ fn daemons(
     if let Some((program, why)) = state.left_to_cargo().next() {
         return cargos(format!("`{}`: {why}", program.name));
     }
-    let answers = match state.checkouts.iter().map(self::built).collect::<Result<Vec<_>, _>>() {
+    let builds =
+        state.checkouts.iter().map(|checkout| self::built(checkout, &FxHashSet::default()));
+    let answers = match builds.collect::<Result<Vec<_>, _>>() {
         Ok(answers) => answers,
         Err(NotBuilt::Error(said)) => {
             eprintln!("{}", state.turned_down(&said));
@@ -467,10 +484,7 @@ fn daemons(
     Ok(first_by_daemon(state, &answers).map_err(|why| NotStaged::Cargos(Some(why), None)))
 }
 
-fn first_by_daemon(
-    mut state: State,
-    answers: &[Vec<Result<(), String>>],
-) -> Result<(State, Held), String> {
+fn first_by_daemon(mut state: State, answers: &[Programs]) -> Result<(State, Held), String> {
     let held = state.hold();
     let cargos = state.settle(answers, &held)?;
     if let Some((_, why)) = cargos.first() {
@@ -490,7 +504,7 @@ fn after_cargo(asked: &Invocation, state: State) -> Result<(State, Held), NotSer
     if state.refusal.is_none() && state.checkouts.iter().any(|it| !it.programs.is_empty()) {
         say::status(asked.flags.quiet, "Waiting", "for blaze to load the workspace");
     }
-    by_daemon(state)
+    by_daemon(state, Some(asked))
 }
 
 /// The variable that has the first build of a workspace be the daemon's too.
@@ -512,7 +526,7 @@ enum NotServed {
 /// Has the daemon bring the programs of `state` up to date and puts them where cargo has
 /// them. Rustc sees none of it: the daemon builds what rust-analyzer passes, and its verdict
 /// on the source is the build's.
-fn by_daemon(mut state: State) -> Result<(State, Held), NotServed> {
+fn by_daemon(mut state: State, bootstrap: Option<&Invocation>) -> Result<(State, Held), NotServed> {
     use crate::trace::{CLIENT, note};
     let to_cargo = |state, why| NotServed::Cargo(ToCargo(Box::new(state), why, Vec::new()));
     let checking = Instant::now();
@@ -524,7 +538,9 @@ fn by_daemon(mut state: State) -> Result<(State, Held), NotServed> {
     // What the daemon did not build for an error in the source is not built: an item
     // rust-analyzer does not resolve is ra-jit's to fix, not rustc's to build. What it does
     // not build otherwise, cargo does.
-    let answers = match state.checkouts.iter().map(built).collect::<Result<Vec<_>, _>>() {
+    let companions = bootstrap.map(|asked| state.fresh_companions(asked)).unwrap_or_default();
+    let builds = state.checkouts.iter().map(|checkout| built(checkout, &companions));
+    let answers = match builds.collect::<Result<Vec<_>, _>>() {
         Ok(answers) => answers,
         Err(NotBuilt::Error(said)) => {
             let written = state.turned_down(&said);
@@ -545,6 +561,13 @@ fn by_daemon(mut state: State) -> Result<(State, Held), NotServed> {
     }
     let settling = Instant::now();
     let held = state.hold();
+    // A companion's source may have changed while the worker compiled the harness.
+    if !companions.is_empty()
+        && bootstrap.is_some_and(|asked| state.fresh_companions(asked) != companions)
+    {
+        drop(held);
+        return by_daemon(state, None);
+    }
     let cargos = match state.settle(&answers, &held) {
         Ok(cargos) => cargos.len(),
         Err(why) => {
@@ -564,12 +587,19 @@ fn by_daemon(mut state: State) -> Result<(State, Held), NotServed> {
 /// Has the daemon build the programs of `checkout`, loading it first when it has not: of
 /// each, `Ok` or why the daemon did not build it. `Err` is why none is built: the daemon
 /// failed, or the source has an error.
-pub(super) fn built(checkout: &Checkout) -> Result<Vec<Result<(), String>>, NotBuilt> {
+pub(super) fn built(
+    checkout: &Checkout,
+    companions: &FxHashSet<PathBuf>,
+) -> Result<Programs, NotBuilt> {
     if checkout.programs.is_empty() {
         return Ok(Vec::new());
     }
     let asking_at = Instant::now();
-    let reply = client::ask(Request::Build(asking(checkout)), Start::IfMissing)
+    let request = requested(checkout, companions);
+    if request.programs.is_empty() {
+        return Ok(vec![Ok(Executable::FreshCompanion); checkout.programs.len()]);
+    }
+    let reply = client::ask(Request::Build(request), Start::IfMissing)
         .map_err(|it| NotBuilt::Failed(format!("{it:#}")))?;
     crate::trace::note("client↔daemon", crate::trace::CLIENT, asking_at);
     let programs = match reply {
@@ -584,16 +614,40 @@ pub(super) fn built(checkout: &Checkout) -> Result<Vec<Result<(), String>>, NotB
         Some(Reply::Cold { reason }) => return Err(NotBuilt::Failed(reason)),
         Some(other) => return Err(NotBuilt::Failed(format!("the daemon answered {other:?}"))),
     };
-    std::iter::zip(&checkout.programs, programs)
-        .map(|(program, built)| match built {
-            Ok(_) => Ok(Ok(())),
-            Err(NotBuilt::Error(said)) => Err(NotBuilt::Error(said)),
-            Err(NotBuilt::Failed(why)) => {
-                Ok(Err(format!("ra-jit did not build {}: {why}", program.binary.display())))
+    let mut replies = programs.into_iter();
+    checkout
+        .programs
+        .iter()
+        .map(|program| {
+            if companions.contains(&program.object) {
+                if std::env::var_os("RA_JIT_STATS").is_some() {
+                    eprintln!(
+                        "cold: reusing Cargo's test companion {}",
+                        program.crates[0].display()
+                    );
+                }
+                return Ok(Ok(Executable::FreshCompanion));
             }
-            Err(NotBuilt::Cargos(why)) => Ok(Err(why)),
+            let Some(reply) = replies.next() else {
+                return Ok(Err("the daemon said nothing of it".to_owned()));
+            };
+            match reply {
+                Ok(_) => Ok(Ok(Executable::Worker)),
+                Err(NotBuilt::Error(said)) => Err(NotBuilt::Error(said)),
+                Err(NotBuilt::Failed(why)) => {
+                    Ok(Err(format!("ra-jit did not build {}: {why}", program.binary.display())))
+                }
+                Err(NotBuilt::Cargos(why)) => Ok(Err(why)),
+            }
         })
         .collect()
+}
+
+/// The part of a Cargo bootstrap the worker still has to compile.
+fn requested(checkout: &Checkout, companions: &FxHashSet<PathBuf>) -> Checkout {
+    let mut request = asking(checkout);
+    request.programs.retain(|plan| !companions.contains(&plan.object));
+    request
 }
 
 /// `checkout` as a request names it: with the variables of this process, which `env!`
@@ -623,8 +677,8 @@ fn asking(checkout: &Checkout) -> Checkout {
 
 /// Tells the daemon to load `checkout` as cargo just built it, starting one when there is
 /// none. `Err` is why it does not.
-fn warmed(checkout: &Checkout) -> Result<(), String> {
-    match client::ask(Request::Warm(asking(checkout)), Start::IfMissing) {
+fn warmed(checkout: Checkout) -> Result<(), String> {
+    match client::ask(Request::Warm(checkout), Start::IfMissing) {
         Ok(Some(Reply::Cold { reason })) => Err(reason),
         Ok(_) => Ok(()),
         Err(why) => Err(format!("{why:#}")),
@@ -670,8 +724,14 @@ fn loaded_by_cargo(
     let mut state = State::after(asked, cwd, key, built, counts)?;
     state.keep(daemons);
     if state.refusal.is_none() {
-        let asked = state.checkouts.iter().filter(|it| !it.programs.is_empty());
-        let cold: Vec<String> = asked.filter_map(|it| warmed(it).err()).collect();
+        let companions =
+            if daemons.is_empty() { state.fresh_companions(asked) } else { FxHashSet::default() };
+        let cold: Vec<String> = state
+            .checkouts
+            .iter()
+            .filter(|it| it.programs.iter().any(|plan| !companions.contains(&plan.object)))
+            .filter_map(|it| warmed(requested(it, &companions)).err())
+            .collect();
         for why in cold {
             say::fallback(&why, "the daemon has no part in the next build");
             state.count_cargo(&why);

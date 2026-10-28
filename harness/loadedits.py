@@ -70,6 +70,39 @@ def paused(home):
     return sum(open(log, errors="replace").read().count("load: paused\n") for log in logs)
 
 
+def test_companion(root, ws, env, source):
+    """The first integration test must see a write made after Cargo linked its companion."""
+    home = os.path.join(root, "c")
+    env = dict(env, RA_JIT_HOME=home, RA_JIT_SPARE="0", CARGO_INCREMENTAL="0",
+               CARGO_TARGET_DIR=os.path.join(root, "test-target"))
+    tests = os.path.join(ws, "app", "tests")
+    os.makedirs(tests)
+    open(os.path.join(tests, "companion.rs"), "w").write('''#[test]
+fn sees_edit() {
+    let exe = std::env::var_os("CARGO_BIN_EXE_lapp").unwrap();
+    let out = std::process::Command::new(exe).output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(std::str::from_utf8(&out.stdout).unwrap().trim(), "during load 4");
+}
+''')
+    try:
+        with subprocess.Popen(["cargo", "ra-jit", "test", "-p", "lapp", "--test", "companion"],
+                              cwd=ws, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True) as build:
+            deadline = time.monotonic() + 300
+            while not paused(home):
+                if build.poll() is not None or time.monotonic() > deadline:
+                    build.kill()
+                    raise SystemExit(f"companion worker did not pause:\n{build.communicate()[0][-3000:]}")
+                time.sleep(0.02)
+            open(source, "w").write(MAIN.format("during load"))
+            said = build.communicate(timeout=TIMEOUT)[0]
+            if build.returncode or "profile [ra-jit]" not in said or "building with cargo" in said:
+                raise SystemExit(f"companion edit during load:\n{said[-3000:]}")
+            print("integration test saw the companion edit during load", flush=True)
+    finally:
+        subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, capture_output=True, timeout=120)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--rounds", type=int, default=2)
@@ -124,6 +157,7 @@ def main():
             open(library, "w").write(LIB.format(2))
             wrong += verdict != "ok"
             print(f"round {n}: {verdict}", flush=True)
+        test_companion(root, ws, env, source)
     finally:
         subprocess.run(["cargo", "ra-jit", "stop"], cwd=ws, env=env, capture_output=True, timeout=120)
     print(f"{args.rounds - wrong} of {args.rounds} right; under {root}")

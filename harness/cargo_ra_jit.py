@@ -43,7 +43,7 @@ Writes CARGO-RA_JIT.md and cargo_ra_jit.json next to this file, or CARGO-RA_JIT-
 cargo_ra_jit_llvm.json under `RA_JIT_BACKEND=llvm`. A run of some projects replaces their rows
 and keeps the others. `--small` is the three projects of the CI job.
 """
-import collections, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time, urllib.request
+import collections, filecmp, glob, json, os, re, shutil, signal, subprocess, sys, tempfile, time, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
@@ -1011,7 +1011,17 @@ observer = { path = "observer" }
             f'[package]\nname = "{name}"\nversion = "0.0.0"\nedition = "2021"\n' + manifest + "\n")
         open(os.path.join(path, "src/lib.rs"), "w").write(body + "\n")
     os.makedirs(os.path.join(ws, "tests"))
-    open(os.path.join(ws, "tests/probe.rs"), "w").write('fn main() { println!("value={}", observer::value()); }\n')
+    open(os.path.join(ws, "src/main.rs"), "w").write('fn main() { println!("value={}", api::value()); }\n')
+    open(os.path.join(ws, "tests/probe.rs"), "w").write('''fn main() {
+    let exe = std::env::var("CARGO_BIN_EXE_subject").unwrap();
+    assert_eq!(exe, env!("CARGO_BIN_EXE_subject"));
+    let child = std::process::Command::new(exe).output().unwrap();
+    assert!(child.status.success());
+    let value = String::from_utf8(child.stdout).unwrap();
+    assert_eq!(value.trim(), format!("value={}", observer::value()));
+    print!("{value}");
+}
+''')
     env = base_env(os.path.join(work, "home-optimized-test-deps"))
     side = Side(ws, dict(env, RA_JIT_RUSTC_BASE="0"), True)
 
@@ -1021,13 +1031,22 @@ observer = { path = "observer" }
         check(label, ran.returncode == 0 and ran.stdout.strip() == f"value={value}" and how == "daemon",
               f"{how}, {ran.stdout.strip()}, {ran.stderr[-180:]}")
 
+    def companion_state():
+        states = glob.glob(os.path.join(side.env["RA_JIT_HOME"], "states", "*.json"))
+        state, = [json.load(open(path)) for path in states if not path.endswith(".kept.json")]
+        binary, = [p for p in state["programs"] if p["name"] == "subject" and not p["test"]]
+        checkout, at = binary["asked_as"]
+        return state, binary, state["checkouts"][checkout]["programs"][at]
+
     try:
         _, cold = side.cargo("test", "--test", "probe")
         check("the integration test runs before edits", cold.returncode == 0 and "value=2" in cold.stdout, cold.stderr[-300:])
         wait_warm(side, ws)
-        states = glob.glob(os.path.join(env["RA_JIT_HOME"], "states", "*.json"))
-        plans = [plan for path in states if not path.endswith(".kept.json")
-                 for checkout in json.load(open(path)).get("checkouts", [])
+        state, binary, companion = companion_state()
+        check("the worker builds the optimized companion before the first edit",
+              os.path.isfile(companion["binary"]) and filecmp.cmp(companion["binary"], binary["executable"], shallow=False),
+              binary["executable"])
+        plans = [plan for checkout in state["checkouts"]
                  for plan in checkout["programs"] if plan["crates"][0] == os.path.join(ws, "tests/probe.rs")]
         expected = {"tests/probe.rs", "src/lib.rs", "observer/src/lib.rs"}
         check("only the tested package and its caller are built with the harness",
@@ -1047,6 +1066,31 @@ observer = { path = "observer" }
               broken.stderr[-300:])
         rewrite(leaf, "{ missing() }", "{ 8 }")
         check_value("fixing the dependency wakes the failed worker", 10)
+    finally:
+        side.cargo("stop")
+
+    # Unoptimized code built without incremental symbols needs a full first build on an edit.
+    rewrite(os.path.join(ws, "Cargo.toml"), "opt-level = 1", "opt-level = 0")
+    env = dict(base_env(os.path.join(work, "home-unoptimized-companion")),
+               CARGO_TARGET_DIR=os.path.join(work, "target-unoptimized-companion"), CARGO_INCREMENTAL="0")
+    side = Side(ws, env, True)
+    try:
+        check_value("the unoptimized integration test runs on Blaze", 10)
+        _, binary, companion = companion_state()
+        check("the unoptimized test uses Cargo's executable without compiling it twice",
+              filecmp.cmp(binary["cargos"], binary["executable"], shallow=False)
+              and not os.path.exists(companion["binary"]), binary["executable"])
+        rewrite(os.path.join(ws, "src/main.rs"), "value={}", "edited={}")
+        for runner in (Side(ws, env, False), side):
+            _, mismatch = runner.cargo("test", "--test", "probe")
+            check("the first edit to the unoptimized companion fails the old assertion under " + ("Blaze" if runner.ra_jit else "Cargo"),
+                  mismatch.returncode == 101 and "edited=10" in mismatch.stderr and "value=10" in mismatch.stderr
+                  and (not runner.ra_jit or how_built(mismatch.stderr) == "daemon"), mismatch.stderr[-500:])
+        rewrite(os.path.join(ws, "tests/probe.rs"), 'format!("value={}"', 'format!("edited={}"')
+        _, fixed = side.cargo("test", "--test", "probe")
+        check("updating the assertion accepts the edited companion on Blaze",
+              fixed.returncode == 0 and fixed.stdout.strip() == "edited=10" and how_built(fixed.stderr) == "daemon",
+              fixed.stderr[-300:])
     finally:
         side.cargo("stop")
 

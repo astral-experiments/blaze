@@ -48,7 +48,7 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use ide_db::base_db::{CrateOrigin, LangCrateOrigin, SourceDatabase as _, TargetKind};
+use ide_db::base_db::{CrateOrigin, Env, LangCrateOrigin, SourceDatabase as _, TargetKind};
 use std::{
     collections::BTreeSet,
     io::{BufRead as _, BufReader, Write as _},
@@ -7890,8 +7890,8 @@ struct Said {
 #[derive(Default)]
 struct Lines {
     said: Vec<String>,
-    /// Cargo's build is over: nothing more is said.
-    ended: bool,
+    /// Cargo has finished and supplied the paths to its executables.
+    env: Option<Env>,
 }
 
 impl Said {
@@ -7920,7 +7920,11 @@ impl Said {
                         None => tell(&|it| it.said.push(line.clone())),
                     },
                     Some(Line::Whole(told)) => {
-                        tell(&|it| it.ended = true);
+                        let mut env = process::own();
+                        for (name, value) in told.env {
+                            env.set(&name, &value);
+                        }
+                        tell(&|it| it.env = Some(env.clone()));
                         _ = built.send(Args::parse(told.args.into_iter()));
                         return end_with_input();
                     }
@@ -7933,21 +7937,21 @@ impl Said {
     }
 
     /// The lines so far, and whether they are all there will be.
-    fn so_far(&self) -> (Vec<String>, bool) {
+    fn so_far(&self) -> (Vec<String>, Option<Env>) {
         let lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
-        (lines.said.clone(), lines.ended)
+        (lines.said.clone(), lines.env.clone())
     }
 
     /// Whether there is more than the first `seen` lines to take in.
     fn more_than(&self, seen: usize) -> bool {
         let lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
-        lines.said.len() > seen || lines.ended
+        lines.said.len() > seen || lines.env.is_some()
     }
 
     /// Waits until [`Self::more_than`] `seen`.
     fn wait_more_than(&self, seen: usize) {
         let lines = self.lines.lock().unwrap_or_else(|e| e.into_inner());
-        let more = |it: &mut Lines| it.said.len() <= seen && !it.ended;
+        let more = |it: &mut Lines| it.said.len() <= seen && it.env.is_none();
         drop(self.more.wait_while(lines, more));
     }
 }
@@ -8118,11 +8122,11 @@ fn follow_cargo(
     let mut ready = FxHashSet::default();
     let mut all_applied = false;
     loop {
-        let (lines, ended) = beside.said.so_far();
+        let (lines, final_env) = beside.said.so_far();
         let workspace = &checkouts.loaded.workspaces()[beside.at];
         let ProjectWorkspaceKind::Cargo { cargo, .. } = &workspace.kind else { return Ok(None) };
         let (now, all) = beside.ready(cargo, &lines);
-        let all = all || ended;
+        let all = all || final_env.is_some();
         if lines.len() > beside.applied && (now != ready || all && !all_applied) {
             let scripts =
                 WorkspaceBuildScripts::of_messages(cargo, lines.iter().map(String::as_str));
@@ -8137,7 +8141,8 @@ fn follow_cargo(
             beside.applied = lines.len();
             all_applied = all;
         }
-        if ended {
+        if let Some(env) = final_env {
+            ide_db::base_db::set_process_env(db, env);
             let workspace = &checkouts.loaded.workspaces()[beside.at];
             let ProjectWorkspaceKind::Cargo { cargo, .. } = &workspace.kind else {
                 return Ok(None);
@@ -8153,12 +8158,13 @@ fn follow_cargo(
         let more = || {
             let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
             if !seen.1 && beside.said.more_than(seen.0) {
-                let (lines, ended) = beside.said.so_far();
+                let (lines, final_env) = beside.said.so_far();
                 let workspace = &checkouts.loaded.workspaces()[beside.at];
                 let ProjectWorkspaceKind::Cargo { cargo, .. } = &workspace.kind else {
                     return true;
                 };
-                *seen = (lines.len(), ended || beside.ready(cargo, &lines).0 != ready);
+                *seen =
+                    (lines.len(), final_env.is_some() || beside.ready(cargo, &lines).0 != ready);
             }
             seen.1
         };
