@@ -531,6 +531,10 @@ impl Built {
     ) -> anyhow::Result<Result<Built, i32>> {
         let started = stamp_now();
         let mut cargo = Command::new(cargo_path());
+        // Experiment: measure rustc's patchable layout on the pinned uv source.
+        if staged.is_none() && asked.subcommand == Subcommand::Test && asked.flags.dev_targets {
+            cargo.env("CARGO_INCREMENTAL", "1");
+        }
         match asked.subcommand {
             Subcommand::Build | Subcommand::Run | Subcommand::Check => cargo.arg("build"),
             Subcommand::Test => cargo.args(["test", "--no-run"]),
