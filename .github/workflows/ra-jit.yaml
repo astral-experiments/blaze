@@ -81,7 +81,7 @@ jobs:
         if: steps.diff.outcome == 'success'
         continue-on-error: true
         timeout-minutes: 4
-        uses: openai/codex-action@c05cfd74ad95c626cdf05c6685e62becc3bf7813
+        uses: openai/codex-action@13e9c17417b29e9a276f73ec6ed7fb574137d3c3
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           codex-version: "0.157.1"
